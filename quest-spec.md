@@ -1,4 +1,4 @@
-# Quest CLI — Specification
+# Quest CLI -- Specification
 
 ## Overview
 
@@ -22,7 +22,7 @@ Quest supports four phases of a delivery lifecycle. Understanding these phases i
 A planning agent receives an implementation plan and decomposes it into a task graph. This involves:
 
 - Creating tasks with descriptions, context, dependencies, and tier assignments
-- Linking tasks via parent-child relationships (epics → tasks → sub-tasks)
+- Linking tasks via parent-child relationships (epics -> tasks -> sub-tasks)
 - Linking tasks via dependency relationships (task B is blocked by task A)
 - Assigning model tiers so each task is handled by the cheapest tier that can get the job done
 - Verifying the resulting dependency graph is correct
@@ -84,9 +84,9 @@ Quest exposes a minimal CLI surface for worker agents by default and the full co
 Quest reads role and task context from environment variables:
 
 ```
-AGENT_ROLE   — the agent's role (e.g., "coder", "planner")
-AGENT_TASK   — the agent's assigned task ID (used as default for commands)
-TRACEPARENT  — OpenTelemetry trace context for observability
+AGENT_ROLE   -- the agent's role (e.g., "coder", "planner")
+AGENT_TASK   -- the agent's assigned task ID (used as default for commands)
+TRACEPARENT  -- OpenTelemetry trace context for observability
 ```
 
 The task ID from `AGENT_TASK` is used as the default target for commands, so `quest accept tsk-123` becomes just `quest accept` when the env var is set.
@@ -139,8 +139,8 @@ proj-42.1.1
 ## Output & Error Conventions
 
 - Output format is controlled by `--format json|text` (default: `json`)
-- `json` — structured JSON to stdout, suitable for agent consumption
-- `text` — human-readable formatted output to stdout
+- `json` -- structured JSON to stdout, suitable for agent consumption
+- `text` -- human-readable formatted output to stdout
 - Warnings and errors always go to stderr regardless of format
 - Flat JSON structures preferred over deeply nested
 - Consistent types across all commands (durations in seconds, timestamps in ISO 8601)
@@ -164,24 +164,24 @@ proj-42.1.1
 
 ### Core fields
 
-| Field         | Set by  | Description                                                      |
-| ------------- | ------- | ---------------------------------------------------------------- |
-| `id`          | system  | Generated task ID (see Task IDs section)                         |
-| `title`       | planner | Short description of the task                                    |
-| `description` | planner | Full description — the decomposed unit of work                   |
-| `context`     | planner | Background information for the worker, injected into the prompt  |
-| `type`        | planner | `task` (default) or `bug`                                        |
-| `status`      | system  | Current state (see lifecycle below)                              |
-| `role`        | planner | Which role is assigned to execute the task                       |
-| `tier`        | planner | Model tier assignment (see tier list below)                      |
+| Field         | Set by  | Description                                                     |
+| ------------- | ------- | --------------------------------------------------------------- |
+| `id`          | system  | Generated task ID (see Task IDs section)                        |
+| `title`       | planner | Short description of the task                                   |
+| `description` | planner | Full description -- the decomposed unit of work                  |
+| `context`     | planner | Background information for the worker, injected into the prompt |
+| `type`        | planner | `task` (default) or `bug`                                       |
+| `status`      | system  | Current state (see lifecycle below)                             |
+| `role`        | planner | Which role is assigned to execute the task                      |
+| `tier`        | planner | Model tier assignment (see tier list below)                     |
 | `labels`      | planner | Free-form tags (e.g., `go`, `sql`, `auth`, `concurrency`)       |
-| `metadata`    | planner | Arbitrary JSON for planner-defined extensions and optimizations  |
+| `metadata`    | planner | Arbitrary JSON for planner-defined extensions and optimizations |
 
 ### Relationship fields
 
 | Field          | Set by  | Description                                       |
 | -------------- | ------- | ------------------------------------------------- |
-| `parent`       | planner | Link to parent task/epic                           |
+| `parent`       | planner | Link to parent task/epic                          |
 | `dependencies` | planner | Typed dependency list (see relationships section) |
 
 ### Execution fields
@@ -190,39 +190,40 @@ proj-42.1.1
 | --------- | ------ | --------------------------------------------------------------------------- |
 | `pr`      | worker | Link to the PR containing task output                                       |
 | `notes`   | worker | Array of timestamped progress notes                                         |
-| `handoff` | worker | Context bridge for session continuity — what the next session needs to know |
+| `handoff` | worker | Context bridge for session continuity -- what the next session needs to know |
 | `debrief` | worker | After-action report, submitted at completion or failure                     |
 
 ### Model tiers
 
 The planning agent assigns a tier to each task to control which model executes it. The framework uses this field to select the appropriate model when starting a worker agent.
 
-| Tier | Label      | Use case                                                              |
-| ---- | ---------- | --------------------------------------------------------------------- |
-| T0   | Tool       | No LLM needed — handled by a tool or script                          |
-| T1   | Minimal    | Classification, extraction, simple reformatting                       |
-| T2   | Capable    | Summarization, straightforward code, routine Q&A                      |
-| T3   | Strong     | Complex reasoning, nuanced writing, multi-step code                   |
-| T4   | Reasoning  | Extended-thinking tasks — math, formal logic, planning                |
-| T5   | Reasoning+ | Max-compute reasoning — research-grade problems, proofs, hard code    |
+| Tier | Label      | Use case                                                           |
+| ---- | ---------- | ------------------------------------------------------------------ |
+| T0   | Tool       | No LLM needed -- handled by a tool or script                        |
+| T1   | Minimal    | Classification, extraction, simple reformatting                    |
+| T2   | Capable    | Summarization, straightforward code, routine Q&A                   |
+| T3   | Strong     | Complex reasoning, nuanced writing, multi-step code                |
+| T4   | Reasoning  | Extended-thinking tasks -- math, formal logic, planning             |
+| T5   | Reasoning+ | Max-compute reasoning -- research-grade problems, proofs, hard code |
+| T6   | Human      | Human attention, the most expensive tier                           |
 
 ---
 
 ## Status Lifecycle
 
 ```
-open → accepted → complete
-                → failed
-       (at any point) → cancelled (planner only)
+open -> accepted -> complete
+                -> failed
+       (at any point) -> cancelled (planner only)
 ```
 
-- **open** — task has been created, may or may not be assigned
-- **accepted** — worker has acknowledged and begun work
-- **complete** — worker finished the task and submitted a debrief
-- **failed** — worker could not complete the task
-- **cancelled** — planner aborted the task before completion
+- **open** -- task has been created, may or may not be assigned
+- **accepted** -- worker has acknowledged and begun work
+- **complete** -- worker finished the task and submitted a debrief
+- **failed** -- worker could not complete the task
+- **cancelled** -- planner aborted the task before completion
 
-The `open → accepted` transition is the key diagnostic signal. A task that stays `open` means the agent never started. A task that reaches `accepted` but never completes means the agent started but failed mid-work.
+The `open -> accepted` transition is the key diagnostic signal. A task that stays `open` means the agent never started. A task that reaches `accepted` but never completes means the agent started but failed mid-work.
 
 ---
 
@@ -232,9 +233,9 @@ Dependencies support typed relationships to enable richer graph queries and retr
 
 | Type              | Meaning                                                                      |
 | ----------------- | ---------------------------------------------------------------------------- |
-| `blocks`          | Standard dependency — this task must complete before the dependent can start |
-| `caused-by`       | Bug tracing — this bug was caused by work done in the linked task            |
-| `discovered-from` | Bug tracing — this bug was discovered during testing of the linked task      |
+| `blocks`          | Standard dependency -- this task must complete before the dependent can start |
+| `caused-by`       | Bug tracing -- this bug was caused by work done in the linked task            |
+| `discovered-from` | Bug tracing -- this bug was discovered during testing of the linked task      |
 
 `blocks` is the default type when adding a dependency.
 
@@ -276,7 +277,7 @@ Write progress information to the task.
 | ----------------- | ---------------------------------------------------------------- |
 | `--note "..."`    | Append a timestamped progress note                               |
 | `--pr "URL"`      | Link the PR containing task output                               |
-| `--handoff "..."` | Set handoff context for session continuity (overwrites previous)  |
+| `--handoff "..."` | Set handoff context for session continuity (overwrites previous) |
 
 ---
 
@@ -286,10 +287,10 @@ quest complete [ID] [--debrief "..."] [--pr "URL"]
 
 Mark the task as complete.
 
-| Flag              | Description                                    |
-| ----------------- | ---------------------------------------------- |
-| `--debrief "..."` | Free-form after-action report                  |
-| `--pr "URL"`      | Attach a PR link at completion time             |
+| Flag              | Description                         |
+| ----------------- | ----------------------------------- |
+| `--debrief "..."` | Free-form after-action report       |
+| `--pr "URL"`      | Attach a PR link at completion time |
 
 ---
 
@@ -299,10 +300,10 @@ quest fail [ID] --reason "..." [--debrief "..."]
 
 Mark the task as failed with a reason.
 
-| Flag              | Description                                |
-| ----------------- | ------------------------------------------ |
-| `--reason "..."`  | Why the task failed (required)             |
-| `--debrief "..."` | Free-form after-action report              |
+| Flag              | Description                    |
+| ----------------- | ------------------------------ |
+| `--reason "..."`  | Why the task failed (required) |
+| `--debrief "..."` | Free-form after-action report  |
 
 ---
 
@@ -336,17 +337,17 @@ quest create --title "..." [flags]
 
 Create a new task.
 
-| Flag                  | Description                                    |
-| --------------------- | ---------------------------------------------- |
-| `--title "..."`       | Short task title (required)                    |
-| `--description "..."` | Full description of the work                   |
-| `--context "..."`     | Background information for the worker          |
-| `--parent ID`         | Link to parent task/epic                       |
-| `--type TYPE`         | `task` (default) or `bug`                      |
-| `--tier TIER`         | Model tier: T0, T1, T2, T3, T4, T5            |
-| `--role ROLE`         | Assigned role                                  |
-| `--label LABEL`       | Add a label (repeatable)                       |
-| `--meta KEY=VALUE`    | Set a metadata field (repeatable)              |
+| Flag                  | Description                           |
+| --------------------- | ------------------------------------- |
+| `--title "..."`       | Short task title (required)           |
+| `--description "..."` | Full description of the work          |
+| `--context "..."`     | Background information for the worker |
+| `--parent ID`         | Link to parent task/epic              |
+| `--type TYPE`         | `task` (default) or `bug`             |
+| `--tier TIER`         | Model tier: T0, T1, T2, T3, T4, T5    |
+| `--role ROLE`         | Assigned role                         |
+| `--label LABEL`       | Add a label (repeatable)              |
+| `--meta KEY=VALUE`    | Set a metadata field (repeatable)     |
 
 ---
 
@@ -415,14 +416,14 @@ quest list [flags]
 
 List tasks with filtering.
 
-| Flag             | Description         |
-| ---------------- | ------------------- |
-| `--status STATUS`| Filter by status    |
-| `--parent ID`    | Filter by parent    |
-| `--label LABEL`  | Filter by label     |
-| `--role ROLE`    | Filter by role      |
-| `--type TYPE`    | Filter by type      |
-| `--tier TIER`    | Filter by tier      |
+| Flag              | Description      |
+| ----------------- | ---------------- |
+| `--status STATUS` | Filter by status |
+| `--parent ID`     | Filter by parent |
+| `--label LABEL`   | Filter by label  |
+| `--role ROLE`     | Filter by role   |
+| `--type TYPE`     | Filter by type   |
+| `--tier TIER`     | Filter by tier   |
 
 ---
 
@@ -474,29 +475,29 @@ Quest stores references to external systems (e.g., memory store entries) as opaq
 
 ## Framework Integration Points
 
-These are concerns the framework handles — not quest commands, but places where the framework interacts with quest:
+These are concerns the framework handles -- not quest commands, but places where the framework interacts with quest:
 
-| Concern              | Framework responsibility                                                                |
-| -------------------- | --------------------------------------------------------------------------------------- |
-| Agent startup        | Framework reads task tier and role from quest, selects the appropriate model, sets `AGENT_ROLE` and `AGENT_TASK` env vars, and starts the agent |
-| Prompt construction  | Framework reads task description and context from `quest show` output and injects them into the agent's prompt template |
-| Work dispatch        | Framework calls `quest ready` to find dispatchable tasks and starts agents for them     |
-| Recurring tasks      | Framework scheduler calls `quest create` or `quest batch` on a cron. Quest has no scheduling concept |
-| Project setup        | Framework generates `.quest/config.toml` during project initialization                  |
-| Role injection       | Framework sets `AGENT_ROLE` when launching agents                                       |
-| Analytics            | Outcome correlation, rework tracking, lead time, and pattern detection are queries over quest data handled by framework tooling — not quest commands |
+| Concern             | Framework responsibility                                                                                                                             |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent startup       | Framework reads task tier and role from quest, selects the appropriate model, sets `AGENT_ROLE` and `AGENT_TASK` env vars, and starts the agent      |
+| Prompt construction | Framework reads task description and context from `quest show` output and injects them into the agent's prompt template                              |
+| Work dispatch       | Framework calls `quest ready` to find dispatchable tasks and starts agents for them                                                                  |
+| Recurring tasks     | Framework scheduler calls `quest create` or `quest batch` on a cron. Quest has no scheduling concept                                                 |
+| Project setup       | Framework generates `.quest/config.toml` during project initialization                                                                               |
+| Role injection      | Framework sets `AGENT_ROLE` when launching agents                                                                                                    |
+| Analytics           | Outcome correlation, rework tracking, lead time, and pattern detection are queries over quest data handled by framework tooling -- not quest commands |
 
 ---
 
 ## Deferred / Future Concerns
 
-- **Daemon architecture** — if concurrent access patterns outgrow file locking, introduce a `questd` daemon with a TCP/JSON wire protocol
-- **`quest assign`** — explicit assignment command, if role on create proves insufficient
-- **`quest tag`** — dedicated label management command, if `--label` on create and metadata prove insufficient
-- **`quest close-all`** — batch status transitions, if scripting `quest list | quest complete` becomes cumbersome
-- **Snapshots / branching** — tagging and branching the task store for rollback or experimentation
-- **`quest diff` / `quest log`** — history exploration commands for audit and debugging
-- **Expanded type taxonomy** — additional task types beyond `task` and `bug` if query patterns demand it
-- **Analytics CLI** — queries like "tasks at T2 tier fail 3x more on concurrency work" belong in a separate analytics tool that reads quest's data store
-- **Debrief processing workflow** — dedicated commands for marking debriefs as reviewed, if note-based tracking proves insufficient
-- **Estimate field** — first-class effort estimation if the framework develops scheduling/budgeting capabilities that consume it
+- **Daemon architecture** -- if concurrent access patterns outgrow file locking, introduce a `questd` daemon with a TCP/JSON wire protocol
+- **`quest assign`** -- explicit assignment command, if role on create proves insufficient
+- **`quest tag`** -- dedicated label management command, if `--label` on create and metadata prove insufficient
+- **`quest close-all`** -- batch status transitions, if scripting `quest list | quest complete` becomes cumbersome
+- **Snapshots / branching** -- tagging and branching the task store for rollback or experimentation
+- **`quest diff` / `quest log`** -- history exploration commands for audit and debugging
+- **Expanded type taxonomy** -- additional task types beyond `task` and `bug` if query patterns demand it
+- **Analytics CLI** -- queries like "tasks at T2 tier fail 3x more on concurrency work" belong in a separate analytics tool that reads quest's data store
+- **Debrief processing workflow** -- dedicated commands for marking debriefs as reviewed, if note-based tracking proves insufficient
+- **Estimate field** -- first-class effort estimation if the framework develops scheduling/budgeting capabilities that consume it
