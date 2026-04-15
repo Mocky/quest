@@ -90,7 +90,7 @@ Quest uses a SQLite database at `.quest/quest.db` for runtime storage.
 
 ## Role Gating
 
-Quest exposes a minimal CLI surface for worker agents by default and the full command surface for elevated roles (planning agents). This minimizes the commands visible to workers, reducing context window usage when agents encounter errors or request help text.
+Quest exposes a minimal CLI surface for worker agents by default and the full command surface for elevated roles (planning agents). The design principle: every agent session has exactly one task, and that task contains everything the agent needs to do its work. Workers do not browse, search, or query other tasks -- if information is missing, the principled fix is to inject it into the task (via context, description, or handoff), not to give the worker more commands. If a dependency is blocking work, that is a scheduling failure by the lead, not something the worker can resolve. Query and structural commands are reserved for elevated roles because only planning agents need a view across tasks.
 
 ### Resolution logic
 
@@ -166,12 +166,12 @@ Any flag that accepts free-form text supports reading from a file using the `@fi
 quest complete --debrief @debrief.md
 quest create --description @desc.md --context @context.md
 quest update --handoff @handoff.md
-quest fail --reason @failure-report.md
+quest fail --debrief @failure-report.md
 ```
 
 Quest reads the file contents and stores them inline in the task data. The file path is not retained as a reference -- quest owns its data.
 
-This convention applies to: `--debrief`, `--reason`, `--description`, `--context`, `--handoff`, `--note`.
+This convention applies to: `--debrief`, `--description`, `--context`, `--handoff`, `--note`, `--reason`.
 
 ---
 
@@ -215,7 +215,7 @@ This convention applies to: `--debrief`, `--reason`, `--description`, `--context
 | `tier`                | planner | Model tier assignment (see tier list below)                                                                                                                             |
 | `tags`                | planner | Free-form tags (e.g., `go`, `sql`, `auth`, `concurrency`)                                                                                                               |
 | `acceptance_criteria` | planner | What must be true for this task to be considered complete. Primarily used on parent tasks to define verification conditions the lead evaluates before closing the group |
-| `metadata`            | planner | Arbitrary JSON for planner-defined extensions and optimizations                                                                                                         |
+| `metadata`            | planner | Arbitrary JSON for planner-defined extensions. The retrospective phase reviews metadata usage across deliveries to identify candidates for promotion to first-class fields |
 
 ### Relationship fields
 
@@ -303,6 +303,7 @@ Every mutation to a task appends an entry to the `history` array. Entries are ne
 - `action` identifies the operation: `created`, `accepted`, `completed`, `failed`, `cancelled`, `reset`, `note_added`, `field_updated`, `linked`, `unlinked`, `tagged`, `untagged`, `handoff_set`
 - `reason` is present for `reset` -- the lead's annotation of why the task was reset
 - `fields` is present only for `field_updated` -- records old and new values for each changed field
+- `target` and `link_type` are present for `linked` and `unlinked` -- the referenced task ID and the relationship type (e.g., `blocked-by`, `caused-by`)
 
 ### Model tiers
 
@@ -423,6 +424,7 @@ Accept is strict:
 
 - It only succeeds on tasks in `open` status. Calling `quest accept` on a task that is already `accepted`, `complete`, `failed`, or `cancelled` returns exit code 5 (conflict). This is intentional: if a session crashes and a new session is started for the same task, the lead must explicitly `quest reset` the task before the new session can accept it. This keeps crash recovery as a deliberate decision by the lead, not an implicit side effect.
 - It fails on tasks that have children (exit code 5). Parent tasks are structural -- they organize work but are not directly workable. The lead completes parent tasks after evaluating their acceptance criteria and confirming all children are resolved.
+- If two agents race to accept the same task, the first writer wins. The second receives exit code 5 (conflict). SQLite's serialized writes guarantee this atomicity.
 
 ---
 
@@ -473,14 +475,13 @@ For parent tasks (tasks with children), completion fails if any child is not in 
 ---
 
 ```
-quest fail [ID] --reason "..." --debrief "..."
+quest fail [ID] --debrief "..."
 ```
 
-Mark the task as failed. Reason and debrief are both required. If `ID` is omitted, uses the value of `AGENT_TASK`.
+Mark the task as failed. Debrief is required -- the after-action report should cover what was attempted, why the task failed, and what was learned. If `ID` is omitted, uses the value of `AGENT_TASK`.
 
 | Flag              | Description                              |
 | ----------------- | ---------------------------------------- |
-| `--reason "..."`  | Why the task failed (required)           |
 | `--debrief "..."` | Free-form after-action report (required) |
 
 ---
@@ -562,7 +563,7 @@ All batch errors exit with code 2 (usage error).
 
 ### Batch output
 
-On success, quest outputs the mapping of batch `ref` values to generated task IDs, so the planner can verify the graph and reference tasks going forward.
+Batch output respects `--format json|text`. In json mode (default), quest outputs a JSONL mapping of batch `ref` values to generated task IDs. In text mode, the same mapping is rendered as a table. Either way, the planner can verify the graph and reference tasks going forward.
 
 ```json
 {"ref": "epic-1", "id": "proj-a1"}
@@ -587,7 +588,9 @@ Cancel a task. Transitions status to `cancelled`. Only available to elevated rol
 | `--reason "..."` | Why the task was cancelled              |
 | `-r`             | Recursively cancel all descendant tasks |
 
-Without `-r`, the command fails if the task has children (exit code 5). With `-r`, all descendant tasks in `open` or `accepted` status are cancelled with the same reason. Tasks already in `complete` or `failed` status are skipped. The output reports which tasks were cancelled and which were skipped.
+Cancelling a task in a terminal state (`complete` or `failed`) fails with exit code 5 (conflict) -- terminal states are permanent.
+
+Without `-r`, the command also fails if the task has non-terminal children (exit code 5). With `-r`, all descendant tasks in `open` or `accepted` status are cancelled with the same reason. Descendants already in `complete` or `failed` status are skipped. The output reports which tasks were cancelled and which were skipped.
 
 ---
 
@@ -655,6 +658,8 @@ quest untag proj-a1 auth,concurrency
 ---
 
 ### Queries
+
+Query commands are elevated because workers have exactly one task assigned at session start. A worker does not browse, search, or pick tasks -- the framework dispatches the task and injects its full context into the prompt. If a worker would benefit from information about sibling tasks or the broader graph, the lead adds that information to the task's context before dispatch.
 
 ```
 quest children ID
@@ -768,20 +773,19 @@ Edge fields mirror the CLI: `task` is the task that holds the link (first arg to
 **Design notes:**
 
 - **Two relationship representations.** Parent-child relationships appear as `children` arrays on nodes, while dependency relationships appear in `edges`. This is intentional: parent-child is structural (encoded in the ID, immutable once created), while dependencies are semantic (typed, mutable). They are fundamentally different relationship types and keeping them in separate structures reflects that distinction.
-- **External nodes.** Tasks from outside the graph's namespace (e.g., a `proj-31` referenced via `caused-by` from a task in the `proj-a1` dotted namespace) appear as leaf nodes in `nodes` but are not expanded. Consumers identify external nodes by their ID: they do not share the dotted namespace of the graph's root. The ID encoding scheme is a core quest concept that all consumers are required to understand and specifically designed (trdeoffs included) to simplify cases like this and make them unambiguous, so no explicit flag is needed.
+- **External nodes.** Tasks from outside the graph's namespace (e.g., a `proj-31` referenced via `caused-by` from a task in the `proj-a1` dotted namespace) appear as leaf nodes in `nodes` but are not expanded. Consumers identify external nodes by their ID: they do not share the dotted namespace of the graph's root. The ID encoding scheme is a core quest concept that all consumers are required to understand and specifically designed (tradeoffs included) to simplify cases like this and make them unambiguous, so no explicit flag is needed.
 - **Edge field naming.** `task` and `target` use quest-specific terminology rather than generic graph terms (e.g., `source`/`target`) to maintain consistency with the CLI surface (`quest link TASK --blocked-by TARGET`).
 - **Node fields are structural.** Graph output exists for verifying dependency structure and status, not for displaying full task metadata. Fields like `tags` are intentionally excluded -- they don't contribute to structural verification and are available via `quest list` and `quest show`.
 
-**`--format text`**: human-readable tree. _This format is experimental and may evolve as we find the best representation for graph validation._
+**`--format text`**: human-readable tree. Parent-child structure is conveyed by indentation. Dependency edges are listed under the task that holds the link, matching the JSON model.
 
 ```
 proj-a1  Auth module [open]
   proj-a1.1  JWT validation [complete]
-    -> blocks proj-a1.3
   proj-a1.2  Session store [accepted]
-    -> blocks proj-a1.3
   proj-a1.3  Auth middleware [open]
-    <- blocked by proj-a1.1, proj-a1.2
+    blocked-by  proj-a1.1 [complete]
+    blocked-by  proj-a1.2 [accepted]
 ```
 
 Used by the planning agent to verify graph correctness after batch task creation, and by humans to understand the structure of a deliverable.
@@ -794,7 +798,7 @@ Used by the planning agent to verify graph correctness after batch task creation
 quest init --prefix PREFIX
 ```
 
-Initialize a quest project in the current directory. Creates `.quest/` directory and `.quest/config.toml`. Requires `--prefix` to set the ID prefix for this project.
+Initialize a quest project in the current directory. Creates `.quest/` directory and `.quest/config.toml`. Requires `--prefix` to set the ID prefix for this project. Fails with exit code 5 (conflict) if `.quest/` already exists in the current directory or any parent.
 
 ---
 
