@@ -1156,6 +1156,21 @@ These are concerns the framework handles -- not quest commands, but places where
 
 ---
 
+## Observability
+
+Quest emits OTEL traces, metrics, and structured logs. The full instrumentation design lives in `docs/OTEL.md`; this section records only the touchpoints where the behavioral spec and telemetry share a contract.
+
+- **Env vars quest reads for telemetry:** `AGENT_ROLE`, `AGENT_TASK`, `AGENT_SESSION`, `TRACEPARENT`, `TRACESTATE` (all set by vigil), plus standard `OTEL_*` variables and `OTEL_GENAI_CAPTURE_CONTENT`. Missing values do not change command behavior -- they surface as empty attributes or, for `AGENT_ROLE`, as the literal `"unset"` in telemetry.
+- **Exit code contract:** The exit codes defined in *Output & Error Conventions* (1-7) map one-to-one to a stable `quest.error.class` vocabulary in the OTEL spec (`general_failure`, `usage_error`, `not_found`, `permission_denied`, `conflict`, `role_denied`, `lock_timeout`). Changing an exit code in this spec changes the telemetry contract; update both.
+- **Lock-contention signal:** The 5-second `BEGIN IMMEDIATE` lock timeout (exit code 7) is the designed threshold for the daemon-upgrade decision. Sustained exit-code-7 rate is the concrete signal for promoting quest to `questd`; the metric is defined in the OTEL spec.
+- **History and session identity:** `role` and `session` in history entries (from `AGENT_ROLE` and `AGENT_SESSION`) are the same values surfaced in span attributes (`gen_ai.agent.name`, `dept.session.id`). This lets retrospective queries join history rows to spans by session.
+- **No `--no-track`:** Quest's `history` table is append-only and writes only on mutations -- reads produce no history entries regardless of telemetry state. The spec does not carry a `--no-track`-style flag; the OTEL spec documents the rationale.
+- **Content capture:** Free-form task content (titles, descriptions, debriefs, handoffs, notes, metadata, tag values, parent IDs) is never emitted as span attributes. Gated content capture per the OTEL spec may surface a truncated subset in span events when `OTEL_GENAI_CAPTURE_CONTENT=true`.
+
+Implementers: see `docs/OTEL.md` for span inventory, metric definitions, attribute schemas, and SDK wiring.
+
+---
+
 ## Deferred / Future Concerns
 
 - **Daemon architecture** -- if concurrent write contention exceeds SQLite's single-writer ceiling, introduce a `questd` daemon with a TCP/JSON wire protocol
