@@ -1,6 +1,6 @@
 # Quest CLI -- Specification
 
-**Version: v3** | 2026-04-16
+**Version: v4** | 2026-04-16
 
 ## Overview
 
@@ -73,6 +73,7 @@ Quest is a single-binary CLI tool.
 - **Config location:** `.quest/config.toml`, discovered by walking up the directory tree from CWD
 - **Data location:** `.quest/` directory in the project root
 - **Concurrency:** serialized writes (see Storage section)
+- **Scope:** quest is scoped one-project-per-workspace by design. Walk-up discovery stops at the first `.quest/` marker, so nested quest projects inside another quest project's tree are not supported -- the inner project would be invisible and its commands would resolve to the outer workspace. This matches grove's department-level positioning: a department is a single project. If a monorepo needs per-subproject task tracking, use multiple departments or run quest from outside the enclosing workspace
 
 ---
 
@@ -83,12 +84,14 @@ Quest uses a SQLite database at `.quest/quest.db` for runtime storage.
 - **Engine:** SQLite (embedded, no external server dependency)
 - **Location:** `.quest/quest.db`, inside the project marker directory
 - **WAL mode:** the database runs in WAL (write-ahead logging) mode for concurrent reads with serialized writes
-- **Busy timeout:** all database connections must set `PRAGMA busy_timeout = 5000` so that concurrent writers wait up to 5 seconds for the write lock before returning an error. Without this, SQLite returns `SQLITE_BUSY` immediately when the lock is held, causing spurious failures in agent swarms
-- **Atomicity:** status transitions (e.g., `quest accept`) use single atomic queries (`UPDATE ... WHERE id=? AND status='open'`) with `RowsAffected` checks to determine success, avoiding read-then-write TOCTOU races. Append-only fields (`notes`, `prs`) use INSERT semantics. `handoff` uses upsert (INSERT or REPLACE) semantics
-- **Schema:** tables mirror the task entity schema -- tasks, history entries, dependencies, tags. Internal schema details are an implementation concern, not API surface
+- **Busy timeout:** all database connections must set `PRAGMA busy_timeout = 5000` so that concurrent writers wait up to 5 seconds for the write lock before returning an error. Without this, SQLite returns `SQLITE_BUSY` immediately when the lock is held, causing spurious failures in agent swarms. If the wait exceeds five seconds, quest exits with code 7 (transient failure) and a stderr message: `"write lock unavailable after 5s -- transient failure, safe to retry"`. Quest does not retry internally -- the caller decides whether and when to retry, consistent with the principle that intelligence lives in the LLM, not in code
+- **Atomicity:** simple status transitions (e.g., `quest accept` on a leaf with no structural checks) use single atomic queries (`UPDATE ... WHERE id=? AND status='open'`) with `RowsAffected` checks to determine success, avoiding read-then-write TOCTOU races. Append-only fields (`notes`, `prs`) use INSERT semantics. `handoff` uses upsert (INSERT or REPLACE) semantics
+- **Structural transactions:** commands that require multi-row structural checks must use `BEGIN IMMEDIATE` transactions to acquire the write lock at transaction start, preventing concurrent writers from interleaving between the check and the mutation. This applies to: `quest accept` on a parent (must verify all children are in a terminal state), `quest create --parent` (must verify parent is in `open` status and depth limit), `quest complete` on parent tasks (must verify all children are terminal), `quest move` (must check circular parentage, depth limits, and update multiple rows), and `quest cancel -r` (must recursively update descendants). Simple single-row operations (`quest update --note`, `quest update --pr`, simple status transitions without structural invariants) use implicit transactions
+- **Schema:** the task entity is normalized across multiple tables -- `tasks` holds the mutable task row, `history` holds append-only mutation entries keyed by task ID and indexed by timestamp, `dependencies` holds typed links between tasks, and `tags` holds the task-tag join. History is a separate table (not a JSON array on the task row) so that `quest show` without `--history` never reads history pages, and future range queries (tail, stream, paginated audit) can be served by an indexed scan rather than a full-row deserialization. Internal schema details beyond this separation are an implementation concern, not API surface
+- **Schema versioning:** the database stores a `schema_version` integer in a `meta` table. On startup, quest reads the version and compares it to the range the binary supports. If the version is higher than supported, quest refuses to operate (exit code 1, stderr: `"database schema version N is newer than this binary supports -- upgrade quest"`) so a stale binary cannot silently corrupt a newer schema. If the version is lower, quest runs the pending forward-only migrations inside a single transaction before proceeding; a failed migration leaves the database at the prior version. Downgrades are not supported -- rolling back a binary upgrade is done by restoring from a prior `quest export` or a file-level database backup. The initial release ships at `schema_version = 1`; every subsequent schema change ships a numbered migration and bumps the version. Migration code is part of the binary, not loaded from disk
 - **Direct access:** the database can be queried with standard SQLite tooling (`sqlite3`, any SQLite client library) for ad-hoc inspection or custom analytics
 - **Human-readable access:** quest data is materialized to human-readable files (per-task JSON, markdown debriefs, JSONL event streams) via `quest export`. The export is the archival and review format; the database is the operational format
-- **Daemon upgrade path:** if concurrent write contention from many agent processes exceeds what SQLite's WAL-mode single-writer lock can handle (expected ceiling: ~50 concurrent writing agents), the deferred `questd` daemon owns the database connection and serializes access at the application level. WAL mode supports unlimited concurrent readers; the bottleneck is exclusively concurrent writes contending on the write lock
+- **Daemon upgrade path:** if concurrent write contention from many agent processes exceeds what SQLite's WAL-mode single-writer lock can sustain -- indicated by a rising rate of exit code 7 (transient failure) returns under normal operation -- the deferred `questd` daemon owns the database connection and serializes access at the application level. The contention threshold depends on write duration and burst patterns, not a fixed agent count; empirical profiling under real agent swarms determines when the upgrade is warranted. WAL mode supports unlimited concurrent readers; the bottleneck is exclusively concurrent writes contending on the write lock
 
 ---
 
@@ -127,7 +130,7 @@ The task ID from `AGENT_TASK` is used as the default target for commands, so `qu
 elevated_roles = ["planner"]
 
 # Task IDs
-id_prefix = "proj"              # short prefix for this project, required at init
+id_prefix = "proj"              # short prefix for this project, set at init (see Prefix validation)
 ```
 
 ---
@@ -152,6 +155,17 @@ proj-01.1
 proj-01.1.1
 ```
 
+### Prefix validation
+
+The `id_prefix` is set once at `quest init --prefix` and is immutable for the life of the project. Prefixes must match `^[a-z][a-z0-9]{1,7}$`:
+
+- 2-8 characters, lowercase letters and digits only
+- Must start with a letter
+- No hyphens, dots, underscores, or other punctuation. Hyphen and dot are structural separators in task IDs (`{prefix}-{shortID}.{N}`) and admitting them would make IDs ambiguous to parse. Other punctuation is excluded to keep IDs portable across shells, URLs, and filenames
+- Reserved values: `ref`. Task IDs with this prefix would collide visually with the batch-file `ref` field used for internal cross-references (see `quest batch`)
+
+`quest init` rejects invalid prefixes with exit code 2 (usage error) and an error message citing which rule failed. The length cap exists because prefixes appear in every task ID, and task IDs appear in prompts, rite references, export filenames, and history entries -- a bloated prefix multiplies across every reference.
+
 ### ID generation rules
 
 - The top-level counter is project-global, stored in `.quest/quest.db`, starts at `1`, and increments per top-level task created
@@ -162,9 +176,9 @@ proj-01.1.1
 
 ### Structural immutability
 
-Parent-child structure is immutable by default. IDs encode parentage by construction -- `proj-01.1.3` is always a child of `proj-01.1` -- and this encoding must remain truthful.
+Parent-child structure is immutable once any task in the sub-graph has been dispatched. IDs encode parentage by construction -- `proj-01.1.3` is always a child of `proj-01.1` -- and this encoding must remain truthful once workers, external tooling, and retrospective references depend on it.
 
-If a task was created under the wrong parent, elevated roles can use `quest move ID --parent NEW_PARENT` to reparent it. The task and all descendants receive new IDs reflecting the new parent namespace, and all dependency references are updated. A `moved` history entry preserves the audit trail of the structural change. See the `quest move` command for details and constraints.
+During the planning-and-verification window (after create, before any task in the sub-graph has been accepted), elevated roles can correct structural errors with `quest move ID --parent NEW_PARENT`. The task and all descendants receive new IDs reflecting the new parent namespace, all dependency references are updated, and a `moved` history entry preserves the audit trail. Once any task in the sub-graph has been accepted, `move` is refused -- post-dispatch structural mistakes fall back to cancel-and-recreate. See the `quest move` command for the full constraint list.
 
 ---
 
@@ -183,7 +197,9 @@ quest fail --debrief @failure-report.md
 
 Quest reads the file contents and stores them inline in the task data. The file path is not retained as a reference -- quest owns its data.
 
-This convention applies to: `--debrief`, `--description`, `--context`, `--handoff`, `--note`, `--reason`.
+This convention applies to: `--debrief`, `--description`, `--context`, `--handoff`, `--note`, `--reason`, `--acceptance-criteria`.
+
+`--title` is excluded because titles are short by design. `--meta` is excluded because its `KEY=VALUE` form is structurally ambiguous for file input (unclear whether `@file` would resolve the value only or the whole pair). ID and enum flags (`--parent`, `--type`, `--tier`, `--role`, `--tag`, dependency flags) do not take free-form text and are not eligible.
 
 ### Path resolution
 
@@ -211,15 +227,34 @@ This convention applies to: `--debrief`, `--description`, `--context`, `--handof
 
 ### Exit codes
 
-| Code | Meaning                                                       |
-| ---- | ------------------------------------------------------------- |
-| 0    | Success                                                       |
-| 1    | General failure                                               |
-| 2    | Usage error (bad arguments)                                   |
-| 3    | Resource not found                                            |
-| 4    | Permission denied                                             |
-| 5    | Conflict (resource already exists, or has children)           |
-| 6    | Role denied (elevated command attempted by non-elevated role) |
+| Code | Meaning                                                                                   |
+| ---- | ----------------------------------------------------------------------------------------- |
+| 0    | Success                                                                                   |
+| 1    | General failure                                                                           |
+| 2    | Usage error (bad arguments)                                                               |
+| 3    | Resource not found                                                                        |
+| 4    | Permission denied                                                                         |
+| 5    | Conflict (resource state prevents operation, e.g., terminal state, non-terminal children) |
+| 6    | Role denied (elevated command attempted by non-elevated role)                             |
+| 7    | Transient failure (write lock unavailable, safe to retry)                                 |
+
+### Idempotency
+
+Agents may retry commands after transient failures (exit code 7) or session recovery. The retry behavior of each write command is specified here so agent implementers know which commands are safe to re-execute without side effects.
+
+| Command            | Idempotent | Retry behavior                                                                                                         |
+| ------------------ | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `accept`           | No         | Fails with exit 5 if already accepted. Crash recovery requires explicit `reset` by the lead                            |
+| `update --note`    | No         | Always appends a new note. Caller is responsible for deduplication if needed. Fails with exit 5 on cancelled tasks     |
+| `update --pr`      | Yes        | Duplicate PR URLs are silently ignored. Fails with exit 5 on cancelled tasks                                           |
+| `update --handoff` | Yes        | Overwrites previous value. Last write wins. Fails with exit 5 on cancelled tasks                                       |
+| `complete`         | No         | Fails with exit 5 if already in a terminal state (`complete`, `failed`, or `cancelled`). Terminal states are permanent |
+| `fail`             | No         | Fails with exit 5 if already in a terminal state (`complete`, `failed`, or `cancelled`). Terminal states are permanent |
+| `cancel`           | Yes        | Returns exit 0 on an already-cancelled task with no state change                                                       |
+| `link`             | Yes        | Duplicate links of the same type between the same pair return exit 0 with no state change                              |
+| `unlink`           | Yes        | Removing a non-existent link returns exit 0 with no state change                                                       |
+| `tag`              | Yes        | Adding an already-present tag is a no-op                                                                               |
+| `untag`            | Yes        | Removing an absent tag is a no-op                                                                                      |
 
 ---
 
@@ -227,19 +262,19 @@ This convention applies to: `--debrief`, `--description`, `--context`, `--handof
 
 ### Core fields
 
-| Field                 | Set by  | Description                                                                                                                                                             |
-| --------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                  | system  | Generated task ID (see Task IDs section)                                                                                                                                |
-| `title`               | planner | Short description of the task                                                                                                                                           |
-| `description`         | planner | Full description -- the decomposed unit of work                                                                                                                         |
-| `context`             | planner | Background information for the worker, injected into the prompt                                                                                                         |
-| `type`                | planner | `task` (default) or `bug`                                                                                                                                               |
-| `status`              | system  | Current state (see lifecycle below)                                                                                                                                     |
-| `role`                | planner | Which role is assigned to execute the task                                                                                                                              |
-| `tier`                | planner | Model tier assignment (see tier list below)                                                                                                                             |
-| `tags`                | planner | Free-form tags (e.g., `go`, `sql`, `auth`, `concurrency`)                                                                                                               |
+| Field                 | Set by  | Description                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                  | system  | Generated task ID (see Task IDs section)                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `title`               | planner | Short description of the task                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `description`         | planner | Full description -- the decomposed unit of work                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `context`             | planner | Background information for the worker, injected into the prompt                                                                                                                                                                                                                                                                                                                                                                                    |
+| `type`                | planner | `task` (default) or `bug`                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `status`              | system  | Current state (see lifecycle below)                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `role`                | planner | Which role is assigned to execute the task. Required for dispatch. Optional on parent tasks -- a roleless parent signals the lead plans to direct-close it; a role can be added later via `quest update --role` if the lead decides to dispatch verification                                                                                                                                                                                       |
+| `tier`                | planner | Model tier assignment (see tier list below)                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `tags`                | planner | Free-form tags (e.g., `go`, `sql`, `auth`, `concurrency`)                                                                                                                                                                                                                                                                                                                                                                                          |
 | `acceptance_criteria` | planner | What must be true for this task to be considered complete. Primarily used on parent tasks to define verification conditions the lead evaluates before closing the group. Convention: use a markdown checklist format (e.g., `- [ ] Integration tests pass\n- [ ] All endpoints return 2xx`) so items are individually addressable in debriefs and retrospectives. Free-form prose is accepted but checklists are preferred for machine-parsability |
-| `metadata`            | planner | Arbitrary JSON for planner-defined extensions. The retrospective phase reviews metadata usage across deliveries to identify candidates for promotion to first-class fields |
+| `metadata`            | planner | Arbitrary JSON for planner-defined extensions. The retrospective phase reviews metadata usage across deliveries to identify candidates for promotion to first-class fields                                                                                                                                                                                                                                                                         |
 
 ### Relationship fields
 
@@ -250,15 +285,17 @@ This convention applies to: `--debrief`, `--description`, `--context`, `--handof
 
 ### Execution fields
 
-| Field           | Set by | Description                                                                                                                                                                                                                                                                                                                                 |
-| --------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `owner_session` | system | Session ID of the agent that accepted the task. Set automatically on `quest accept` from `AGENT_SESSION`. Only the owning session (or an elevated role) can call `quest update`, `quest complete`, or `quest fail` on the task. Cleared on `quest reset` so a new session can accept. `null` when unset                                     |
-| `started_at`    | system | ISO 8601 timestamp recorded when the task transitions to `accepted`. Cleared on `quest reset`                                                                                                                                                                                                                                               |
-| `completed_at`  | system | ISO 8601 timestamp recorded when the task transitions to `complete` or `failed`. Together with `started_at`, enables duration analysis in retrospectives                                                                                                                                                                                    |
-| `prs`           | worker | Links to PRs containing task output (append-only, idempotent)                                                                                                                                                                                                                                                                               |
-| `notes`         | worker | Array of timestamped progress notes                                                                                                                                                                                                                                                                                                         |
-| `handoff`       | worker | Context bridge for session continuity -- what the next session needs to know. Dedicated field (not a note) because it represents the current state checkpoint, not a log entry. Overwrites on each update so `quest show` always surfaces the latest. Survives `quest reset` so the recovering session inherits the prior session's context |
-| `debrief`       | worker | After-action report, submitted at completion or failure                                                                                                                                                                                                                                                                                     |
+| Field                | Set by | Description                                                                                                                                                                                                                                                                                                                                 |
+| -------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `owner_session`      | system | Session ID of the agent that accepted the task. Set automatically on `quest accept` from `AGENT_SESSION`. Only the owning session (or an elevated role) can call `quest update`, `quest complete`, or `quest fail` on the task. Cleared on `quest reset` so a new session can accept. `null` when unset                                     |
+| `started_at`         | system | ISO 8601 timestamp recorded when the task transitions to `accepted`. Cleared on `quest reset`                                                                                                                                                                                                                                               |
+| `completed_at`       | system | ISO 8601 timestamp recorded when the task transitions to `complete` or `failed`. Together with `started_at`, enables duration analysis in retrospectives                                                                                                                                                                                    |
+| `prs`                | worker | Links to PRs containing task output (append-only, idempotent)                                                                                                                                                                                                                                                                               |
+| `notes`              | worker | Array of timestamped progress notes                                                                                                                                                                                                                                                                                                         |
+| `handoff`            | worker | Context bridge for session continuity -- what the next session needs to know. Dedicated field (not a note) because it represents the current state checkpoint, not a log entry. Overwrites on each update so `quest show` always surfaces the latest. Survives `quest reset` so the recovering session inherits the prior session's context |
+| `handoff_session`    | system | Session ID of the agent that wrote the current `handoff` value. Set automatically from `AGENT_SESSION` when `--handoff` is used. Enables a recovering worker to see that the handoff was written by a different session. `null` when `handoff` is unset                                                                                     |
+| `handoff_written_at` | system | ISO 8601 timestamp recorded when the current `handoff` value was written. Enables the lead and recovering workers to assess how fresh the handoff context is relative to the reset. `null` when `handoff` is unset                                                                                                                          |
+| `debrief`            | worker | After-action report, submitted at completion or failure                                                                                                                                                                                                                                                                                     |
 
 ### History field
 
@@ -266,7 +303,7 @@ This convention applies to: `--debrief`, `--description`, `--context`, `--handof
 | --------- | ------ | --------------------------------------------- |
 | `history` | system | Append-only log of every mutation to the task |
 
-Every mutation to a task appends an entry to the `history` array. Entries are never edited or deleted.
+Every mutation to a task appends an entry to the `history` array. Entries are never edited, deleted, or compacted. Event compaction (collapsing or summarizing older entries) is an explicit non-goal: it would silently lose context needed for retrospectives, curator analysis, and crash-reset audit trails -- notably the `handoff_set` `content` field, which exists specifically to preserve context that the live `handoff` field overwrites. When retention of a whole deliverable becomes the concern, the intended answer is purge-after-export, not in-place compaction (see Deferred / Future Concerns).
 
 ```json
 {
@@ -293,7 +330,8 @@ Every mutation to a task appends an entry to the `history` array. Entries are ne
       "timestamp": "2026-04-14T10:32:00Z",
       "role": "coder",
       "session": "sess-c3f",
-      "action": "handoff_set"
+      "action": "handoff_set",
+      "content": "Refactored token validation into middleware. Integration test for /protected passes. Still need to wire up refresh-token endpoint -- see auth/refresh.go stub."
     },
     {
       "timestamp": "2026-04-14T10:45:00Z",
@@ -327,9 +365,10 @@ Every mutation to a task appends an entry to the `history` array. Entries are ne
 
 - `role` is read from `AGENT_ROLE` at the time of the mutation. Recorded as `null` if unset
 - `session` is read from `AGENT_SESSION` at the time of the mutation -- this is the unique session ID assigned by vigil, enabling traceability from quest history to specific session logs. Recorded as `null` if unset, which is expected for non-vigil contexts (e.g., humans or planners using the CLI directly)
-- `action` identifies the operation: `created`, `accepted`, `completed`, `failed`, `cancelled`, `reset`, `moved`, `note_added`, `field_updated`, `linked`, `unlinked`, `tagged`, `untagged`, `handoff_set`
+- `action` identifies the operation: `created`, `accepted`, `completed`, `failed`, `cancelled`, `reset`, `moved`, `note_added`, `pr_added`, `field_updated`, `linked`, `unlinked`, `tagged`, `untagged`, `handoff_set`. `pr_added` is appended only when `quest update --pr` adds a new URL; idempotent no-op duplicates produce no history entry, consistent with `tagged`/`untagged`
 - `reason` is present for `reset` -- the lead's annotation of why the task was reset
 - `fields` is present only for `field_updated` -- records old and new values for each changed field
+- `content` is present for `handoff_set` -- the full text of the handoff that was written. This ensures handoff history is recoverable from the audit log even though the `handoff` field on the task is overwritten on each update. Without this, repeated crash-reset cycles would erase prior handoff context with no trace, violating the retrospective mandate
 - `target` and `link_type` are present for `linked` and `unlinked` -- the referenced task ID and the relationship type (e.g., `blocked-by`, `caused-by`)
 - `old_id` and `new_id` are present for `moved` -- the task's ID before and after reparenting
 
@@ -352,14 +391,14 @@ The planning agent assigns a tier to each task to control which model executes i
 ## Status Lifecycle
 
 ```
-Leaf tasks:    open -> accepted -> complete
+All tasks:     open -> accepted -> complete
                                 -> failed
                (at any point)   -> cancelled (planner only)
 
                accepted -> open (via quest reset, planner only)
 
-Parent tasks:  open -> complete (all children terminal, planner only)
-               open -> cancelled (planner only)
+Parent tasks (additional path):
+               open -> complete (direct-close by lead, no dispatch)
 ```
 
 - **open** -- task has been created, may or may not be assigned
@@ -368,9 +407,9 @@ Parent tasks:  open -> complete (all children terminal, planner only)
 - **failed** -- worker could not complete the task
 - **cancelled** -- planner aborted the task before completion
 
-Parent tasks (tasks with children) skip the `accepted` state entirely. They are structural -- they organize work into groups but are not directly workable. The lead completes a parent by transitioning it directly from `open` to `complete` after all children reach terminal states and the parent's acceptance criteria are satisfied. Parents cannot enter `failed` because failure is a worker outcome; if a parent's children fail, the lead either retries the children or cancels the parent.
+Parent tasks (tasks with children) follow the same lifecycle as leaf tasks, with one addition: the lead can transition a parent directly from `open` to `complete` without dispatching a worker, for cases where inline judgment suffices. Dispatched verification uses the standard `open -> accepted -> complete|failed` path -- a verifier agent evaluates the parent's acceptance criteria and closes the task like any other worker. See the Parent Tasks section for the preconditions that govern parent acceptance.
 
-The `open -> accepted` transition is the key diagnostic signal for leaf tasks. A task that stays `open` means the agent never started. A task that reaches `accepted` but never completes means the agent started but failed mid-work.
+The `open -> accepted` transition is the key diagnostic signal. A task that stays `open` means no agent was dispatched or none started. A task that reaches `accepted` but never completes means the agent started but failed mid-work.
 
 ### Crash Recovery
 
@@ -386,23 +425,34 @@ This keeps crash recovery under the lead's judgment -- the lead may choose to re
 
 ---
 
-## Structural Parents
+## Parent Tasks
 
-Tasks with children are structural -- they organize work into groups but are not directly workable by a worker agent. This distinction is implicit: any task that has children becomes structural by that fact. There is no separate type or flag.
+Tasks with children are parents. This is a transient property, not a type -- a task becomes a parent the moment a child is created under it. Parents can either be direct-closed by the lead (for cases where inline judgment suffices) or dispatched to a worker (typically a verifier role) whose job is to evaluate the acceptance criteria and transition the parent to `complete` or `failed`.
 
 ### Enforcement rules
 
-Quest enforces three constraints on structural parents:
+Quest enforces three structural constraints on parents:
 
-1. **Cannot be accepted.** `quest accept` fails on tasks with children (exit code 5). Workers are assigned leaf tasks. The lead manages parent lifecycle.
-2. **Children must be resolved before parent completion.** `quest complete` on a parent fails if any child is not in a terminal state -- `complete`, `failed`, or `cancelled` (exit code 5). This is a structural integrity constraint: quest does not derive parent status from children or auto-complete parents. The lead explicitly completes the parent when they judge the grouped work is done.
-3. **Cannot add children to an accepted task.** `quest create --parent ID` fails if the parent is in `accepted` status (exit code 5). This prevents structural changes to a task a worker is mid-work on.
+1. **Accept requires all children in terminal state.** `quest accept` on a parent fails (exit code 5) if any child is not in `complete`, `failed`, or `cancelled`. This precondition ensures that when a verifier accepts a parent, no concurrent child work is in flight -- upholding the one-session-one-task principle. Leaves have no analogous check because they have no children.
+2. **Children must be resolved before parent completion.** `quest complete` on a parent fails if any child is not in a terminal state (exit code 5). This applies to both dispatched verification (`accepted -> complete`) and lead direct-close (`open -> complete`). Quest does not derive parent status from children or auto-complete parents -- the close is always an explicit judgment by an agent (verifier or lead).
+3. **Parent must be `open` to accept new children.** `quest create --parent ID` and `quest move ID --parent NEW_PARENT` fail (exit code 5) if the prospective parent is in any non-`open` status. For `accepted` parents, this prevents changing the scope of verification while it is in flight. For terminal parents (`complete`, `failed`, `cancelled`), adding children would either falsify the recorded outcome or strand new work under a closed group.
+
+### Closing a parent
+
+Two paths are available:
+
+- **Direct-close (lead).** The lead calls `quest complete` on the parent from `open` status. Useful when acceptance criteria are trivial to evaluate inline (e.g., "all children shipped, nothing further to check") and dispatching a separate session would be overhead.
+- **Dispatched verification (verifier role).** The lead assigns a role (typically a verifier) and dispatches a session. The verifier calls `quest accept` (allowed because all children are terminal), evaluates the acceptance criteria, and calls `quest complete` or `quest fail` with a debrief. A failed verification is addressed the same way as any failure -- retry via `retry-of`, follow-up children linked `blocked-by`, or cancellation.
+
+### Role
+
+Role is required on any task being dispatched but is optional on parents. A roleless parent signals that the lead plans to direct-close it; if the lead later decides dispatched verification is needed, a role can be added via `quest update --role`.
 
 ### Acceptance criteria
 
-Parent tasks can carry an `acceptance_criteria` field describing what must be true for the group to be considered complete -- not just "children finished" but conditions like "integration tests pass" or "all endpoints return correct status codes." The lead evaluates these criteria when deciding whether to close the parent.
+Parent tasks can carry an `acceptance_criteria` field describing what must be true for the group to be considered complete -- not just "children finished" but conditions like "integration tests pass" or "all endpoints return correct status codes." This field is the verifier's brief when dispatched, and the lead's checklist when direct-closing.
 
-This keeps verification logic where it belongs: in the lead's judgment, not in quest's code. For cases where verification is heavy enough to warrant a dedicated worker session (e.g., a full security audit), the lead creates a separate task with `blocked-by` dependencies on the relevant children.
+For cases where verification scope spans multiple parents or needs a broader frame than a single parent's children, the lead can still create a separate top-level verification task with `blocked-by` dependencies on the relevant tasks. Parent-as-verification-task is the right pattern when verification is scoped to one parent's acceptance criteria; a sibling verification task is the right pattern when the scope is wider.
 
 ---
 
@@ -422,12 +472,12 @@ There is no limit on the number of children per parent task. Quest is designed t
 
 Dependencies are typed relationships stored on the dependent task. The first argument to `quest link` is always the task being updated; the flag name encodes the direction of the relationship.
 
-| Type              | Stored on | Meaning                                                   |
-| ----------------- | --------- | --------------------------------------------------------- |
+| Type              | Stored on | Meaning                                                                |
+| ----------------- | --------- | ---------------------------------------------------------------------- |
 | `blocked-by`      | dependent | This task cannot start until the linked task reaches `complete` status |
-| `caused-by`       | bug       | This bug was caused by work done in the linked task       |
-| `discovered-from` | bug       | This bug was discovered during testing of the linked task |
-| `retry-of`        | retry     | This task is a retry of a previously failed task          |
+| `caused-by`       | bug       | This bug was caused by work done in the linked task                    |
+| `discovered-from` | bug       | This bug was discovered during testing of the linked task              |
+| `retry-of`        | retry     | This task is a retry of a previously failed task                       |
 
 `blocked-by` is the default type when linking.
 
@@ -435,7 +485,7 @@ Dependencies are typed relationships stored on the dependent task. The first arg
 
 Multiple links of different types between the same (task, target) pair are permitted. The primary use case is a bug task that is both `caused-by` and `discovered-from` the same target -- the upstream task both introduced the bug and was being tested when the bug was found. These are distinct retrospective signals: `caused-by` identifies the source of the defect, `discovered-from` identifies the testing context that surfaced it. Collapsing them into a single link loses analytical signal that the retrospective phase depends on.
 
-Duplicate links of the *same* type between the same pair are rejected (exit code 5). The uniqueness constraint is on (task, target, type), not (task, target).
+Duplicate links of the _same_ type between the same pair are silently ignored: the command returns exit code 0 with no state change. This makes `quest link` safe to retry without error handling, which matters for agents that may re-execute a linking sequence after a transient failure. The uniqueness constraint is on (task, target, type), not (task, target).
 
 ### Dependency validation
 
@@ -445,16 +495,16 @@ All dependency links are validated on both `quest create` (with dependency flags
 
 **Semantic constraints:**
 
-| Relationship type  | Target status constraint                          | Source type constraint                             |
-| ------------------ | ------------------------------------------------- | -------------------------------------------------- |
-| `blocked-by`       | Target must not be `cancelled`                    | None                                               |
-| `retry-of`         | Target must be `failed`                           | None                                               |
-| `caused-by`        | None                                              | Source task must have `type: bug`                   |
-| `discovered-from`  | None                                              | Source task must have `type: bug`                   |
+| Relationship type | Target status constraint       | Source type constraint            |
+| ----------------- | ------------------------------ | --------------------------------- |
+| `blocked-by`      | Target must not be `cancelled` | None                              |
+| `retry-of`        | Target must be `failed`        | None                              |
+| `caused-by`       | None                           | Source task must have `type: bug` |
+| `discovered-from` | None                           | Source task must have `type: bug` |
 
 These constraints prevent silent graph corruption -- a `blocked-by` link to a cancelled task would block the dependent forever, and `retry-of` on a non-failed task is semantically meaningless.
 
-**Type vs. relationship classification.** The `type` field and relationship types serve different purposes and are not redundant. `type` classifies what a task *is* -- a bug-type task is a defect regardless of whether its origin has been traced. Relationship types (`caused-by`, `discovered-from`) classify *where a bug came from* -- they are analytical metadata for the retrospective phase. A bug-type task without any causal links is valid: the origin may be unknown, external, or not yet traced. The source type constraint on `caused-by` and `discovered-from` prevents relationship misuse (a regular task cannot claim to be "caused by" another task), but the `type` field is not derived from relationships. It is the primary classification primitive, queryable via `quest list --type bug` without joining against relationships.
+**Type vs. relationship classification.** The `type` field and relationship types serve different purposes and are not redundant. `type` classifies what a task _is_ -- a bug-type task is a defect regardless of whether its origin has been traced. Relationship types (`caused-by`, `discovered-from`) classify _where a bug came from_ -- they are analytical metadata for the retrospective phase. A bug-type task without any causal links is valid: the origin may be unknown, external, or not yet traced. The source type constraint on `caused-by` and `discovered-from` prevents relationship misuse (a regular task cannot claim to be "caused by" another task), but the `type` field is not derived from relationships. It is the primary classification primitive, queryable via `quest list --type bug` without joining against relationships.
 
 **`blocked-by` resolution:** Only `complete` status satisfies a `blocked-by` dependency. `failed` and `cancelled` do not unblock dependents. If a blocking task fails, the dependent stays blocked until the lead intervenes -- typically by creating a `retry-of` task, unlinking the dependency, or cancelling the dependent. This keeps dispatch decisions under the lead's judgment rather than auto-unblocking tasks whose upstream work was never finished.
 
@@ -466,7 +516,7 @@ This keeps the graph honest: the failed attempt and the successful retry are bot
 
 The presence of an incoming `retry-of` link is the canonical signal that a failed task has been addressed. A failed task with no incoming `retry-of` link is either abandoned or still needs attention. This convention enables leads to identify unaddressed failures without additional status fields.
 
-Sibling relationships are not modeled explicitly. Tasks that share a parent are siblings. `quest children PARENT-ID` returns all siblings of any task under that parent.
+Sibling relationships are not modeled explicitly. Tasks that share a parent are siblings. `quest list --parent PARENT-ID` returns all siblings of any task under that parent.
 
 ---
 
@@ -484,9 +534,9 @@ Display full task details including description, context, status, dependencies a
 
 If `ID` is omitted, uses the value of `AGENT_TASK`.
 
-| Flag        | Description                                                |
-| ----------- | ---------------------------------------------------------- |
-| `--history` | Include the full mutation history (excluded by default)    |
+| Flag        | Description                                             |
+| ----------- | ------------------------------------------------------- |
+| `--history` | Include the full mutation history (excluded by default) |
 
 History is excluded by default because workers care about current state -- description, context, handoff, and dependency statuses. For long-running tasks with many notes and resets, the history array wastes context window tokens. Elevated roles doing audit or debugging use `--history` to see the full mutation log.
 
@@ -510,12 +560,24 @@ History is excluded by default because workers care about current state -- descr
   "started_at": null,
   "completed_at": null,
   "dependencies": [
-    { "id": "proj-01.1", "type": "blocked-by", "title": "JWT validation", "status": "complete" },
-    { "id": "proj-01.2", "type": "blocked-by", "title": "Session store", "status": "accepted" }
+    {
+      "id": "proj-01.1",
+      "type": "blocked-by",
+      "title": "JWT validation",
+      "status": "complete"
+    },
+    {
+      "id": "proj-01.2",
+      "type": "blocked-by",
+      "title": "Session store",
+      "status": "accepted"
+    }
   ],
   "prs": [],
   "notes": [],
   "handoff": null,
+  "handoff_session": null,
+  "handoff_written_at": null,
   "debrief": null
 }
 ```
@@ -535,8 +597,8 @@ If `ID` is omitted, uses the value of `AGENT_TASK`.
 Accept is strict:
 
 - It only succeeds on tasks in `open` status. Calling `quest accept` on a task that is already `accepted`, `complete`, `failed`, or `cancelled` returns exit code 5 (conflict). This is intentional: if a session crashes and a new session is started for the same task, the lead must explicitly `quest reset` the task before the new session can accept it. This keeps crash recovery as a deliberate decision by the lead, not an implicit side effect.
-- It fails on tasks that have children (exit code 5). Parent tasks are structural -- they organize work but are not directly workable. The lead completes parent tasks after evaluating their acceptance criteria and confirming all children are resolved.
-- If two agents race to accept the same task, the first writer wins. The second receives exit code 5 (conflict). This is enforced via a single atomic query (`UPDATE tasks SET status='accepted', owner_session=? WHERE id=? AND status='open'`) with a `RowsAffected` check.
+- On parent tasks, it fails (exit code 5) if any child is not in a terminal state (`complete`, `failed`, or `cancelled`). This precondition ensures a verifier is never accepting a parent while child work is still in flight, upholding the one-session-one-task principle. Leaves have no analogous check.
+- If two agents race to accept the same task, the first writer wins. The second receives exit code 5 (conflict). For leaves this is enforced via a single atomic query (`UPDATE tasks SET status='accepted', owner_session=? WHERE id=? AND status='open'`) with a `RowsAffected` check. For parents, the accept must be wrapped in a `BEGIN IMMEDIATE` transaction that also verifies the terminal-children precondition.
 - On successful accept, `owner_session` is set from `AGENT_SESSION` and `started_at` is recorded. After acceptance, only the owning session (or an elevated role) can call `quest update`, `quest complete`, or `quest fail` on the task. A non-owning, non-elevated session receives exit code 4 (permission denied).
 
 ---
@@ -568,7 +630,9 @@ Write progress information to the task. Workers can update execution fields. Ele
 | `--acceptance-criteria "..."` | Update the verification conditions for parent completion |
 | `--meta KEY=VALUE`            | Set a metadata field (repeatable)                        |
 
-All field changes are recorded in the task's history. All text flags support `@file` input.
+All field changes are recorded in the task's history. Flags listed in Input Conventions support `@file` input.
+
+**Terminal-state gating.** On tasks in `complete`, `failed`, or `cancelled` status, `quest update` accepts only the append/annotation flags: `--note`, `--pr`, and `--meta`. These are either append-only (`--note`, `--pr`) or free-form annotation (`--meta`) and do not retroactively rewrite execution-time state. Any other flag -- `--title`, `--description`, `--context`, `--type`, `--tier`, `--role`, `--acceptance-criteria`, `--handoff` -- returns exit code 5 (conflict) with a message listing the blocked fields. This applies to both worker and elevated roles. Rationale: fields like `tier`, `role`, and `type` drive retrospective analytics ("which tiers produced bugs?"); retroactive edits would silently falsify the simplest form of those queries. Planning copy (`title`, `description`, etc.) is preserved in the audit history and has no legitimate post-terminal edit case. `--handoff` is a session-continuity field with no meaning on a task that will not be accepted again.
 
 ---
 
@@ -578,7 +642,7 @@ quest complete [ID] --debrief "..." [--pr "URL"]
 
 Mark the task as complete. Debrief is required -- every completed task must leave a record of what was done and what was learned. If `ID` is omitted, uses the value of `AGENT_TASK`.
 
-For leaf tasks, `quest complete` transitions from `accepted` to `complete`. For parent tasks (tasks with children), `quest complete` transitions from `open` to `complete` -- parents skip the `accepted` state (see Status Lifecycle). Completion of a parent fails if any child is not in a terminal state (`complete`, `failed`, or `cancelled`) -- exit code 5. The error message includes the IDs and current statuses of all non-terminal children in both JSON and text output, so the lead can act immediately without a separate `quest children` query. The lead must resolve all children before closing the parent. This is a structural integrity constraint, not derived status: quest does not auto-complete parents when children finish. The lead makes the judgment call, typically after evaluating the parent's acceptance criteria.
+For leaf tasks, `quest complete` transitions from `accepted` to `complete`. For parent tasks, `quest complete` transitions from either `accepted` (when a dispatched verifier is closing the parent) or `open` (when the lead is direct-closing without dispatch) to `complete`. Completion of a parent fails if any child is not in a terminal state (`complete`, `failed`, or `cancelled`) -- exit code 5. The error message includes the IDs and current statuses of all non-terminal children in both JSON and text output, so the caller can act immediately without a separate `quest children` query. This is a structural integrity constraint, not derived status: quest does not auto-complete parents when children finish. The agent -- verifier or lead -- makes the judgment call, typically after evaluating the parent's acceptance criteria.
 
 On successful completion, `completed_at` is recorded.
 
@@ -590,16 +654,19 @@ On successful completion, `completed_at` is recorded.
 ---
 
 ```
-quest fail [ID] --debrief "..."
+quest fail [ID] --debrief "..." [--pr "URL"]
 ```
 
 Mark the task as failed. Debrief is required -- the after-action report should cover what was attempted, why the task failed, and what was learned. If `ID` is omitted, uses the value of `AGENT_TASK`. On failure, `completed_at` is recorded (marking the end of execution, whether successful or not).
 
 The debrief can be as brief as a single sentence for simple failures ("upstream API unreachable, no work attempted"). The requirement is that every failure leaves a record, not that the record is lengthy -- even terse debriefs feed the curator's knowledge extraction pipeline and enable retrospective analysis.
 
-| Flag              | Description                              |
-| ----------------- | ---------------------------------------- |
-| `--debrief "..."` | Free-form after-action report (required) |
+`--pr` is accepted on failure for the same reason it is accepted on completion: a worker may have opened a PR before discovering the task could not be finished, and that PR is retrospective material regardless of terminal state. Append and idempotency semantics match `quest complete --pr` and `quest update --pr` -- duplicate URLs are silently ignored.
+
+| Flag              | Description                                                     |
+| ----------------- | --------------------------------------------------------------- |
+| `--debrief "..."` | Free-form after-action report (required)                        |
+| `--pr "URL"`      | Append a PR link to the task (idempotent -- duplicates ignored) |
 
 ---
 
@@ -634,9 +701,9 @@ Create a new task.
 | `--discovered-from ID`        | Add a discovered-from link                    |
 | `--retry-of ID`               | Add a retry-of link                           |
 
-`quest create --parent ID` fails (exit code 5) if the parent task is in `accepted` status (prevents structural changes to tasks a worker is mid-work on) or if the parent is already at depth 3 (see Graph Limits section).
+`quest create --parent ID` fails (exit code 5) if the parent task is not in `open` status (see Parent Tasks > Enforcement rules) or if the parent is already at depth 3 (see Graph Limits section).
 
-All text flags support `@file` input.
+Flags listed in Input Conventions support `@file` input.
 
 ---
 
@@ -660,25 +727,63 @@ The batch file supports a `ref` field for internal cross-referencing. Tasks can 
 {"ref": "task-4", "title": "Fix token leak", "type": "bug", "tier": "T2", "dependencies": [{"id": "proj-31", "type": "caused-by"}]}
 ```
 
+### Batch validation
+
+Every line in the batch is validated through four phases before any tasks are created. Whitespace-only lines (empty or containing only spaces/tabs) are skipped without error, so hand-edited batch files can use blank-line spacing for readability. Error line numbers continue to reflect 1-based positions in the original file, so the planner can locate issues without recomputing offsets after blank lines.
+
+1. **Parse** -- line is valid JSON with required fields
+2. **Reference** -- `ref` values are unique across the batch; all `ref` and `id` references in `parent` and `dependencies` resolve (batch refs to earlier lines, external IDs to pre-existing tasks)
+3. **Graph** -- no cycles in `blocked-by` edges (within the batch or against the pre-existing graph); no task exceeds depth 3
+4. **Semantic** -- per-type target and source constraints (see Dependency validation)
+
+Validation collects every error it can detect across all lines and all phases, then emits them together. A batch with three malformed lines reports all three parse errors in one response; a batch with a parse error on line 3 and a semantic error on line 7 reports both. The planner fixes everything in one edit rather than discovering errors one round-trip at a time.
+
+A line that fails an earlier phase is excluded from later-phase evaluation -- quest does not fabricate derived errors (e.g., unresolved-ref errors caused by the referenced line being malformed). The planner fixes the upstream error, re-batches, and any previously-masked errors surface in the next pass.
+
 ### Batch error handling
 
-By default, a batch is atomic -- it either fully succeeds or fully fails. No tasks are created if any line has an error. This prevents agents from having to reason about a partially-created graph.
+By default, a batch is atomic -- it either fully succeeds or fully fails. If any error is reported, no tasks are created. This prevents agents from having to reason about a partially-created graph.
 
-With `--partial-ok`, quest creates all valid tasks and reports failures separately. Valid tasks that do not depend on failed lines are created; lines that fail (or depend on failed lines) are reported with their line numbers and error details. This mode is useful for large graph decompositions where a single small error would otherwise force a full retry at high token cost. The output clearly separates created tasks from failed lines so the planner can fix and re-batch only the failures.
+With `--partial-ok`, quest creates the subset of tasks whose lines passed all four phases and whose `parent` and dependency references all resolved to successfully-created tasks (or to pre-existing external tasks). Lines that failed, and lines that depended on failed lines, are reported alongside the created-tasks output so the planner can fix and re-batch only the failures. This mode is useful for large graph decompositions where a single error would otherwise force a full retry at high token cost.
 
-**Error cases:**
+Error reporting is identical in both modes -- the only difference is whether surviving tasks are created. Both modes exit with code 2 if any error is reported, including `--partial-ok` batches where some tasks were created; the non-zero exit signals the planner that follow-up is needed.
 
-| Error case                                        | Behavior                                   |
-| ------------------------------------------------- | ------------------------------------------ |
-| Malformed JSON on any line                        | Fail, report line number and parse error   |
-| Missing required field (e.g., `title`)            | Fail, report line number and missing field |
-| Reference to undefined `ref`                      | Fail, report the unresolved reference      |
-| Duplicate `ref` values                            | Fail, report the duplicated ref            |
-| Circular dependency within batch                  | Fail, report the cycle                     |
-| Dependency on external task ID that doesn't exist | Fail, report the missing task ID           |
-| Empty file                                        | Fail -- an empty batch is likely a bug     |
+### Batch error output
 
-All batch errors exit with code 2 (usage error).
+Errors are written as JSONL to stderr, one object per line. Each object has:
+
+| Field     | Description                                                      |
+| --------- | ---------------------------------------------------------------- |
+| `line`    | 1-based line number in the input file (omitted for `empty_file`) |
+| `phase`   | `parse`, `reference`, `graph`, or `semantic`                     |
+| `code`    | Machine-readable error code (see table below)                    |
+| `message` | Human-readable explanation                                       |
+
+Additional fields depend on `code`:
+
+| Code                   | Phase     | Extra fields                                               |
+| ---------------------- | --------- | ---------------------------------------------------------- |
+| `empty_file`           | parse     | none                                                       |
+| `malformed_json`       | parse     | none                                                       |
+| `missing_field`        | parse     | `field`                                                    |
+| `duplicate_ref`        | reference | `ref`, `first_line` (line where the ref was first defined) |
+| `unresolved_ref`       | reference | `ref`                                                      |
+| `unknown_task_id`      | reference | `id`                                                       |
+| `cycle`                | graph     | `cycle` (ordered array of refs/IDs forming the cycle)      |
+| `depth_exceeded`       | graph     | `depth` (the depth that would result)                      |
+| `retry_target_status`  | semantic  | `target`, `actual_status`                                  |
+| `blocked_by_cancelled` | semantic  | `target`                                                   |
+| `source_type_required` | semantic  | `link_type`, `required_type`                               |
+
+For cross-line errors (`duplicate_ref`, `cycle`), `line` points to the later line of the pair (or the edge that closed the cycle); the extra fields locate the other party without requiring a second pass.
+
+Example stderr for a batch with three errors:
+
+```jsonl
+{"line": 3, "phase": "parse", "code": "malformed_json", "message": "unexpected token at column 42"}
+{"line": 5, "phase": "parse", "code": "missing_field", "field": "title", "message": "required field 'title' is missing"}
+{"line": 8, "phase": "parse", "code": "missing_field", "field": "title", "message": "required field 'title' is missing"}
+```
 
 ### Batch output
 
@@ -711,6 +816,23 @@ Cancelling a task in `complete` or `failed` status fails with exit code 5 (confl
 
 Without `-r`, the command also fails if the task has non-terminal children (exit code 5). With `-r`, all descendant tasks in `open` or `accepted` status are cancelled with the same reason. Descendants already in `complete` or `failed` status are skipped. The output reports which tasks were cancelled and which were skipped.
 
+### In-flight worker coordination
+
+When a task is cancelled while a worker is mid-flight, quest does not actively notify the worker -- the worker discovers the cancellation on its next quest command. Any call to `quest update`, `quest complete`, or `quest fail` on a cancelled task returns exit code 5 (conflict) with a message and JSON body identifying the cancellation:
+
+```json
+{
+  "error": "conflict",
+  "task": "proj-a1.3",
+  "status": "cancelled",
+  "message": "task was cancelled"
+}
+```
+
+The worker cannot modify a cancelled task. Partial progress from the worker's session is already preserved in the task's notes and handoff fields.
+
+Worker termination after cancellation is a framework concern, not a quest concern. Quest records the status change; vigil (or the framework layer managing agent sessions) observes the change and terminates the worker session. Quest does not signal vigil or any external system on status transitions -- this is consistent with the dependency direction where tools do not know about each other's internals and the agent is the integration layer. See Framework Integration Points for the boundary.
+
 ---
 
 ```
@@ -723,7 +845,7 @@ Reset a task from `accepted` back to `open` for reassignment. Only available to 
 | ---------------- | ------------------------------------------------- |
 | `--reason "..."` | Why the task is being reset (recorded in history) |
 
-The task retains its handoff, notes, and full history. The reset is recorded as a `reset` history entry with the lead's reason. `owner_session`, `started_at`, and `completed_at` are cleared. Fails if the task is not in `accepted` status (exit code 5).
+The task retains its handoff, notes, and full history. The reset is recorded as a `reset` history entry with the lead's reason. `owner_session` and `started_at` are cleared. Fails if the task is not in `accepted` status (exit code 5).
 
 ---
 
@@ -733,19 +855,22 @@ quest move ID --parent NEW_PARENT
 
 Reparent a task under a different parent. Only available to elevated roles. The task receives a new ID derived from the new parent's ID namespace (following the standard `{parent}.{N}` convention), and a `moved` history entry records the old and new IDs. All references to the old ID (dependency links from other tasks) are updated to point to the new ID.
 
-| Flag                 | Description                         |
-| -------------------- | ----------------------------------- |
-| `--parent NEW_PARENT` | The new parent task ID (required)  |
+| Flag                  | Description                       |
+| --------------------- | --------------------------------- |
+| `--parent NEW_PARENT` | The new parent task ID (required) |
 
 **Constraints:**
 
-- Fails if the task is in `accepted` status (exit code 5) -- cannot reparent a task a worker is mid-work on
-- Fails if `NEW_PARENT` is in `accepted` status (exit code 5) -- consistent with `quest create --parent`
-- Fails if moving would create a circular parent-child relationship (exit code 5)
-- Fails if the move would place the task or any of its descendants beyond the maximum nesting depth of 3 levels (exit code 5)
-- Recursively moves all descendant tasks, updating their IDs to reflect the new parent namespace
+Move is scoped to the planning-and-verification window — after tasks are created but before any of them has been dispatched. Once a worker accepts a task, its ID has been captured by external systems (session logs, vigil state, rite entries, debriefs, git commits) and rewriting it would leave those references stale.
 
-This command exists to recover from structural errors without the cancel-and-recreate workflow, which is prohibitively expensive for large sub-graphs.
+- Fails (exit code 5) if the moved task or any of its descendants has an `accepted` action anywhere in its history. The error message lists the tasks that tripped the check, following the `quest complete`-on-parent convention. The check is on history, not current status, so a task that was accepted and then `reset` back to `open` still blocks the move
+- Fails (exit code 5) if the moved task's current parent is in `accepted` status -- a verifier is mid-flight and moving a terminal-state child out would change what they are evaluating
+- Fails (exit code 5) if `NEW_PARENT` is not in `open` status, consistent with `quest create --parent` (see Parent Tasks > Enforcement rules)
+- Fails (exit code 5) if moving would create a circular parent-child relationship
+- Fails (exit code 5) if the move would place the task or any of its descendants beyond the maximum nesting depth of 3 levels
+- Recursively moves all descendant tasks, updating their IDs to reflect the new parent namespace. All dependency references (both outgoing from and incoming to the moved sub-graph) are updated to point to the new IDs
+
+This command exists to recover from structural errors caught during planning verification — typically immediately after `quest batch` or a series of individual `quest create` calls — without the cancel-and-recreate workflow, which is prohibitively expensive for large sub-graphs. After dispatch begins, structural errors are handled by cancel-and-recreate; the pre-dispatch scope keeps IDs trustworthy for the external systems that capture them.
 
 ---
 
@@ -772,18 +897,20 @@ quest unlink TASK --blocked-by|--caused-by|--discovered-from|--retry-of TARGET
 
 Remove a typed dependency link between TASK and TARGET. The removal is recorded in TASK's history with the specific `link_type` removed.
 
-| Flag                       | Description                         |
-| -------------------------- | ----------------------------------- |
-| `--blocked-by TARGET`      | Remove blocked-by link (default)    |
-| `--caused-by TARGET`       | Remove caused-by link               |
-| `--discovered-from TARGET` | Remove discovered-from link         |
-| `--retry-of TARGET`        | Remove retry-of link                |
+| Flag                       | Description                      |
+| -------------------------- | -------------------------------- |
+| `--blocked-by TARGET`      | Remove blocked-by link (default) |
+| `--caused-by TARGET`       | Remove caused-by link            |
+| `--discovered-from TARGET` | Remove discovered-from link      |
+| `--retry-of TARGET`        | Remove retry-of link             |
 
 If no relationship flag is provided, `--blocked-by` is assumed, mirroring `quest link`. This symmetry makes the command pair learnable (`link --caused-by` to add, `unlink --caused-by` to remove) and prevents accidental removal of links the caller didn't know existed -- consistent with the principle that quest does not make implicit decisions on the agent's behalf.
 
 ---
 
 ### Tags
+
+Tag management is elevated (see Role Gating). Workers do not modify task metadata on their own tasks -- a worker who identifies a missing tag records the need in their handoff or debrief for the lead to apply.
 
 ```
 quest tag ID TAGS
@@ -812,14 +939,6 @@ quest untag proj-a1 auth,concurrency
 Query commands are elevated because workers have exactly one task assigned at session start. A worker does not browse, search, or pick tasks -- the framework dispatches the task and injects its full context into the prompt. If a worker would benefit from information about sibling tasks or the broader graph, the lead adds that information to the task's context before dispatch.
 
 ```
-quest children ID
-```
-
-Show all child tasks under a task. Read-only.
-
----
-
-```
 quest deps ID
 ```
 
@@ -833,18 +952,18 @@ quest list [flags]
 
 List tasks with filtering.
 
-| Flag              | Description                                |
-| ----------------- | ------------------------------------------ |
-| `--status STATUS` | Filter by status                           |
-| `--ready`         | Filter to tasks that are ready for dispatch: `status == open` AND all `blocked-by` targets are `complete`. Composes with other filters (e.g., `quest list --ready --role coder --tier T2`) |
-| `--parent ID`     | Filter by parent                           |
-| `--tag TAGS`      | Filter by tag(s), comma-separated (AND semantics). Repeatable for additional AND conditions. Matches `quest create --tag` convention |
-| `--role ROLE`     | Filter by role                             |
-| `--type TYPE`     | Filter by type                             |
-| `--tier TIER`     | Filter by tier                             |
-| `--columns COLS`  | Comma-separated list of columns to display |
+| Flag                | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--status STATUSES` | Filter by status. Comma-separated for OR semantics (e.g., `--status failed,cancelled` or `--status open,accepted`). Repeatable; repeated values union. Matches `quest create --tag` convention                                                                                                                                                                                                                                                                                                                                 |
+| `--ready`           | Filter to tasks whose next state transition has no unmet preconditions. For leaves: `status == open` AND all `blocked-by` targets are `complete`. For parents: `status == open` AND all `blocked-by` targets are `complete` AND all children are in a terminal state. The result mixes dispatchable leaves and actionable parents (which the lead may dispatch to a verifier or direct-close); the presence of children distinguishes the two. Composes with other filters (e.g., `quest list --ready --role coder --tier T2`) |
+| `--parent ID`       | Filter by parent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `--tag TAGS`        | Filter by tag(s), comma-separated (AND semantics). Repeatable for additional AND conditions. Matches `quest create --tag` convention                                                                                                                                                                                                                                                                                                                                                                                           |
+| `--role ROLE`       | Filter by role                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `--type TYPE`       | Filter by type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `--tier TIER`       | Filter by tier                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `--columns COLS`    | Comma-separated list of columns to display                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
-Default columns: `id`, `title`, `status`, `blocked-by`.
+Default columns: `id`, `status`, `blocked-by`, `title`.
 
 Available columns: `id`, `title`, `status`, `type`, `tier`, `role`, `tags`, `parent`, `blocked-by`.
 
@@ -866,7 +985,9 @@ proj-a1.3   open      proj-a1.1,proj-a1.2  Auth middleware
 quest graph ID
 ```
 
-Display the dependency graph rooted at a task. Shows parent-child structure, dependency edges with types, and task statuses. Follows dependency edges across parent boundaries -- external tasks appear as leaf nodes (shown but not expanded).
+Display the dependency graph rooted at a task. `ID` may be any task -- root, interior, or leaf. Traversal descends from `ID` through `children` and follows dependency edges outward from tasks in the subtree. It does not traverse up to parents or ancestors; an `--include-ancestors` flag is deferred until a concrete need appears. Any node reached via a dependency edge that is not a descendant of `ID` (siblings, cross-project references, or other out-of-subtree tasks) appears as an unexpanded leaf: it is included in `nodes` so consumers can read its title and status, but its own `children` and outgoing edges are omitted.
+
+Shows parent-child structure, dependency edges with types, and task statuses.
 
 **`--format json`** (default): structured adjacency list.
 
@@ -911,8 +1032,18 @@ Display the dependency graph rooted at a task. Shows parent-child structure, dep
     }
   ],
   "edges": [
-    { "task": "proj-a1.3", "type": "blocked-by", "target": "proj-a1.1", "target_status": "complete" },
-    { "task": "proj-a1.3", "type": "blocked-by", "target": "proj-a1.2", "target_status": "accepted" }
+    {
+      "task": "proj-a1.3",
+      "type": "blocked-by",
+      "target": "proj-a1.1",
+      "target_status": "complete"
+    },
+    {
+      "task": "proj-a1.3",
+      "type": "blocked-by",
+      "target": "proj-a1.2",
+      "target_status": "accepted"
+    }
   ]
 }
 ```
@@ -922,7 +1053,7 @@ Edge fields mirror the CLI: `task` is the task that holds the link (first arg to
 **Design notes:**
 
 - **Two relationship representations.** Parent-child relationships appear as `children` arrays on nodes, while dependency relationships appear in `edges`. This is intentional: parent-child is structural (encoded in the ID, immutable once created), while dependencies are semantic (typed, mutable). They are fundamentally different relationship types and keeping them in separate structures reflects that distinction.
-- **External nodes.** Tasks from outside the graph's namespace (e.g., a `proj-31` referenced via `caused-by` from a task in the `proj-a1` dotted namespace) appear as leaf nodes in `nodes` but are not expanded. Consumers identify external nodes by their ID: they do not share the dotted namespace of the graph's root. The ID encoding scheme is a core quest concept that all consumers are required to understand and specifically designed (tradeoffs included) to simplify cases like this and make them unambiguous, so no explicit flag is needed.
+- **External nodes.** "External" is defined relative to the subtree rooted at `ID`, not relative to the project prefix. A sibling like `proj-a1.1` is external when the graph is rooted at `proj-a1.3`, and a cross-project task like `proj-31` referenced via `caused-by` is external at any root. External nodes appear as leaf entries in `nodes` but are not expanded -- their own children and outgoing edges are omitted. Consumers identify external nodes by comparing their ID to the root's: external nodes are not dotted descendants of the root. The ID encoding scheme is a core quest concept that all consumers are required to understand and specifically designed (tradeoffs included) to simplify cases like this and make them unambiguous, so no explicit flag is needed.
 - **Edge field naming.** `task` and `target` use quest-specific terminology rather than generic graph terms (e.g., `source`/`target`) to maintain consistency with the CLI surface (`quest link TASK --blocked-by TARGET`).
 - **Node fields are structural.** Graph output exists for verifying dependency structure and status, not for displaying full task metadata. Fields like `tags` are intentionally excluded -- they don't contribute to structural verification and are available via `quest list` and `quest show`.
 
@@ -937,6 +1068,14 @@ proj-a1  Auth module [open]
     blocked-by  proj-a1.2 [accepted]
 ```
 
+**Non-root example.** `quest graph proj-a1.3` roots at the leaf. Traversal does not walk up to `proj-a1`. The `blocked-by` targets are siblings, which are external to the subtree, so they appear in `nodes` as unexpanded leaves but are not rendered as tree children in the text form:
+
+```
+proj-a1.3  Auth middleware [open]
+  blocked-by  proj-a1.1 [complete]
+  blocked-by  proj-a1.2 [accepted]
+```
+
 Used by the planning agent to verify graph correctness after batch task creation, and by humans to understand the structure of a deliverable.
 
 ---
@@ -949,7 +1088,9 @@ These commands are always available regardless of role.
 quest init --prefix PREFIX
 ```
 
-Initialize a quest project in the current directory. Creates `.quest/` directory and `.quest/config.toml`. Requires `--prefix` to set the ID prefix for this project. Fails with exit code 5 (conflict) if `.quest/` already exists in the current directory or any parent.
+Initialize a quest project in the current directory. Creates `.quest/` directory and `.quest/config.toml`. Requires `--prefix` to set the ID prefix for this project -- see Prefix validation for the allowed format. Fails with exit code 2 (usage error) if `--prefix` is missing or invalid. Fails with exit code 5 (conflict) if `.quest/` already exists in the current directory or any parent.
+
+Humans running quest from a shell default to the worker command surface, since `AGENT_ROLE` is unset. To access planner commands, set `AGENT_ROLE` to an elevated role from `.quest/config.toml` (default: `planner`) -- inline as `AGENT_ROLE=planner quest list`, or per session with `export AGENT_ROLE=planner`. See Role Gating.
 
 ---
 
@@ -959,14 +1100,16 @@ quest export [--dir PATH]
 
 Export the quest database to a human-readable directory structure for inspection, backup, and version control without quest-specific tooling. This fulfills the success criterion that all quest data can be exported to human-readable files.
 
-| Flag         | Description                                      |
-| ------------ | ------------------------------------------------ |
-| `--dir PATH` | Output directory (default: `.quest/export/`)     |
+| Flag         | Description                                   |
+| ------------ | --------------------------------------------- |
+| `--dir PATH` | Output directory (default: `./quest-export/`) |
+
+Exports default to a sibling of `.quest/` (not a subdirectory) so human-readable review artifacts are not mingled with the operational database.
 
 **Export structure:**
 
 ```
-export/
+quest-export/
   tasks/
     proj-01.json           # Full task data as JSON (all fields)
     proj-01.1.json
@@ -1000,15 +1143,16 @@ Quest stores references to external systems (e.g., memory store entries) as opaq
 
 These are concerns the framework handles -- not quest commands, but places where the framework interacts with quest:
 
-| Concern             | Framework responsibility                                                                                                                                    |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Agent startup       | Framework reads task tier and role from quest, selects the appropriate model, sets `AGENT_ROLE` and `AGENT_TASK` env vars, and starts the agent             |
-| Prompt construction | Framework reads task description and context from `quest show` output and injects them into the agent's prompt template                                     |
-| Work dispatch       | Lead uses `quest list --ready` to identify dispatchable tasks and declares agent sessions accordingly                                                        |
-| Recurring tasks     | An external scheduler may call `quest create` or `quest batch` on a cron. Quest has no scheduling concept                                                   |
-| Role injection      | Framework sets `AGENT_ROLE` when launching agents                                                                                                           |
-| Human escalation    | T6 tasks signify escalations to a human and may (externally) result in a notification, but humans interact with quest using the same CLI commands as agents |
-| Analytics           | Outcome correlation, rework tracking, lead time, and pattern detection are queries over quest data handled by framework tooling -- not quest commands       |
+| Concern             | Framework responsibility                                                                                                                                                                                                                                                                                       |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent startup       | Framework reads task tier and role from quest, selects the appropriate model, sets `AGENT_ROLE` and `AGENT_TASK` env vars, and starts the agent                                                                                                                                                                |
+| Prompt construction | Framework reads task description and context from `quest show` output and injects them into the agent's prompt template                                                                                                                                                                                        |
+| Work dispatch       | Lead uses `quest list --ready` to identify actionable tasks -- leaves to dispatch, parents with a role to dispatch to verifiers, and roleless parents to direct-close -- and declares agent sessions accordingly                                                                                               |
+| Recurring tasks     | An external scheduler may call `quest create` or `quest batch` on a cron. Quest has no scheduling concept                                                                                                                                                                                                      |
+| Role injection      | Framework sets `AGENT_ROLE` when launching agents                                                                                                                                                                                                                                                              |
+| Worker termination  | When a task is cancelled while a worker is mid-flight, vigil observes the status change and terminates the worker session. Quest does not signal vigil -- it records the status transition and vigil detects it via polling or framework-level notification. The termination mechanism is vigil's design space |
+| Human escalation    | T6 tasks signify escalations to a human and may (externally) result in a notification, but humans interact with quest using the same CLI commands as agents                                                                                                                                                    |
+| Analytics           | Outcome correlation, rework tracking, lead time, and pattern detection are queries over quest data handled by framework tooling -- not quest commands                                                                                                                                                          |
 
 ---
 
@@ -1025,3 +1169,5 @@ These are concerns the framework handles -- not quest commands, but places where
 - **Debrief processing workflow** -- dedicated commands for marking debriefs as reviewed, if note-based tracking proves insufficient
 - **Estimate field** -- first-class effort estimation if the framework develops scheduling/budgeting capabilities that consume it
 - **`quest list --no-retry`** -- filter failed tasks that have no incoming `retry-of` link, surfacing unaddressed failures for retrospective triage
+- **Automatic dependency migration on retry** -- when a failed task is replaced (via `retry-of` or decomposition into smaller tasks), downstream `blocked-by` dependents must be manually unlinked and relinked to the new task(s). A dedicated command (e.g., `quest retarget`) was considered but deferred: most failures are better addressed by resetting and editing the existing task in-place, and the decomposition case requires per-dependent judgment about where each edge should point. If lead session logs show frequent mechanical unlink/link sequences after task failures, revisit with a purpose-built command informed by the actual usage patterns
+- **Purge and retention** -- the quest database is intended as an in-progress work tool, not a permanent record. The long-term archive is the sequence of `quest export` outputs, which are human-readable, backup-friendly, and version-controllable. Once a deliverable is terminal and safely exported, its tasks, history, dependencies, and tags are candidates for purge from the database, keeping the operational store lean and queries fast. A dedicated `quest purge` command, an export-freshness check, a configurable grace period, and a policy for cross-deliverable reference handling are deferred until there is real operational data about deliverable lifetimes and archive usage patterns. This is the intended answer to unbounded history growth in the database -- not event compaction within active tasks, which would violate the audit invariants above
