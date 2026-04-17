@@ -85,8 +85,8 @@ Quest uses a SQLite database at `.quest/quest.db` for runtime storage.
 - **Location:** `.quest/quest.db`, inside the project marker directory
 - **WAL mode:** the database runs in WAL (write-ahead logging) mode for concurrent reads with serialized writes
 - **Busy timeout:** all database connections must set `PRAGMA busy_timeout = 5000` so that concurrent writers wait up to 5 seconds for the write lock before returning an error. Without this, SQLite returns `SQLITE_BUSY` immediately when the lock is held, causing spurious failures in agent swarms. If the wait exceeds five seconds, quest exits with code 7 (transient failure) and a stderr message: `"write lock unavailable after 5s -- transient failure, safe to retry"`. Quest does not retry internally -- the caller decides whether and when to retry, consistent with the principle that intelligence lives in the LLM, not in code
-- **Atomicity:** simple status transitions (e.g., `quest accept` on a leaf with no structural checks) use single atomic queries (`UPDATE ... WHERE id=? AND status='open'`) with `RowsAffected` checks to determine success, avoiding read-then-write TOCTOU races. Append-only fields (`notes`, `prs`) use INSERT semantics. `handoff` uses upsert (INSERT or REPLACE) semantics
-- **Structural transactions:** commands that require multi-row structural checks must use `BEGIN IMMEDIATE` transactions to acquire the write lock at transaction start, preventing concurrent writers from interleaving between the check and the mutation. This applies to: `quest accept` on a parent (must verify all children are in a terminal state), `quest create --parent` (must verify parent is in `open` status and depth limit), `quest complete` on parent tasks (must verify all children are terminal), `quest move` (must check circular parentage, depth limits, and update multiple rows), and `quest cancel -r` (must recursively update descendants). Simple single-row operations (`quest update --note`, `quest update --pr`, simple status transitions without structural invariants) use implicit transactions
+- **Atomicity:** every status transition -- `quest accept`, `quest complete`, `quest fail`, `quest reset`, `quest cancel` -- runs inside a `BEGIN IMMEDIATE` transaction with an explicit SELECT-then-UPDATE, even for leaves. A single atomic `UPDATE ... WHERE id=? AND status=?` with a `RowsAffected` check cannot distinguish exit 3 (`not_found`) from exit 5 (`conflict`) and therefore violates the error-precedence contract in §Error precedence. Append-only fields (`notes`, `prs`) use INSERT semantics. `handoff` uses upsert (INSERT or REPLACE) semantics
+- **Structural transactions:** every write command uses `BEGIN IMMEDIATE` to acquire the write lock at transaction start, so the existence/role/permission/state checks required by §Error precedence all run inside the same transaction as the mutation. Commands that additionally touch multiple rows for structural reasons -- `quest accept` on a parent (must verify all children are in a terminal state), `quest create --parent` (must verify parent is in `open` status and depth limit), `quest complete` on parent tasks (must verify all children are terminal), `quest move` (must check circular parentage, depth limits, and update multiple rows), and `quest cancel -r` (must recursively update descendants) -- include those checks inside the same transaction. Pure append-only operations with no precondition (`quest update --note`, `quest update --pr` on an already-owned task) may use implicit transactions
 - **Schema:** the task entity is normalized across multiple tables -- `tasks` holds the mutable task row, `history` holds append-only mutation entries keyed by task ID and indexed by timestamp, `dependencies` holds typed links between tasks, and `tags` holds the task-tag join. History is a separate table (not a JSON array on the task row) so that `quest show` without `--history` never reads history pages, and future range queries (tail, stream, paginated audit) can be served by an indexed scan rather than a full-row deserialization. Internal schema details beyond this separation are an implementation concern, not API surface
 - **Schema versioning:** the database stores a `schema_version` integer in a `meta` table. On startup, quest reads the version and compares it to the range the binary supports. If the version is higher than supported, quest refuses to operate (exit code 1, stderr: `"database schema version N is newer than this binary supports -- upgrade quest"`) so a stale binary cannot silently corrupt a newer schema. If the version is lower, quest runs the pending forward-only migrations inside a single transaction before proceeding; a failed migration leaves the database at the prior version. Downgrades are not supported -- rolling back a binary upgrade is done by restoring from a prior `quest export` or a file-level database backup. The initial release ships at `schema_version = 1`; every subsequent schema change ships a numbered migration and bumps the version. Migration code is part of the binary, not loaded from disk
 - **Direct access:** the database can be queried with standard SQLite tooling (`sqlite3`, any SQLite client library) for ad-hoc inspection or custom analytics
@@ -207,6 +207,10 @@ This convention applies to: `--debrief`, `--description`, `--context`, `--handof
 - `@-` reads from stdin, providing a platform-safe escape hatch that works everywhere
 - On Windows, forward slashes are recommended (`@path/to/file.md`). Arguments containing backslashes should be quoted to avoid shell escaping issues
 
+### Size limit
+
+Each `@file` (or `@-` stdin) argument is capped at 1 MiB (1,048,576 bytes) of resolved content. Inputs exceeding the cap are rejected with exit code 2 (usage error) and a stderr message identifying the flag and the observed size. The cap is deliberately generous -- a 1 MiB debrief or description is already beyond the length agents should be writing -- and exists to prevent accidental loading of multi-gigabyte files (e.g., a misaimed log path) into process memory and into the task row. A missing or unreadable `@file` path is also exit code 2 with a stderr message naming the path and the underlying OS error.
+
 ---
 
 ## Output & Error Conventions
@@ -217,12 +221,13 @@ This convention applies to: `--debrief`, `--description`, `--context`, `--handof
 - Warnings and errors always go to stderr regardless of format
 - Flat JSON structures preferred over deeply nested
 - Consistent types across all commands (durations in seconds, timestamps in ISO 8601)
+- **Timestamps are recorded and emitted at second precision**, UTC, `Z`-terminated -- `time.Now().UTC().Format(time.RFC3339)`. Fields affected: `started_at`, `completed_at`, `handoff_written_at`, every `history.timestamp`, every `notes.timestamp`, and the `added_at` on PRs. Sub-second precision is not used: the single-writer model makes collisions at second precision unlikely in practice, and uniform second precision keeps downstream parsing simple
 - JSON Lines for streaming output (in json mode)
 
 ### Text-mode formatting
 
 - Columns use fixed widths with truncation (`...` suffix) when content exceeds the column width
-- No ANSI colors by default. Use `--color` to enable color output (status highlighting, dependency edge coloring)
+- Text mode is plain; no ANSI colors. Humans who want colored rendering pipe quest output through a colorizer. A `--color` flag is deferred until a concrete agent workflow needs it and color rules are pinned here
 - When output is a TTY, column widths auto-size to the terminal width. When piped, columns use fixed default widths
 
 ### Exit codes
@@ -270,6 +275,38 @@ Agents may retry commands after transient failures (exit code 7) or session reco
 | `unlink`           | Yes        | Removing a non-existent link returns exit 0 with no state change                                                       |
 | `tag`              | Yes        | Adding an already-present tag is a no-op                                                                               |
 | `untag`            | Yes        | Removing an absent tag is a no-op                                                                                      |
+
+### Write-command output shapes
+
+Every write command emits a small JSON object on stdout on success. Shapes are the agent-facing contract; once pinned here they are governed by `STANDARDS.md` §CLI Surface Versioning. Rich per-command data (full task, history, dependencies) is fetched separately via `quest show`.
+
+| Command            | `--format json` success shape                                                              |
+| ------------------ | ------------------------------------------------------------------------------------------ |
+| `accept`           | `{"id": "...", "status": "accepted"}`                                                      |
+| `complete`         | `{"id": "...", "status": "complete"}`                                                      |
+| `fail`             | `{"id": "...", "status": "failed"}`                                                        |
+| `reset`            | `{"id": "...", "status": "open"}` -- spec'd above                                           |
+| `create`           | `{"id": "<new-id>"}` -- the only field; callers `show` for the full task                    |
+| `update`           | `{"id": "..."}` -- no echo of which fields changed; callers `show` for post-state          |
+| `link`             | `{"task": "...", "target": "...", "type": "..."}` -- the edge that was added               |
+| `unlink`           | `{"task": "...", "target": "...", "type": "..."}` -- the edge that was removed             |
+| `tag`              | `{"id": "...", "tags": [...]}` -- full post-state tag list (sorted, lowercase)              |
+| `untag`            | `{"id": "...", "tags": [...]}` -- full post-state tag list (sorted, lowercase)              |
+| `cancel`           | `{"cancelled": [...], "skipped": [...]}` -- spec'd above                                   |
+| `move`             | `{"id": "...", "renames": [...]}` -- spec'd above                                          |
+| `batch`            | JSONL ref→id mapping, one `{"ref": "...", "id": "..."}` object per created task -- spec'd above |
+
+Rules common to the action-ack shapes (`accept`/`complete`/`fail`/`reset`/`create`/`update`):
+
+- All listed fields are always present.
+- `id` is the task affected (never `null`).
+- `status` on state-transition commands is the post-transition status as a literal string.
+
+For idempotent no-ops, the action-ack still emits the current state: `tag` on an already-tagged task returns `{"id": "...", "tags": [...]}` with the unchanged list, `link` on an already-linked edge returns `{"task": "...", "target": "...", "type": "..."}` identifying the existing edge. Agents cannot distinguish "added now" from "already present" from the success body; they can tell from the absence of a history entry if they care.
+
+`deps` and `show` and query commands are not listed here -- they are read commands whose shapes are spec'd per-command under their own section.
+
+Text mode (`--format text`) for write commands is a one-liner summarizing the action (e.g., `proj-a1.3 accepted`, `linked proj-a1.3 blocked-by proj-a1.1`). Text mode is not a contract; agents parse JSON.
 
 ---
 
@@ -319,6 +356,8 @@ Agents may retry commands after transient failures (exit code 7) or session reco
 | `history` | system | Append-only log of every mutation to the task |
 
 Every mutation to a task appends an entry to the `history` array. Entries are never edited, deleted, or compacted. Event compaction (collapsing or summarizing older entries) is an explicit non-goal: it would silently lose context needed for retrospectives, curator analysis, and crash-reset audit trails -- notably the `handoff_set` `content` field, which exists specifically to preserve context that the live `handoff` field overwrites. When retention of a whole deliverable becomes the concern, the intended answer is purge-after-export, not in-place compaction (see Deferred / Future Concerns).
+
+The one carve-out is referential bookkeeping during `quest move`: when a task's ID changes, the stored `task_id` on existing history rows is updated to preserve the `history ↔ tasks` relationship. Content fields (`action`, `role`, `session`, `reason`, `fields`, `content`, `target`, `link_type`, `old_id`, `new_id`) are never edited; only the foreign-key column. The move itself also appends a `moved` history row recording `old_id`/`new_id`, so the rename is fully recoverable from the audit trail.
 
 ```json
 {
@@ -386,6 +425,7 @@ Every mutation to a task appends an entry to the `history` array. Entries are ne
 - `content` is present for `handoff_set` -- the full text of the handoff that was written. This ensures handoff history is recoverable from the audit log even though the `handoff` field on the task is overwritten on each update. Without this, repeated crash-reset cycles would erase prior handoff context with no trace, violating the retrospective mandate
 - `target` and `link_type` are present for `linked` and `unlinked` -- the referenced task ID and the relationship type (e.g., `blocked-by`, `caused-by`)
 - `old_id` and `new_id` are present for `moved` -- the task's ID before and after reparenting
+- For `created`, the payload captures non-default values of the planning fields set at create time: `tier`, `role`, `type` (when not the default `task`), `parent`, `tags`, and any initial `dependencies`. Fields left at their defaults are omitted from the payload, not serialized as `null`. This is the retrospective input -- "which tier/role choices produced which outcomes?" -- without requiring a join against the current `tasks` row (which may have been edited after creation)
 
 ### Model tiers
 
@@ -555,6 +595,8 @@ If `ID` is omitted, uses the value of `AGENT_TASK`.
 
 History is excluded by default because workers care about current state -- description, context, handoff, and dependency statuses. For long-running tasks with many notes and resets, the history array wastes context window tokens. Elevated roles doing audit or debugging use `--history` to see the full mutation log.
 
+**Field-presence carve-out.** This is the one documented exception to the "all fields always present" rule below: without `--history`, the `history` field is *absent* from the returned object, not serialized as `[]`. The cost argument (skipping history reads entirely) is load-bearing for worker-side command budgets, so the field is omitted rather than fetched-and-emptied.
+
 **`--format json`** (default):
 
 ```json
@@ -613,7 +655,7 @@ Accept is strict:
 
 - It only succeeds on tasks in `open` status. Calling `quest accept` on a task that is already `accepted`, `complete`, `failed`, or `cancelled` returns exit code 5 (conflict). This is intentional: if a session crashes and a new session is started for the same task, the lead must explicitly `quest reset` the task before the new session can accept it. This keeps crash recovery as a deliberate decision by the lead, not an implicit side effect.
 - On parent tasks, it fails (exit code 5) if any child is not in a terminal state (`complete`, `failed`, or `cancelled`). This precondition ensures a verifier is never accepting a parent while child work is still in flight, upholding the one-session-one-task principle. Leaves have no analogous check.
-- If two agents race to accept the same task, the first writer wins. The second receives exit code 5 (conflict). For leaves this is enforced via a single atomic query (`UPDATE tasks SET status='accepted', owner_session=? WHERE id=? AND status='open'`) with a `RowsAffected` check. For parents, the accept must be wrapped in a `BEGIN IMMEDIATE` transaction that also verifies the terminal-children precondition.
+- If two agents race to accept the same task, the first writer wins. The second receives exit code 5 (conflict). The accept runs inside a `BEGIN IMMEDIATE` transaction with a SELECT-then-UPDATE in every case -- a leaf accept, like any other status transition, needs to distinguish "task does not exist" (exit 3) from "task exists but is not in `open` status" (exit 5), which an atomic `UPDATE ... WHERE status='open'` with a `RowsAffected` check cannot do (see §Storage > Atomicity). For parents, the transaction additionally verifies the terminal-children precondition before the UPDATE.
 - On successful accept, `owner_session` is set from `AGENT_SESSION` and `started_at` is recorded. After acceptance, only the owning session (or an elevated role) can call `quest update`, `quest complete`, or `quest fail` on the task. A non-owning, non-elevated session receives exit code 4 (permission denied).
 
 ---
@@ -650,6 +692,10 @@ All field changes are recorded in the task's history. Flags listed in Input Conv
 **Terminal-state gating.** On tasks in `complete` or `failed` status, `quest update` accepts only the append/annotation flags: `--note`, `--pr`, and `--meta`. These are either append-only (`--note`, `--pr`) or free-form annotation (`--meta`) and do not retroactively rewrite execution-time state. Any other flag -- `--title`, `--description`, `--context`, `--type`, `--tier`, `--role`, `--acceptance-criteria`, `--handoff` -- returns exit code 5 (conflict) with a message listing the blocked fields. This applies to both worker and elevated roles. Rationale: fields like `tier`, `role`, and `type` drive retrospective analytics ("which tiers produced bugs?"); retroactive edits would silently falsify the simplest form of those queries. Planning copy (`title`, `description`, etc.) is preserved in the audit history and has no legitimate post-terminal edit case. `--handoff` is a session-continuity field with no meaning on a task that will not be accepted again.
 
 **Cancelled tasks reject every `quest update` variant.** `cancelled` is stricter than the other terminal states: `quest update` on a cancelled task -- including `--note`, `--pr`, `--meta`, and `--handoff` -- returns exit code 5 (conflict) with the structured body defined under *In-flight worker coordination* in `quest cancel`. This applies to worker and elevated roles alike. Rationale: the structured conflict on every worker operation is the framework signal that tells vigil to terminate the in-flight worker session; allowing any update to slip through would defeat that signal and let a terminated-but-unaware worker keep writing to a task the planner has already retired. Planner annotations (`--meta`) and debrief-style context belong on the *replacement* task if follow-up is needed, not on the cancelled one. `quest complete` and `quest fail` on a cancelled task are rejected for the same reason.
+
+**Empty values are usage errors.** `--role ""`, `--handoff ""`, `--title ""`, `--description ""`, `--context ""`, `--acceptance-criteria ""`, and `--note ""` return exit code 2 (`usage_error`) with a message naming the flag. Empty strings are not a clear-field mechanism; v0.1 does not provide one. `--meta KEY=` (empty value) is also rejected. This keeps the common path (passing a real value) unambiguous and avoids a silent-clear footgun for planners building command lines via string templating. If a dedicated clear mechanism is ever needed, it will ship as an explicit `--clear-ROLE` / `--clear-handoff` flag rather than overloading the value flag.
+
+**Type transitions respect existing links.** `--type task` on a task that has incoming or outgoing `caused-by` or `discovered-from` links returns exit code 5 (`conflict`) with a message listing the blocking links. These relationship types require the *source* to be `type: bug` (see §Dependency validation); retyping would silently falsify the invariant. The planner must `quest unlink` the conflicting links first, then retry the type transition. `--type bug` has no similar restriction -- additional link types become available, not fewer. The check runs inside the same transaction as the UPDATE so races cannot slip a link through.
 
 ---
 
@@ -714,9 +760,13 @@ Create a new task.
 | `--acceptance-criteria "..."` | Verification conditions for parent completion |
 | `--meta KEY=VALUE`            | Set a metadata field (repeatable)             |
 | `--blocked-by ID`             | Add a blocked-by dependency (repeatable)      |
-| `--caused-by ID`              | Add a caused-by link                          |
-| `--discovered-from ID`        | Add a discovered-from link                    |
-| `--retry-of ID`               | Add a retry-of link                           |
+| `--caused-by ID`              | Add a caused-by link (not repeatable)         |
+| `--discovered-from ID`        | Add a discovered-from link (not repeatable)   |
+| `--retry-of ID`               | Add a retry-of link (not repeatable)          |
+
+`--blocked-by` is repeatable because a task can legitimately depend on multiple upstream tasks, and that set is discovered incrementally during planning. `--caused-by`, `--discovered-from`, and `--retry-of` each accept a single ID per create: each describes a single originating event (one failure chain, one discovery source, one retry target) and modeling multiple origins is either ambiguous or is better expressed as multiple separate links added via `quest link` after creation.
+
+`--tag` takes a single comma-separated list (e.g., `--tag go,auth,concurrency`) and is **not** repeatable on one invocation -- same shape as the `tags` field in `quest batch` lines and as the `TAGS` argument on `quest tag` / `quest untag`. `quest list --tag` is repeatable for compositional AND-filtering; that is a separate decision scoped to filter expressiveness.
 
 `quest create --parent ID` fails (exit code 5) if the parent task is not in `open` status (see Parent Tasks > Enforcement rules) or if the parent is already at depth 3 (see Graph Limits section).
 
@@ -774,6 +824,8 @@ With `--partial-ok`, quest creates the subset of tasks whose lines passed all fo
 
 Error reporting is identical in both modes -- the only difference is whether surviving tasks are created. Both modes exit with code 2 if any error is reported, including `--partial-ok` batches where some tasks were created; the non-zero exit signals the planner that follow-up is needed.
 
+**Runtime errors are atomic.** The `--partial-ok` subsetting applies to *validation* failures (the four phases above). The creation step itself runs in a single transaction regardless of mode; if any task insert fails at runtime (constraint violation, lock timeout, internal error), the whole transaction is rolled back and no tasks from that batch are created, even when other lines in the batch had passed all four validation phases. The non-zero exit (7 for lock timeout, 1 for unexpected failures) tells the planner to retry; no partial-success output is produced for runtime failures. This keeps batch outcomes predictable for agents: validation failures are per-line; runtime failures are per-batch.
+
 ### Batch error output
 
 Errors are written as JSONL to stderr, one object per line. Each object has:
@@ -801,6 +853,7 @@ Additional fields depend on `code`:
 | `retry_target_status`  | semantic  | `target`, `actual_status`                                  |
 | `blocked_by_cancelled` | semantic  | `target`                                                   |
 | `source_type_required` | semantic  | `link_type`, `required_type`                               |
+| `invalid_tag`          | semantic  | `field` (e.g., `tags[2]`), `value` (offending tag)         |
 
 For cross-line errors (`duplicate_ref`, `cycle`), `line` points to the later line of the pair (or the edge that closed the cycle); the extra fields locate the other party without requiring a second pass.
 
@@ -843,6 +896,26 @@ Cancelling a task in `complete` or `failed` status fails with exit code 5 (confl
 
 Without `-r`, the command also fails if the task has non-terminal children (exit code 5). With `-r`, all descendant tasks in `open` or `accepted` status are cancelled with the same reason. Descendants already in `complete` or `failed` status are skipped. The output reports which tasks were cancelled and which were skipped.
 
+`-r` on a leaf task (no descendants) is not an error: the target task is cancelled normally, `cancelled` lists just the target, and `skipped` is `[]`. `-r` is a no-op *structurally* when no descendants exist but still governs whether the existence of children would have blocked the cancel.
+
+**Output.** In `--format json` (default), output is a single JSON object:
+
+```json
+{
+  "cancelled": ["proj-a1.3", "proj-a1.3.1"],
+  "skipped": [
+    {"id": "proj-a1.3.2", "status": "complete"}
+  ]
+}
+```
+
+| Field       | Type             | Description                                                                                                              |
+| ----------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `cancelled` | array of strings | IDs of tasks that transitioned to `cancelled` by this call. Always includes the target task when it was cancelled. Order is stable: target first, then descendants by ID |
+| `skipped`   | array of objects | Descendants that were not cancelled because they were already in a terminal state. Each object has `id` (string) and `status` (string). Empty array without `-r` or when no descendants were skipped |
+
+Both fields are always present (empty arrays allowed). For an idempotent no-op (cancelling an already-cancelled task), `cancelled` is an empty array and `skipped` is an empty array. In `--format text`, the output is `cancelled: <id>` per cancelled task followed by `skipped: <id> (<status>)` per skipped task.
+
 ### In-flight worker coordination
 
 When a task is cancelled while a worker is mid-flight, quest does not actively notify the worker -- the worker discovers the cancellation on its next quest command. Any call to `quest update`, `quest complete`, or `quest fail` on a cancelled task returns exit code 5 (conflict) with a message and JSON body identifying the cancellation:
@@ -874,6 +947,19 @@ Reset a task from `accepted` back to `open` for reassignment. Only available to 
 
 The task retains its handoff, notes, and full history. The reset is recorded as a `reset` history entry with the lead's reason. `owner_session` and `started_at` are cleared. Fails if the task is not in `accepted` status (exit code 5).
 
+**Output.** In `--format json` (default), output is a single JSON object:
+
+```json
+{"id": "proj-a1.3", "status": "open"}
+```
+
+| Field    | Type   | Description                                                     |
+| -------- | ------ | --------------------------------------------------------------- |
+| `id`     | string | The task ID that was reset                                      |
+| `status` | string | The post-reset status; always the literal `"open"` on success   |
+
+Both fields are always present. In `--format text`, the output is `<id> reset to open`.
+
 ---
 
 ```
@@ -898,6 +984,26 @@ Move is scoped to the planning-and-verification window — after tasks are creat
 - Recursively moves all descendant tasks, updating their IDs to reflect the new parent namespace. All dependency references (both outgoing from and incoming to the moved sub-graph) are updated to point to the new IDs
 
 This command exists to recover from structural errors caught during planning verification — typically immediately after `quest batch` or a series of individual `quest create` calls — without the cancel-and-recreate workflow, which is prohibitively expensive for large sub-graphs. After dispatch begins, structural errors are handled by cancel-and-recreate; the pre-dispatch scope keeps IDs trustworthy for the external systems that capture them.
+
+**Output.** In `--format json` (default), output is a single JSON object containing the new root ID and a complete rename map:
+
+```json
+{
+  "id": "proj-b2.1",
+  "renames": [
+    {"old": "proj-a1.3", "new": "proj-b2.1"},
+    {"old": "proj-a1.3.1", "new": "proj-b2.1.1"},
+    {"old": "proj-a1.3.2", "new": "proj-b2.1.2"}
+  ]
+}
+```
+
+| Field     | Type             | Description                                                                             |
+| --------- | ---------------- | --------------------------------------------------------------------------------------- |
+| `id`      | string           | New ID of the task that was moved (the root of the moved sub-graph)                     |
+| `renames` | array of objects | Every old→new ID pair, including the moved task and all descendants. Ordered by old ID  |
+
+`renames` is always present and contains at least one entry (the moved task itself). All fields are always present. In `--format text`, the output is one `OLD → NEW` line per rename, ordered by old ID.
 
 ---
 
@@ -945,6 +1051,8 @@ quest tag ID TAGS
 
 Add tags to a task. Tags are comma-separated, case-insensitive, stored lowercase.
 
+**Validation.** Each tag must match `^[a-z0-9][a-z0-9-]*$` after lowercasing -- lowercase alphanumerics plus `-`, starting with an alphanumeric. Tags containing whitespace, `.`, `_`, `/`, or other punctuation are rejected with exit code 2 (usage error). The character class is deliberately narrow because tags appear in CLI filters (`quest list --tag`), URL-safe export paths, and shell-quoted scripts; keeping them to a single shell-safe, filename-safe class avoids quoting footguns. Length: 1-32 characters per tag.
+
 ```
 quest tag proj-a1 go,auth,concurrency
 ```
@@ -983,16 +1091,18 @@ List tasks with filtering.
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `--status STATUSES` | Filter by status. Comma-separated for OR semantics (e.g., `--status failed,cancelled` or `--status open,accepted`). Repeatable; repeated values union. Matches `quest create --tag` convention                                                                                                                                                                                                                                                                                                                                 |
 | `--ready`           | Filter to tasks whose next state transition has no unmet preconditions. For leaves: `status == open` AND all `blocked-by` targets are `complete`. For parents: `status == open` AND all `blocked-by` targets are `complete` AND all children are in a terminal state. The result mixes dispatchable leaves and actionable parents (which the lead may dispatch to a verifier or direct-close); the presence of children distinguishes the two. Composes with other filters (e.g., `quest list --ready --role coder --tier T2`) |
-| `--parent ID`       | Filter by parent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `--parent IDS`      | Filter by parent ID. Comma-separated for OR semantics (e.g., `--parent proj-a1,proj-a2`). Repeatable; repeated values union                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `--tag TAGS`        | Filter by tag(s), comma-separated (AND semantics). Repeatable for additional AND conditions. Matches `quest create --tag` convention                                                                                                                                                                                                                                                                                                                                                                                           |
-| `--role ROLE`       | Filter by role                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `--type TYPE`       | Filter by type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `--tier TIER`       | Filter by tier                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `--role ROLES`      | Filter by role. Comma-separated for OR semantics (e.g., `--role coder,reviewer`). Repeatable; repeated values union                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `--type TYPES`      | Filter by type. Comma-separated for OR semantics (e.g., `--type task,bug`). Repeatable; repeated values union                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `--tier TIERS`      | Filter by tier. Comma-separated for OR semantics (e.g., `--tier T2,T3`). Repeatable; repeated values union                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `--columns COLS`    | Comma-separated list of columns to display                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 Default columns: `id`, `status`, `blocked-by`, `title`.
 
-Available columns: `id`, `title`, `status`, `type`, `tier`, `role`, `tags`, `parent`, `blocked-by`.
+Available columns: `id`, `title`, `status`, `type`, `tier`, `role`, `tags`, `parent`, `blocked-by`, `children`.
+
+The `children` column is an array of child task IDs (possibly empty). It is denormalized onto the row so `--ready` consumers can distinguish leaves (empty array) from parents (non-empty) in a single pass, matching the same denormalization used for `blocked-by`.
 
 **`--format text`** (table):
 
@@ -1004,7 +1114,24 @@ proj-a1.2   accepted                       Session store
 proj-a1.3   open      proj-a1.1,proj-a1.2  Auth middleware
 ```
 
-**`--format json`** (default): array of objects with the selected columns.
+**`--format json`** (default): array of row objects, one per matching task.
+
+```json
+[
+  {"id": "proj-a1",    "status": "open",     "blocked-by": [],                       "title": "Auth module"},
+  {"id": "proj-a1.1",  "status": "complete", "blocked-by": [],                       "title": "JWT validation"},
+  {"id": "proj-a1.3",  "status": "open",     "blocked-by": ["proj-a1.1","proj-a1.2"],"title": "Auth middleware"}
+]
+```
+
+Row shape rules:
+
+- Keys are exactly the requested columns (or the defaults when `--columns` is omitted), with no extra fields. Agents relying on `quest list` should pin `--columns` to the set they consume
+- Field order in each row matches the order of `--columns` (or the default-columns order). JSON object key order is preserved on output
+- Scalar columns (`id`, `title`, `status`, `type`, `tier`, `role`, `parent`) are strings. `role`, `tier`, and `parent` are emitted as JSON `null` when unset, never as the empty string
+- `tags` is always a JSON array of strings (possibly empty), never a comma-joined string. The array mirrors the text-mode comma-joined rendering
+- `blocked-by` is always a JSON array of task ID strings (possibly empty) -- just IDs, not denormalized `{id,status,title}` objects. The richer edge shape lives in `quest graph`, which is the right tool for structural inspection
+- When no tasks match, the output is an empty array `[]` (not `null` and not a missing key). Empty output with exit code 0 is not an error
 
 ---
 
@@ -1012,7 +1139,9 @@ proj-a1.3   open      proj-a1.1,proj-a1.2  Auth middleware
 quest graph ID
 ```
 
-Display the dependency graph rooted at a task. `ID` may be any task -- root, interior, or leaf. Traversal descends from `ID` through `children` and follows dependency edges outward from tasks in the subtree. It does not traverse up to parents or ancestors; an `--include-ancestors` flag is deferred until a concrete need appears. Any node reached via a dependency edge that is not a descendant of `ID` (siblings, cross-project references, or other out-of-subtree tasks) appears as an unexpanded leaf: it is included in `nodes` so consumers can read its title and status, but its own `children` and outgoing edges are omitted.
+Display the dependency graph rooted at a task. `ID` is required -- unlike worker commands, `quest graph` does not default to `AGENT_TASK`. A missing ID returns exit code 2 (`usage_error`). This mirrors `quest deps`: both are elevated query commands used by planners to inspect a specific subtree, not the caller's own assigned task.
+
+`ID` may be any task -- root, interior, or leaf. Traversal descends from `ID` through `children` and follows dependency edges outward from tasks in the subtree. It does not traverse up to parents or ancestors; an `--include-ancestors` flag is deferred until a concrete need appears. Any node reached via a dependency edge that is not a descendant of `ID` (siblings, cross-project references, or other out-of-subtree tasks) appears as an unexpanded leaf: it is included in `nodes` so consumers can read its title and status, but its own `children` and outgoing edges are omitted.
 
 Shows parent-child structure, dependency edges with types, and task statuses.
 
@@ -1119,6 +1248,19 @@ Initialize a quest project in the current directory. Creates `.quest/` directory
 
 Humans running quest from a shell default to the worker command surface, since `AGENT_ROLE` is unset. To access planner commands, set `AGENT_ROLE` to an elevated role from `.quest/config.toml` (default: `planner`) -- inline as `AGENT_ROLE=planner quest list`, or per session with `export AGENT_ROLE=planner`. See Role Gating.
 
+In `--format json` (default), output is a single JSON object with the resolved workspace path and prefix:
+
+```json
+{"workspace": "/abs/path/to/project/.quest", "id_prefix": "proj"}
+```
+
+| Field       | Type   | Description                                              |
+| ----------- | ------ | -------------------------------------------------------- |
+| `workspace` | string | Absolute path to the `.quest/` directory that was created |
+| `id_prefix` | string | The prefix recorded in `.quest/config.toml`              |
+
+Both fields are always present and non-empty. In `--format text`, the output is the bare absolute workspace path followed by a single newline -- no prefix, no framing, no prefix echo. Scripts parsing text mode can read the line directly.
+
 ---
 
 ```
@@ -1210,7 +1352,7 @@ These are concerns the framework handles -- not quest commands, but places where
 Quest emits OTEL traces, metrics, and structured logs. The full instrumentation design lives in `docs/OTEL.md`; this section records only the touchpoints where the behavioral spec and telemetry share a contract.
 
 - **Env vars quest reads for telemetry:** `AGENT_ROLE`, `AGENT_TASK`, `AGENT_SESSION`, `TRACEPARENT`, `TRACESTATE` (all set by vigil), plus standard `OTEL_*` variables and `OTEL_GENAI_CAPTURE_CONTENT`. Missing values do not change command behavior -- they surface as empty attributes or, for `AGENT_ROLE`, as the literal `"unset"` in telemetry.
-- **Exit code contract:** The exit codes defined in *Output & Error Conventions* (1-7) map one-to-one to a stable `quest.error.class` vocabulary in the OTEL spec (`general_failure`, `usage_error`, `not_found`, `permission_denied`, `conflict`, `role_denied`, `lock_timeout`). Changing an exit code in this spec changes the telemetry contract; update both.
+- **Exit code contract:** The exit codes defined in *Output & Error Conventions* (1-7) map one-to-one to a stable `quest.error.class` vocabulary in the OTEL spec (`general_failure`, `usage_error`, `not_found`, `permission_denied`, `conflict`, `role_denied`, `transient_failure`). Changing an exit code in this spec changes the telemetry contract; update both.
 - **Lock-contention signal:** The 5-second `BEGIN IMMEDIATE` lock timeout (exit code 7) is the designed threshold for the daemon-upgrade decision. Sustained exit-code-7 rate is the concrete signal for promoting quest to `questd`; the metric is defined in the OTEL spec.
 - **History and session identity:** `role` and `session` in history entries (from `AGENT_ROLE` and `AGENT_SESSION`) are the same values surfaced in span attributes (`gen_ai.agent.name`, `dept.session.id`). This lets retrospective queries join history rows to spans by session.
 - **No `--no-track`:** Quest's `history` table is append-only and writes only on mutations -- reads produce no history entries regardless of telemetry state. The spec does not carry a `--no-track`-style flag; the OTEL spec documents the rationale.

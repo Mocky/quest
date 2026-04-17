@@ -5,7 +5,6 @@
 **Semconv version:** v1.40.0 (pinned to the framework standard in `~/dev/grove/otel-guide.md`)
 **Upstream:** `~/dev/grove/otel-guide.md`
 **Sibling:** `~/dev/lore/docs/OTEL.md`
-**Pending discussion:** `otel-discuss.md` (review items H6 and M5 are not yet reflected here)
 
 ---
 
@@ -73,9 +72,9 @@ Without an explicit inventory the logs signal devolves into "whatever the develo
 | **migration**     | `schema migration applied`                         | INFO     | `schema.from`, `schema.to`, `applied_count`                                 | Startup schema upgrade; one record per invocation (at most)         |
 | **otel-internal** | `otel internal error`                              | WARN     | `err`                                                                       | OTEL `SetErrorHandler` routing (§7.4)                              |
 
-**Severity policy.** `DEBUG` lifecycle entries are normally filtered out at the slog `Handler` level; they exist for local development (slog call sites use them unconditionally but a level filter suppresses them when `DEPT_LOG_LEVEL=info` or higher). `INFO` carries decision and conflict events. `WARN` carries validation/transient failures the user can act on. `ERROR` is reserved for bugs.
+**Severity policy.** `DEBUG` lifecycle entries are normally filtered out at the slog `Handler` level; they exist for local development (slog call sites use them unconditionally but a level filter suppresses them when `QUEST_LOG_LEVEL=info` or higher). `INFO` carries decision and conflict events. `WARN` carries validation/transient failures the user can act on. `ERROR` is reserved for bugs.
 
-**Bridge filtering.** The `otelslog` bridge handler in §3.1 receives the full slog record stream. A level filter sits in the fan-out handler so stderr (for humans) and the OTEL bridge (for backends) can be level-gated independently: stderr defaults to `WARN`, the OTEL bridge defaults to `INFO`, both are overridable via `DEPT_LOG_LEVEL` and a separate `DEPT_LOG_OTEL_LEVEL` variable. Level filtering is the only supported mechanism for reducing log volume -- quest does not ship a per-category on/off switch.
+**Bridge filtering.** The `otelslog` bridge handler in §3.1 receives the full slog record stream. A level filter sits in the fan-out handler so stderr (for humans) and the OTEL bridge (for backends) can be level-gated independently: stderr defaults to `WARN`, the OTEL bridge defaults to `INFO`, both are overridable via `QUEST_LOG_LEVEL` and a separate `QUEST_LOG_OTEL_LEVEL` variable. Level filtering is the only supported mechanism for reducing log volume -- quest does not ship a per-category on/off switch.
 
 **Content protection.** No log event emits task titles, descriptions, handoff text, debrief text, notes, reasons, or metadata. Content flows only through span events under `OTEL_GENAI_CAPTURE_CONTENT` (§4.5). Log attributes carry IDs, counts, enums, and error classes -- nothing else.
 
@@ -188,9 +187,9 @@ Errors from a collapsed operation are still recorded via the three-step pattern 
 | ----------------------- | ------------------------------------------- | --------------------------------------------------------------------- |
 | `gen_ai.tool.name`      | `"quest." + command`                        | e.g., `quest.create`, `quest.batch`. Dashboards parse the command from this attribute |
 | `gen_ai.operation.name` | `"execute_tool"`                            | Per GenAI conventions                                                 |
-| `gen_ai.agent.name`     | `AGENT_ROLE` env, via `roleOrUnset`         | Empty env value is recorded as the literal string `"unset"`. Same convention on spans and metrics -- see §8.6 |
-| `dept.task.id`          | `AGENT_TASK` env                            | Task correlation tag from vigil. Empty for planners acting across tasks |
-| `dept.session.id`       | `AGENT_SESSION` env                         | Session correlation tag from vigil. Required framework attribute (`otel-guide.md` §3.3) -- mirrors `dept.task.id` but for sessions |
+| `gen_ai.agent.name`     | `cfg.Agent.Role`, via `roleOrUnset`         | Resolved from `AGENT_ROLE` by `internal/config/`. Empty value is recorded as the literal string `"unset"`. Same convention on spans and metrics -- see §8.6 |
+| `dept.task.id`          | `cfg.Agent.Task`                            | Resolved from `AGENT_TASK` by `internal/config/`. Task correlation tag from vigil. Empty for planners acting across tasks |
+| `dept.session.id`       | `cfg.Agent.Session`                         | Resolved from `AGENT_SESSION` by `internal/config/`. Session correlation tag from vigil. Required framework attribute (`otel-guide.md` §3.3) -- mirrors `dept.task.id` but for sessions |
 | `quest.role.elevated`   | Bool -- whether the command is elevated     | Recorded after role gating                                            |
 
 > `quest.command` (previously listed here) has been removed. It duplicated `gen_ai.tool.name` and violated guide principle 1.7 (do not invent proprietary attributes for operations the conventions already cover). Dashboards derive the command from `gen_ai.tool.name` by stripping the `quest.` prefix.
@@ -262,7 +261,7 @@ Tag filters (`--tag go,auth`) and parent filters (`--parent proj-a1`) are not re
 | Attribute              | Source                                                                                       |
 | ---------------------- | -------------------------------------------------------------------------------------------- |
 | `db.system`            | Static `"sqlite"`. Cached with `sync.Once`; emitted on every span that issues SQL (see §9.2 of the guide) |
-| `quest.tx.kind`        | Structural transaction type: `accept_parent`, `create_child`, `complete_parent`, `move`, `cancel_recursive` |
+| `quest.tx.kind`        | Transaction category. One of: `accept`, `create`, `complete`, `fail`, `reset`, `cancel`, `cancel_recursive`, `move`, `batch_create`, `link`, `unlink`, `tag`, `untag`, `update`. Names describe the operation category, not whether a parent or leaf is involved -- a leaf `quest accept` and a parent `quest accept` both emit `accept` (§5.3 lists the full enum) |
 | `quest.tx.lock_wait_ms`| Duration (ms) between `BEGIN IMMEDIATE` issue and lock acquisition                           |
 | `quest.tx.rows_affected` | Total rows affected inside the transaction                                                 |
 | `quest.tx.outcome`     | `committed`, `rolled_back_precondition`, or `rolled_back_error`. Set at the close of the transaction |
@@ -408,7 +407,7 @@ Use UTF-8-safe truncation per the framework recommendation. A single `truncate(s
 - `from`, `to` (status transitions) -- bounded enum product
 - `link_type` -- `blocked-by`, `caused-by`, `discovered-from`, `retry-of`
 - `action` -- `added`, `removed`
-- `tx_kind` -- bounded: `accept_parent`, `create_child`, `complete_parent`, `move`, `cancel_recursive`
+- `tx_kind` -- bounded: `accept`, `create`, `complete`, `fail`, `reset`, `cancel`, `cancel_recursive`, `move`, `batch_create`, `link`, `unlink`, `tag`, `untag`, `update`. Names describe the command category, not structural depth -- a leaf accept and a parent accept both emit `accept`. `cancel_recursive` is kept as a distinct value because the `-r` form touches a variable number of descendant rows and its lock-wait profile is materially different from a single-row `cancel`. `batch_create` covers `quest batch` regardless of whether the batch contains top-level or parented creates
 - `phase` -- `parse`, `reference`, `graph`, `semantic`
 - `code` -- bounded batch error codes (from spec §Batch error output)
 - `from_version`, `to_version` -- integers; growth is bounded by release count
@@ -444,19 +443,19 @@ OTLP collector / backend
 
 ### 6.2 Extract from environment
 
-Same pattern as lore section 6.2. Done once at CLI startup, before any span is created.
+Same pattern as lore section 6.2. Done once at CLI startup, before any span is created. `TRACEPARENT` and `TRACESTATE` are read by `internal/config/` at startup (per STANDARDS.md, only the config package touches `os.Getenv`) and surfaced as `cfg.Agent.TraceParent` / `cfg.Agent.TraceState`. Telemetry consumes the resolved strings; it never reads env vars directly.
 
-**Prerequisite:** `telemetry.Setup()` must register the global W3C composite text map propagator before `ExtractTraceFromEnv` is called (see §7.1). Without it, `otel.GetTextMapPropagator().Extract(...)` silently becomes a no-op against the default no-op propagator, and `TRACEPARENT` is never consumed -- a silent, easy-to-miss failure mode.
+**Prerequisite:** `telemetry.Setup()` must register the global W3C composite text map propagator before `ExtractTraceFromConfig` is called (see §7.1). Without it, `otel.GetTextMapPropagator().Extract(...)` silently becomes a no-op against the default no-op propagator, and `TRACEPARENT` is never consumed -- a silent, easy-to-miss failure mode.
 
 ```go
-func extractTraceFromEnv(ctx context.Context) context.Context {
-    traceparent := os.Getenv("TRACEPARENT")
-    if traceparent == "" {
+// traceParent and traceState come from cfg.Agent, populated by internal/config/ at startup.
+func extractTraceFromConfig(ctx context.Context, traceParent, traceState string) context.Context {
+    if traceParent == "" {
         return ctx
     }
-    carrier := propagation.MapCarrier{"traceparent": traceparent}
-    if ts := os.Getenv("TRACESTATE"); ts != "" {
-        carrier["tracestate"] = ts
+    carrier := propagation.MapCarrier{"traceparent": traceParent}
+    if traceState != "" {
+        carrier["tracestate"] = traceState
     }
     return otel.GetTextMapPropagator().Extract(ctx, carrier)
 }
@@ -490,10 +489,18 @@ func main() {
 func run() int {
     // ... workspace discovery, arg parsing, slog setup ...
 
+    // internal/config/ is the sole reader of env vars; it surfaces AGENT_ROLE,
+    // AGENT_TASK, AGENT_SESSION, TRACEPARENT, and TRACESTATE as typed fields on
+    // cfg.Agent. Telemetry never calls os.Getenv itself (see §6.2, §8.2).
+    cfg := config.Load()
+
     ctx := context.Background()
     otelShutdown, _ := telemetry.Setup(ctx, telemetry.Config{
         ServiceName:    "quest-cli",
         ServiceVersion: buildinfo.Version,
+        AgentRole:      cfg.Agent.Role,
+        AgentTask:      cfg.Agent.Task,
+        AgentSession:   cfg.Agent.Session,
     })
     defer func() {
         if otelShutdown != nil {
@@ -503,11 +510,13 @@ func run() int {
         }
     }()
 
-    ctx = telemetry.ExtractTraceFromEnv(ctx)
+    ctx = telemetry.ExtractTraceFromConfig(ctx, cfg.Agent.TraceParent, cfg.Agent.TraceState)
 
-    return dispatch(ctx /* returns int exit code */)
+    return dispatch(ctx, cfg /* returns int exit code */)
 }
 ```
+
+`telemetry.Config` carries both service metadata (`ServiceName`, `ServiceVersion`) and resolved agent identity (`AgentRole`, `AgentTask`, `AgentSession`). The latter three are what §8.2 caches; they arrive via parameters, not env reads. `ExtractTraceFromConfig` replaces the earlier `ExtractTraceFromEnv` for the same reason (see §6.2).
 
 - **Service name:** `quest-cli`. Matches guide §8.2, preserves dashboard continuity when the deferred `questd` daemon (section 18) ships as `quest-daemon`. A single binary today is not a reason to diverge from the framework naming; renaming later breaks historical dashboards.
 - **Default exporter protocol:** HTTP (`http/protobuf`) -- works through more proxies, better for short-lived processes. If `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` is set, quest logs a single warning at startup (via slog) that gRPC is not linked into the CLI and falls back to HTTP. See §7.5.
@@ -606,60 +615,64 @@ Shutdown is called once from `defer` in `main`. Quest does not install signal ha
 ```
 internal/telemetry/
   setup.go          SDK init, shutdown, resource config, conditional no-op
-  context.go        Context keys (e.g., for command name, session ID carry)
-  propagation.go    TRACEPARENT extraction from env
+  identity.go       Cached AgentRole/Task/Session (populated once by Setup from cfg.Agent)
+  propagation.go    TRACEPARENT extraction from cfg.Agent (values come from internal/config/)
   recorder.go       RecordX functions for command-level events
   command.go        CommandSpan helper (creates the root `execute_tool quest.*` span)
+  gate.go           GateSpan helper (records the role-gate decision as a child span)
+  migrate.go        MigrateSpan helper (sibling to the command span)
   store.go          InstrumentedStore decorator (wraps the store interface)
   validation.go     Span helpers for batch validation phases
   truncate.go       UTF-8-safe value truncation
-  fanout.go         Fan-out slog handler for the OTEL log bridge
 ```
+
+Quest does not need explicit context keys: the command span is carried on `context.Context` by the OTEL SDK, and handlers pull it via `trace.SpanFromContext(ctx)`. The fan-out slog handler lives in `internal/logging/`; `internal/telemetry/` only constructs the `otelslog` bridge handler and returns it for inclusion in the fan-out (§10.1).
 
 All business logic calls `telemetry.RecordX()` or uses the decorator/middleware wrappers. No OTEL API imports in `cmd/quest/`, `internal/cli/`, `internal/store/` (or wherever the DB layer lives), or the command-handler packages.
 
 ### 8.2 Command-level span helper
 
-Every command handler wraps its work in a root span via a single helper. This keeps span creation consistent and centralizes attribute naming. `AGENT_ROLE`, `AGENT_TASK`, and `AGENT_SESSION` are read once at init and cached in a package-level struct; `CommandSpan` reads from the cache rather than calling `os.Getenv` on every invocation:
+The `cli.Execute` dispatcher (not the command handler) wraps each command's work in a root span via a single helper. Centralizing span creation in dispatch -- alongside descriptor lookup, workspace-config validation, schema migration, and role gating -- keeps the telemetry boundary in one place and matches the §4.1 span hierarchy: `quest.role.gate` is a child of `execute_tool quest.{command}` because the command span already exists when the gate runs. Handlers remain OTEL-agnostic for span creation; they receive a `context.Context` that already carries the command span and add operation-specific attributes via typed recorder functions in `recorder.go`. Duplicating the root span inside a handler would double-parent every downstream span and fragment the "one command span per invocation" contract.
+
+Agent identity (`AGENT_ROLE`, `AGENT_TASK`, `AGENT_SESSION`) is read by `internal/config/` at startup -- per STANDARDS.md, only the config package calls `os.Getenv` -- and passed into telemetry via `telemetry.Setup`, which caches the post-`roleOrUnset` values for reuse across every `CommandSpan` call. `CommandSpan` itself never touches env vars:
 
 ```go
-// internal/telemetry/env.go -- populated once by telemetry.Setup
-var envOnce sync.Once
-var envAttrs struct {
+// internal/telemetry/identity.go -- populated once by telemetry.Setup from cfg.Agent
+var identity struct {
     agentRole    string // post-roleOrUnset
     agentTask    string
     agentSession string
 }
 
-func loadEnv() {
-    envOnce.Do(func() {
-        envAttrs.agentRole = roleOrUnset(os.Getenv("AGENT_ROLE"))
-        envAttrs.agentTask = os.Getenv("AGENT_TASK")
-        envAttrs.agentSession = os.Getenv("AGENT_SESSION")
-    })
+// Called by telemetry.Setup with values resolved by internal/config/.
+func setIdentity(role, task, session string) {
+    identity.agentRole = roleOrUnset(role)
+    identity.agentTask = task
+    identity.agentSession = session
 }
 
 // internal/telemetry/command.go
 func CommandSpan(ctx context.Context, command string, elevated bool) (context.Context, trace.Span) {
-    loadEnv()
     return tracer.Start(ctx, "execute_tool quest."+command,
         trace.WithAttributes(
             attribute.String("gen_ai.tool.name", "quest."+command),
             attribute.String("gen_ai.operation.name", "execute_tool"),
-            attribute.String("gen_ai.agent.name", envAttrs.agentRole),
-            attribute.String("dept.task.id", envAttrs.agentTask),
-            attribute.String("dept.session.id", envAttrs.agentSession),
+            attribute.String("gen_ai.agent.name", identity.agentRole),
+            attribute.String("dept.task.id", identity.agentTask),
+            attribute.String("dept.session.id", identity.agentSession),
             attribute.Bool("quest.role.elevated", elevated),
         ),
     )
 }
 ```
 
-Command handlers call this once and defer `span.End()`. Quest-specific attributes (task ID, tier, transition, etc.) are added post-creation via typed recorder functions in `recorder.go`.
+The `setIdentity` call happens exactly once, inside `telemetry.Setup`, before any command span is created. After that point the cached strings are read-only. This preserves the "only config reads env" invariant while keeping span creation a single attribute copy with no locking on the hot path.
+
+The dispatcher calls this once per invocation, defers `span.End()`, and passes the returned context into the handler. Handlers add quest-specific attributes (task ID, tier, transition) through typed recorder functions in `recorder.go`; when a handler needs the raw span handle mid-body (e.g., to emit a span event), it calls `trace.SpanFromContext(ctx)`.
 
 **No manual no-op short-circuit.** An earlier draft had `CommandSpan` check `Enabled()` and return a non-recording span without calling `tracer.Start`. That has been removed -- it risked breaking trace propagation when a valid parent context was present and fragmented the "disabled" path into two logics. Rely on the no-op providers installed by §7.2: `tracer.Start` on a no-op provider is already near-zero cost (no exporter round-trip, no allocation beyond the returned interface), and it preserves the parent context correctly.
 
-**Optional wrapper: `WrapCommand`.** `CommandSpan` is the primitive; most handlers pair it with the §4.4 three-step error pattern at every exit. To avoid duplicating that boilerplate, `internal/telemetry/command.go` also exposes a middleware-style wrapper:
+**Dispatcher wrapper: `WrapCommand`.** `CommandSpan` is the primitive; `cli.Execute` pairs it with the §4.4 three-step error pattern at the single point where a handler's returned error becomes an exit code. To avoid duplicating that boilerplate at every handler entry, `internal/telemetry/command.go` exposes a middleware-style wrapper that `cli.Execute` uses to drive every command:
 
 ```go
 // Runs fn inside a CommandSpan. On a non-nil returned error, records it via the
@@ -669,7 +682,7 @@ func WrapCommand(ctx context.Context, command string, elevated bool,
     fn func(ctx context.Context) error) error
 ```
 
-Handlers that want the sugar write `return telemetry.WrapCommand(ctx, "accept", elevated, func(ctx context.Context) error { ... })`. Handlers that need finer-grained span control (multiple error sites with different exit codes, or span attributes set mid-handler) use `CommandSpan` directly. Both paths emit the same spans and metrics; `WrapCommand` is a call-site convenience, not a second instrumentation point.
+`cli.Execute` resolves the descriptor, optionally runs the role gate, then calls `telemetry.WrapCommand(ctx, descriptor.Name, descriptor.Elevated, descriptor.Handler)`. The wrapper owns the command span's lifetime and its error plumbing in both the no-op (§2.3) and real (§12) telemetry shells, so the handler-facing signature (`func(ctx, cfg, args, ...) error`) stays stable across phases. `CommandSpan` remains exported for internal telemetry code that needs finer-grained lifetime control (e.g., the dispatcher path that wants to set attributes between `Start` and the handler call); command-handler packages do not import it.
 
 ### 8.3 Instrumented store decorator
 
@@ -682,12 +695,14 @@ type InstrumentedStore struct {
 }
 
 func WrapStore(s Store) Store {
-    if !Enabled() {
+    if !enabled() {
         return s
     }
     return &InstrumentedStore{inner: s}
 }
 ```
+
+**`enabled()` is internal-only.** The short-circuit above is the one legitimate use: skipping the decorator entirely when telemetry is disabled avoids paying even the interface-dispatch cost per store call, and a non-instrumented store preserves the surrounding context unmodified. Command handlers and other call sites **must not** gate their own work on `enabled()` -- the no-op providers installed by §7.2 make `tracer.Start`, `span.End`, `RecordX`, and metric recording cheap by design, and duplicate gating splits the code path into "enabled" and "disabled" variants that drift over time. The helper is unexported (`enabled`, not `Enabled`) to prevent accidental external use; if a future caller needs the signal, it should surface through a more specific API (e.g., a dedicated constructor option) rather than a general "is telemetry on" flag.
 
 The decorator's store methods fall into two emission shapes:
 
@@ -812,17 +827,34 @@ Similar recorders for `RecordLinkAdded`, `RecordLinkRemoved`, `RecordBatchOutcom
 
 ### 8.7 Role-gating span
 
-When an elevated command runs, a `quest.role.gate` child span records the gate check. This gives retrospectives a clean signal for "how often did worker-role commands attempt elevated operations" independent of the terminal status of the parent command:
+When an elevated command runs, a `quest.role.gate` child span records the gate check. This gives retrospectives a clean signal for "how often did worker-role commands attempt elevated operations" independent of the terminal status of the parent command.
+
+**Separation of concerns.** The gate *decision* -- "does this role match `elevated_roles` in the config?" -- is made by `internal/cli/` using `config.IsElevated(role, requiredRoles)`. Telemetry is a pure observer: it receives the already-computed boolean and wraps it in a span. The telemetry package does not import `internal/config/` and never evaluates role policy itself. This keeps `internal/telemetry/` free of business logic and matches the package-layering rule in §10.1 (business logic does not import OTEL; telemetry does not import business logic).
+
+The helper is deliberately thin:
 
 ```go
-ctx, span := tracer.Start(ctx, "quest.role.gate",
-    trace.WithAttributes(
-        attribute.String("quest.role.required", "elevated"),
-        attribute.String("quest.role.actual", agentRole),
-        attribute.Bool("quest.role.allowed", allowed),
-    ),
-)
-span.End()
+// internal/telemetry/gate.go
+func GateSpan(ctx context.Context, agentRole string, allowed bool) {
+    _, span := tracer.Start(ctx, "quest.role.gate",
+        trace.WithAttributes(
+            attribute.String("quest.role.required", "elevated"),
+            attribute.String("quest.role.actual", roleOrUnset(agentRole)),
+            attribute.Bool("quest.role.allowed", allowed),
+        ),
+    )
+    span.End()
+}
+```
+
+Dispatch calls it as:
+
+```go
+allowed := config.IsElevated(cfg.Agent.Role, cfg.Workspace.ElevatedRoles)
+telemetry.GateSpan(ctx, cfg.Agent.Role, allowed)
+if !allowed && descriptor.Elevated {
+    return errRoleDenied // command span records exit_code=6, class=role_denied
+}
 ```
 
 If the gate denies the command, the parent span records `exit_code=6` and error class `role_denied`, and the handler returns without executing the command body. The gate span is the fine-grained record; the command span is the outcome record.
@@ -832,18 +864,32 @@ If the gate denies the command, the parent span records `exit_code=6` and error 
 At startup, before any command runs, if the binary's supported schema version exceeds the stored version, quest runs migrations inside a single transaction. This emits `quest.db.migrate` as a root-level span:
 
 ```go
-ctx, span := tracer.Start(ctx, "quest.db.migrate",
-    trace.WithAttributes(
-        attribute.Int("quest.schema.from", currentVersion),
-        attribute.Int("quest.schema.to", targetVersion),
-    ),
-)
-defer span.End()
+// internal/telemetry/migrate.go
+func MigrateSpan(ctx context.Context, from, to int) (context.Context, func(applied int, err error)) {
+    ctx, span := tracer.Start(ctx, "quest.db.migrate",
+        trace.WithAttributes(
+            attribute.Int("quest.schema.from", from),
+            attribute.Int("quest.schema.to", to),
+        ),
+    )
+    return ctx, func(applied int, err error) {
+        span.SetAttributes(attribute.Int("quest.schema.applied_count", applied))
+        if err != nil {
+            span.RecordError(err)
+            span.SetStatus(codes.Error, err.Error())
+        }
+        span.End()
+    }
+}
 ```
+
+Callers (the dispatcher; `quest init`'s handler) read `meta.schema_version` via `store.CurrentSchemaVersion(ctx, s)` and pass it as `from`; `to` is the binary's `store.SupportedSchemaVersion` constant. Both attributes are set at span start so the backend can index on them even if the span is cut short by a migration error.
 
 On success, `quest.schema.applied_count` is added. On failure (migration error), the span records the error and the binary exits with code 1; no command span is created.
 
 Because migrations happen before the command span, the `quest.db.migrate` span is a sibling of the command span in the trace -- both children of the upstream `TRACEPARENT` context (if present) or both root spans in their own traces (if absent).
+
+**Init carve-out.** `quest init` creates the workspace before a schema exists, so the migration call is issued from *inside* the init handler rather than by the dispatcher. In that one case, `quest.db.migrate` is a child of the `execute_tool quest.init` command span, not a sibling. Every other command follows the sibling shape. Metric-wise (`dept.quest.schema.migrations`), the counter increments either way; the hierarchy difference matters only for trace queries.
 
 ---
 
@@ -881,8 +927,8 @@ Under any flag combination:
 | Package                    | Imports OTEL API | Imports OTEL SDK   | Notes                                                         |
 | -------------------------- | ---------------- | ------------------ | ------------------------------------------------------------- |
 | `internal/telemetry/`      | Yes              | `setup.go` only    | Only `setup.go` imports SDK + exporters                       |
-| `internal/cli/`            | No               | No                 | Calls `telemetry.Setup` and `telemetry.ExtractTraceFromEnv`   |
-| `internal/command/` (handlers) | No           | No                 | Calls `telemetry.CommandSpan`, `telemetry.RecordX`            |
+| `internal/cli/`            | No               | No                 | Calls `telemetry.Setup` and `telemetry.ExtractTraceFromConfig`, passing values resolved by `internal/config/` |
+| `internal/command/` (handlers) | No           | No                 | Calls `telemetry.RecordX`; receives a context carrying the command span created by `cli.Execute` (see §8.2) |
 | `internal/store/` (DB)     | No               | No                 | Instrumented via `InstrumentedStore` wrapper                   |
 | `internal/validate/`       | No               | No                 | Calls `telemetry.ValidationPhase` wrapper                     |
 | `cmd/quest/`               | No               | No                 | `cli.Execute` handles SDK setup                               |

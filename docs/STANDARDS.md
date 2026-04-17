@@ -55,6 +55,11 @@ type WorkspaceConfig struct {
     // Required — if no .quest/ is found, quest exits with code 2.
     Root string
 
+    // DBPath is the absolute path to the SQLite database file.
+    // Computed at load time as {Root}/.quest/quest.db.
+    // Populated by config.Load so no other package recomputes it.
+    DBPath string
+
     // IDPrefix is the project-specific task ID prefix (e.g., "proj").
     // Source: .quest/config.toml (set once at quest init).
     // Required. Validated per quest-spec Prefix validation rules.
@@ -77,6 +82,14 @@ type AgentConfig struct {
     // Session is the vigil-assigned session ID, from AGENT_SESSION. Empty when unset.
     // Env: AGENT_SESSION
     Session string
+
+    // TraceParent is the W3C trace context carried in from the caller. Empty when unset.
+    // Env: TRACEPARENT
+    TraceParent string
+
+    // TraceState is the W3C trace-state carried in from the caller. Empty when unset.
+    // Env: TRACESTATE
+    TraceState string
 }
 
 type LogConfig struct {
@@ -157,31 +170,33 @@ Rules:
 
 ### Defaults
 
-Every config field either has a sensible default or is explicitly required. Document both. Example:
+Every config field either has a sensible default or is explicitly required. Document both.
+
+`Load` is tolerant and returns a populated struct without an error. `Validate` is explicit and is called by the dispatcher only for commands that require a workspace — `quest init` (runs before `.quest/` exists) and `quest version` (purely informational) skip it. The split lets the dispatcher decide when field validation should fire without branching on a returned error.
+
+I/O errors reading `.quest/config.toml` other than "file missing" (permission denied, malformed TOML, read error mid-walk) are logged via `slog.Warn` naming the path and the underlying OS error, and `Load` proceeds as if the file were absent. Validation will surface the missing `IDPrefix` when a workspace-bound command eventually calls `Validate`. This keeps `Load` infallible — the contract the dispatcher relies on.
 
 ```go
 // Load reads configuration from config.toml, environment variables, and flags.
-func Load(flags Flags) (Config, error) {
-    root, err := discoverWorkspace()
-    if err != nil {
-        return Config{}, err
-    }
+// Load never returns an error; partial or missing configuration is surfaced by Validate.
+func Load(flags Flags) Config {
+    root, _ := discoverWorkspace() // empty when no .quest/ is found; Validate surfaces it
 
-    file, err := readConfigFile(root)
-    if err != nil {
-        return Config{}, err
-    }
+    file := readConfigFile(root) // slog.Warn on I/O / parse errors; returns zero struct
 
     cfg := Config{
         Workspace: WorkspaceConfig{
             Root:          root,
+            DBPath:        dbPath(root), // {Root}/.quest/quest.db, or "" when root is empty
             IDPrefix:      file.IDPrefix,         // required, no default
             ElevatedRoles: file.ElevatedRoles,    // default: nil (empty)
         },
         Agent: AgentConfig{
-            Role:    os.Getenv("AGENT_ROLE"),    // empty when unset
-            Task:    os.Getenv("AGENT_TASK"),
-            Session: os.Getenv("AGENT_SESSION"),
+            Role:        os.Getenv("AGENT_ROLE"),    // empty when unset
+            Task:        os.Getenv("AGENT_TASK"),
+            Session:     os.Getenv("AGENT_SESSION"),
+            TraceParent: os.Getenv("TRACEPARENT"),
+            TraceState:  os.Getenv("TRACESTATE"),
         },
         Log: LogConfig{
             Level:     firstNonEmpty(flags.LogLevel, os.Getenv("QUEST_LOG_LEVEL"), "warn"),
@@ -192,8 +207,12 @@ func Load(flags Flags) (Config, error) {
         },
     }
 
-    return cfg, cfg.Validate()
+    return cfg
 }
+
+// Validate checks required fields and field-shape constraints. The dispatcher calls
+// this for workspace-bound commands; `quest init` and `quest version` skip it.
+func (c Config) Validate() error { /* ... see §Validation ... */ }
 ```
 
 Required fields with no default MUST cause a clear startup error with the missing source:
@@ -223,10 +242,11 @@ Flag names use kebab-case and mirror the environment variable name without the `
 ```
 QUEST_LOG_LEVEL  → --log-level
 --format (no env equivalent, defaults to "json")
---color  (no env equivalent, off by default; TTY-dependent in text mode)
 ```
 
-Global flags (`--format`, `--log-level`, `--color`) MUST be position-independent — they can appear before or after the command name. The CLI extracts them in a first parsing pass before dispatching the command.
+Global flags (`--format`, `--log-level`) MUST be position-independent — they can appear before or after the command name. The CLI extracts them in a first parsing pass before dispatching the command.
+
+A `--color` flag is deliberately not defined. Text-mode output is plain; humans who want colored rendering pipe through a colorizer. Revisit when a concrete agent workflow needs color and specific color rules are pinned in the spec.
 
 `.quest/config.toml` fields do not get flag overrides. They are immutable for the life of the project; the only way to change `id_prefix` or `elevated_roles` is to edit the file directly.
 

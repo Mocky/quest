@@ -257,19 +257,24 @@ Tests that need a populated database get a helper that opens a fresh SQLite file
 
 ```go
 // NewStore opens an empty quest.db at migration head inside t.TempDir().
-func NewStore(t *testing.T) *store.Store {
+// Returns the store.Store interface (not a concrete type) — handlers and
+// tests both depend on the interface so InstrumentedStore can decorate it.
+func NewStore(t *testing.T) store.Store {
     t.Helper()
     path := filepath.Join(t.TempDir(), "quest.db")
     s, err := store.Open(path)
     if err != nil {
         t.Fatalf("store.Open: %v", err)
     }
+    if err := store.Migrate(context.Background(), s); err != nil {
+        t.Fatalf("store.Migrate: %v", err)
+    }
     t.Cleanup(func() { s.Close() })
     return s
 }
 
 // SeedTask inserts a task directly (bypassing CLI/handler) for setup in handler tests.
-func SeedTask(t *testing.T, s *store.Store, task store.Task) {
+func SeedTask(t *testing.T, s store.Store, task store.Task) {
     t.Helper()
     // ...
 }

@@ -192,7 +192,7 @@ $ quest accept proj-a1 --log-level debug
 # stderr:
 level=DEBUG msg="quest command start" command=accept agent.role=planner dept.task.id=proj-a1
 level=DEBUG msg="role gate passed" command=accept elevated=true
-level=DEBUG msg="BEGIN IMMEDIATE acquired" tx_kind=accept_parent lock_wait_ms=1.2
+level=DEBUG msg="BEGIN IMMEDIATE acquired" tx_kind=accept lock_wait_ms=1.2
 level=INFO  msg="precondition failed" command=accept task.id=proj-a1 precondition=children_terminal blocked_by_ids=proj-a1.1,proj-a1.2
 level=DEBUG msg="quest command complete" command=accept exit_code=5 duration_ms=4.1
 quest: conflict: proj-a1 has non-terminal children: proj-a1.1 (accepted), proj-a1.2 (open)
@@ -272,7 +272,7 @@ Use these field names consistently in every slog call. Do not invent synonyms. T
 | `duration_ms`          | float64 | Elapsed time in milliseconds.                                          |
 | `exit_code`            | int     | Process exit code (0-7).                                               |
 | `err`                  | string  | Error message, truncated to 256 characters. Never the raw `%v` of wrapped internal errors. |
-| `tx_kind`              | string  | Structural transaction type (`accept_parent`, `move`, etc. — see OTEL.md). |
+| `tx_kind`              | string  | Transaction type — one of `accept`, `create`, `complete`, `fail`, `reset`, `cancel`, `cancel_recursive`, `move`, `batch_create`, `link`, `unlink`, `tag`, `untag`, `update`. See OTEL.md §4.3/§5.3 for the authoritative enum. |
 | `lock_wait_ms`         | float64 | Time spent waiting for the SQLite write lock.                          |
 | `rows_affected`        | int     | Rows changed by a write or returned by a read.                         |
 | `precondition`         | string  | Name of the precondition that failed (`children_terminal`, `parent_open`, etc.). |
@@ -309,14 +309,14 @@ level=DEBUG msg="quest command complete" command=create exit_code=0 duration_ms=
 Structural transactions (those that use `BEGIN IMMEDIATE`) get a lifecycle pair at DEBUG:
 
 ```
-level=DEBUG msg="BEGIN IMMEDIATE acquired" tx_kind=accept_parent lock_wait_ms=1.2
-level=DEBUG msg="tx committed"             tx_kind=accept_parent rows_affected=2
+level=DEBUG msg="BEGIN IMMEDIATE acquired" tx_kind=accept lock_wait_ms=1.2
+level=DEBUG msg="tx committed"             tx_kind=accept rows_affected=2
 ```
 
 On rollback:
 
 ```
-level=DEBUG msg="tx rolled back" tx_kind=accept_parent outcome=rolled_back_precondition
+level=DEBUG msg="tx rolled back" tx_kind=accept outcome=rolled_back_precondition
 ```
 
 Do not log inside the transaction for every SQL statement. Per-statement cost is captured as span events per OTEL.md §4.2.
