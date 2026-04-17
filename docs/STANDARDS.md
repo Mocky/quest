@@ -131,7 +131,7 @@ Rules:
 
 - The `QUEST_` prefix is always present for quest-local variables. No bare `LOG_LEVEL`.
 - Names match the config struct field path: `LogConfig.Level` → `QUEST_LOG_LEVEL`. Keep this mapping predictable.
-- Boolean variables use the field name without `IS_` or `ENABLE_` prefixes. Parsed with `strconv.ParseBool` (accepts `1`, `true`, `t`, `yes`, `y` and their negatives).
+- Boolean variables use the field name without `IS_` or `ENABLE_` prefixes. Parsed with `strconv.ParseBool`, which accepts `1`, `t`, `T`, `TRUE`, `true`, `True`, `0`, `f`, `F`, `FALSE`, `false`, `False` — and nothing else. Do not document `yes`/`y`/`on` as accepted; they are not.
 - Do not add a `QUEST_` variable that duplicates a `.quest/config.toml` field. Config-file settings are immutable for the project; environment overrides would silently split the source of truth.
 
 ### Config File (`.quest/config.toml`)

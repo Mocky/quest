@@ -659,6 +659,18 @@ Command handlers call this once and defer `span.End()`. Quest-specific attribute
 
 **No manual no-op short-circuit.** An earlier draft had `CommandSpan` check `Enabled()` and return a non-recording span without calling `tracer.Start`. That has been removed -- it risked breaking trace propagation when a valid parent context was present and fragmented the "disabled" path into two logics. Rely on the no-op providers installed by §7.2: `tracer.Start` on a no-op provider is already near-zero cost (no exporter round-trip, no allocation beyond the returned interface), and it preserves the parent context correctly.
 
+**Optional wrapper: `WrapCommand`.** `CommandSpan` is the primitive; most handlers pair it with the §4.4 three-step error pattern at every exit. To avoid duplicating that boilerplate, `internal/telemetry/command.go` also exposes a middleware-style wrapper:
+
+```go
+// Runs fn inside a CommandSpan. On a non-nil returned error, records it via the
+// three-step pattern (RecordError + SetStatus + dept.quest.errors counter) using
+// errors.ExitCode(err) to classify. Always calls span.End().
+func WrapCommand(ctx context.Context, command string, elevated bool,
+    fn func(ctx context.Context) error) error
+```
+
+Handlers that want the sugar write `return telemetry.WrapCommand(ctx, "accept", elevated, func(ctx context.Context) error { ... })`. Handlers that need finer-grained span control (multiple error sites with different exit codes, or span attributes set mid-handler) use `CommandSpan` directly. Both paths emit the same spans and metrics; `WrapCommand` is a call-site convenience, not a second instrumentation point.
+
 ### 8.3 Instrumented store decorator
 
 Primary instrumentation point for storage. Wraps the quest store interface (whatever name it has -- `Store`, `TaskStore`, etc.) with an identically-shaped implementation that records telemetry around each operation:

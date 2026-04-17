@@ -117,7 +117,7 @@ Vigil starts agent session
 ### What Surfaces Where
 
 - **Stdout** — never carries identifiers. Stdout is the command result: task JSON, batch ref→id mapping, graph structure. Identifiers are metadata, not data.
-- **Stderr** — slog records include `dept.task.id` and `dept.session.id` when non-empty. Trace ID is injected by the stderr handler when available (see §3.1 of the slog bridge design).
+- **Stderr** — slog records include `dept.task.id` and `dept.session.id` when non-empty. `trace_id` and `span_id` are injected by a trace-enrichment wrapper around the stderr handler (`internal/logging/`): it calls `telemetry.TraceIDsFromContext` on the record's context and, when a span is active, adds the two IDs as slog attributes before the record reaches the text handler. When no span is active (telemetry disabled or lifecycle calls before a span exists), the fields are simply omitted. The OTEL log bridge (OTEL.md §3.1) is a separate, parallel handler for the OTEL log signal — it does not feed stderr.
 - **History entries** — `role` and `session` fields on every mutation (quest-spec §History field). Recorded as `null` when the env var is unset.
 - **Spans** — full attribute set per `OTEL.md §4.3`.
 

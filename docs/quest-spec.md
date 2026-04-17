@@ -238,6 +238,20 @@ This convention applies to: `--debrief`, `--description`, `--context`, `--handof
 | 6    | Role denied (elevated command attempted by non-elevated role)                             |
 | 7    | Transient failure (write lock unavailable, safe to retry)                                 |
 
+### Error precedence
+
+A single command invocation can trip multiple checks (e.g., a non-elevated worker sends `quest update --tier T3` against a cancelled task ID that does not exist). When more than one condition fails, the reported error class -- and therefore the exit code -- is fixed so that agent retry logic is deterministic. Checks run in this order and the first failure wins:
+
+1. **Existence** → exit 3 (`not_found`). Checked by the transaction's initial `SELECT`. A missing task ID short-circuits every other check because no state is known about it.
+2. **Role gate** → exit 6 (`role_denied`). A worker calling an elevated command, or a worker passing any elevated flag on a mixed command, is rejected before the task row is consulted beyond its existence. The role gate is the framework's context-window and surface-area boundary; it must never leak spec-state details to roles that should not see them.
+3. **Permission** → exit 4 (`permission_denied`). Ownership checks for worker commands on tasks owned by a different session. Runs after role gating because permission depends on the command surface the role sees.
+4. **State** → exit 5 (`conflict`). Task status precondition failures (terminal-state gating, non-open parent, non-terminal children, wrong from-status for the transition). Runs after permission so an intruder does not learn the target's status.
+5. **Usage** → exit 2 (`usage_error`). Flag-shape problems like an invalid tier string or an unparseable `@file` argument. Runs last because usage validation of free-form fields (notes, descriptions) is pointless if the caller cannot act on the task anyway.
+
+Transient lock contention (exit 7) is orthogonal: it is returned whenever `BEGIN IMMEDIATE` times out, regardless of which of the above checks would have fired. Exit 7 is the retryable class; 1-6 are not.
+
+Implementation: every write command routes through `BeginImmediate` and performs the checks in the above order inside the transaction, so the precedence is a property of the code path, not an emergent behavior of check ordering.
+
 ### Idempotency
 
 Agents may retry commands after transient failures (exit code 7) or session recovery. The retry behavior of each write command is specified here so agent implementers know which commands are safe to re-execute without side effects.
@@ -247,6 +261,7 @@ Agents may retry commands after transient failures (exit code 7) or session reco
 | `accept`           | No         | Fails with exit 5 if already accepted. Crash recovery requires explicit `reset` by the lead                            |
 | `update --note`    | No         | Always appends a new note. Caller is responsible for deduplication if needed. Fails with exit 5 on cancelled tasks     |
 | `update --pr`      | Yes        | Duplicate PR URLs are silently ignored. Fails with exit 5 on cancelled tasks                                           |
+| `update --meta`    | Yes        | Overwrites the value for an existing key; sets it for a new key. Fails with exit 5 on cancelled tasks                  |
 | `update --handoff` | Yes        | Overwrites previous value. Last write wins. Fails with exit 5 on cancelled tasks                                       |
 | `complete`         | No         | Fails with exit 5 if already in a terminal state (`complete`, `failed`, or `cancelled`). Terminal states are permanent |
 | `fail`             | No         | Fails with exit 5 if already in a terminal state (`complete`, `failed`, or `cancelled`). Terminal states are permanent |
@@ -632,7 +647,9 @@ Write progress information to the task. Workers can update execution fields. Ele
 
 All field changes are recorded in the task's history. Flags listed in Input Conventions support `@file` input.
 
-**Terminal-state gating.** On tasks in `complete`, `failed`, or `cancelled` status, `quest update` accepts only the append/annotation flags: `--note`, `--pr`, and `--meta`. These are either append-only (`--note`, `--pr`) or free-form annotation (`--meta`) and do not retroactively rewrite execution-time state. Any other flag -- `--title`, `--description`, `--context`, `--type`, `--tier`, `--role`, `--acceptance-criteria`, `--handoff` -- returns exit code 5 (conflict) with a message listing the blocked fields. This applies to both worker and elevated roles. Rationale: fields like `tier`, `role`, and `type` drive retrospective analytics ("which tiers produced bugs?"); retroactive edits would silently falsify the simplest form of those queries. Planning copy (`title`, `description`, etc.) is preserved in the audit history and has no legitimate post-terminal edit case. `--handoff` is a session-continuity field with no meaning on a task that will not be accepted again.
+**Terminal-state gating.** On tasks in `complete` or `failed` status, `quest update` accepts only the append/annotation flags: `--note`, `--pr`, and `--meta`. These are either append-only (`--note`, `--pr`) or free-form annotation (`--meta`) and do not retroactively rewrite execution-time state. Any other flag -- `--title`, `--description`, `--context`, `--type`, `--tier`, `--role`, `--acceptance-criteria`, `--handoff` -- returns exit code 5 (conflict) with a message listing the blocked fields. This applies to both worker and elevated roles. Rationale: fields like `tier`, `role`, and `type` drive retrospective analytics ("which tiers produced bugs?"); retroactive edits would silently falsify the simplest form of those queries. Planning copy (`title`, `description`, etc.) is preserved in the audit history and has no legitimate post-terminal edit case. `--handoff` is a session-continuity field with no meaning on a task that will not be accepted again.
+
+**Cancelled tasks reject every `quest update` variant.** `cancelled` is stricter than the other terminal states: `quest update` on a cancelled task -- including `--note`, `--pr`, `--meta`, and `--handoff` -- returns exit code 5 (conflict) with the structured body defined under *In-flight worker coordination* in `quest cancel`. This applies to worker and elevated roles alike. Rationale: the structured conflict on every worker operation is the framework signal that tells vigil to terminate the in-flight worker session; allowing any update to slip through would defeat that signal and let a terminated-but-unaware worker keep writing to a task the planner has already retired. Planner annotations (`--meta`) and debrief-style context belong on the *replacement* task if follow-up is needed, not on the cancelled one. `quest complete` and `quest fail` on a cancelled task are rejected for the same reason.
 
 ---
 
@@ -717,15 +734,24 @@ Used by the planning agent to create an entire task graph in a single tool call 
 
 The batch file supports a `ref` field for internal cross-referencing. Tasks can reference other tasks in the same batch by `ref` in their `parent` and `dependencies` fields. External (pre-existing) task IDs are referenced by `id` instead of `ref`. Quest resolves batch references to real task IDs during import.
 
+Both `parent` and `dependencies[].` items accept the same two disambiguated shapes:
+
+- `{"ref": "<batch-local ref>"}` -- resolved against earlier `ref` values in the same batch.
+- `{"id": "<task ID>"}` -- resolved against pre-existing tasks in the store.
+
+A bare string in `parent` (e.g., `"parent": "epic-1"`) is shorthand for `{"ref": "epic-1"}` -- ref-only. The shorthand exists so the common case (new task parented under an earlier in-batch task) stays terse. When the planner needs to parent a new task under a pre-existing external task in a single batch, it must use the object form: `{"id": "proj-a1"}`. Mixing the two keys in one reference (e.g., `{"ref": "x", "id": "y"}`) or providing neither is an `ambiguous_reference` parse error -- exactly one of `ref` or `id` must be present. The same disambiguation rule already applies to `dependencies` entries; batch validation phase 2 (Reference) checks that the chosen key resolves to an actual ref/ID. A `ref`-shape target that does not match any earlier batch line is an `unresolved_ref`; an `id`-shape target that does not match any existing task is an `unknown_task_id`.
+
 ### Batch file format
 
 ```jsonl
 {"ref": "epic-1", "title": "Auth module", "type": "task", "tier": "T3", "acceptance_criteria": "Integration tests pass, all endpoints return correct status codes"}
 {"ref": "task-1", "title": "JWT validation", "parent": "epic-1", "tier": "T2", "role": "coder", "tags": ["go", "auth"]}
-{"ref": "task-2", "title": "Session store", "parent": "epic-1", "tier": "T2", "role": "coder", "tags": ["go"]}
+{"ref": "task-2", "title": "Session store", "parent": {"ref": "epic-1"}, "tier": "T2", "role": "coder", "tags": ["go"]}
 {"ref": "task-3", "title": "Auth middleware", "parent": "epic-1", "tier": "T3", "role": "coder", "dependencies": [{"ref": "task-1", "type": "blocked-by"}, {"ref": "task-2", "type": "blocked-by"}]}
-{"ref": "task-4", "title": "Fix token leak", "type": "bug", "tier": "T2", "dependencies": [{"id": "proj-31", "type": "caused-by"}]}
+{"ref": "task-4", "title": "Fix token leak", "type": "bug", "parent": {"id": "proj-a1"}, "tier": "T2", "dependencies": [{"id": "proj-31", "type": "caused-by"}]}
 ```
+
+The first `task-2` line uses the explicit `{"ref": ...}` form; `task-1` and `task-3` use the bare-string shorthand. `task-4` parents under an external pre-existing task via `{"id": ...}`.
 
 ### Batch validation
 
@@ -766,6 +792,7 @@ Additional fields depend on `code`:
 | `empty_file`           | parse     | none                                                       |
 | `malformed_json`       | parse     | none                                                       |
 | `missing_field`        | parse     | `field`                                                    |
+| `ambiguous_reference`  | parse     | `field` (`parent` or `dependencies[n]`)                    |
 | `duplicate_ref`        | reference | `ref`, `first_line` (line where the ref was first defined) |
 | `unresolved_ref`       | reference | `ref`                                                      |
 | `unknown_task_id`      | reference | `id`                                                       |
@@ -1130,6 +1157,28 @@ quest version
 ```
 
 Print version information.
+
+In `--format json` (default), output is a single JSON object:
+
+```json
+{"version": "0.1.0"}
+```
+
+The object has exactly one field:
+
+| Field     | Type   | Description                                                                                                                                                                                                             |
+| --------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version` | string | The binary's version string. Matches the `CHANGELOG.md` entry when built from a release tag; otherwise a `git describe`-style identifier (e.g., `0.1.0-3-gabcdef1-dirty`) or the literal `"dev"` for untagged local builds |
+
+Per the repeated "all fields always present" rule in this spec, the `version` field is always present and is always a non-empty string. Agents parsing `quest version --format json` may rely on that.
+
+In `--format text`, the output is the bare version string followed by a newline (no surrounding whitespace, no prefix). Examples:
+
+```
+0.1.0
+```
+
+Additional informational fields (build commit, build date, Go version, etc.) are deliberately deferred: until there is a concrete agent or tooling consumer for them, keeping the object single-field keeps the contract small and the stability promise simple.
 
 ---
 
