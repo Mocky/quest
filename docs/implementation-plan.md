@@ -55,13 +55,13 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
 
 **Implementation notes:**
 
-- Module path: `github.com/Mocky/quest`. Record this in `go.mod` and in every test import; do not use a placeholder.
-- Go version: `1.23` or later. The `iter.Seq` signature used in Task 4.3 requires 1.23; also picks up `slog` / `log/slog` stability.
+- Module path: `github.com/mocky/quest`. Record this in `go.mod` and in every test import; do not use a placeholder. The path is lowercase to match Go community convention and to avoid case-sensitivity issues on macOS APFS / Windows NTFS filesystems.
+- Go version: `1.21` or later. Picks up `slog` / `log/slog` stability; nothing in the plan depends on Go 1.23-only features.
 - Create these empty-but-committed package directories with one `doc.go` per package:
   ```
-  cmd/quest/                  main, global flag parsing, dispatch, SDK lifecycle
-  internal/cli/               command dispatcher, global flag parsing, role gate shim
-  internal/command/           one file per command handler (accept.go, create.go, ...)
+  cmd/quest/                  main + run: load config, init logging, telemetry.Setup, ExtractTraceFromConfig, defer shutdown, call cli.Execute. Nothing else — no flag parsing, no dispatch, no handlers.
+  internal/cli/               global flag parsing, command dispatcher, role gate, WrapCommand, per-command flag parsing
+  internal/command/           flat package (one file per command handler — accept.go, create.go, ...); contract tests in internal/command/contract_test.go (see Task 13.1 for the flat layout)
   internal/config/            the single config package (see Phase 1)
   internal/logging/           slog setup, fan-out handler shell
   internal/errors/            exit-code + error-class mapping
@@ -72,7 +72,7 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
   internal/output/            json/text rendering helpers
   internal/export/            quest export layout generator
   internal/telemetry/         OTEL package (added as a no-op shell in Task 2.3, filled in Task 12.1)
-  internal/testutil/          shared test helpers (workspace, store, CLI runner)
+  internal/testutil/          shared test helpers. Planned surface: NewWorkspace(t), NewStore(t), NewFakeStore(t) (in-memory Store fake for unit tests without SQLite), SeedTask(t, store, Task), AssertExitCode(t, got, want int), AssertErrorClass(t, err, wantClass string), AssertJSONKeyOrder(t, got []byte, want []string), AssertSchema(t, got []byte, required []string), NewCapturingTracer(t) / NewCapturingMeter(t) / NewCapturingLogger(t) (OTEL test providers via tracetest / metrictest).
   internal/buildinfo/         version string wired with -ldflags
   ```
 - Each `doc.go` is a single package comment (`// Package <name> ...`) of one paragraph: summarize the package's role, state its import-direction constraints (e.g., "imports no other internal packages except X"), name the key exported type(s), and cite the governing spec anchor. Keep it under ~120 words — these render in `go doc` and serve as the first orientation a new contributor gets for the package.
@@ -84,7 +84,7 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
   No handler ever calls `os.Exit`.
 - `Makefile` targets. Declare `MODULE` and `VERSION` at the top of the file so every target sees them:
   ```make
-  MODULE  := github.com/Mocky/quest
+  MODULE  := github.com/mocky/quest
   VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
   ```
   Targets:
@@ -94,12 +94,11 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
   - `cover` — `go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out`
   - `lint` — `go vet ./...` followed by `gofmt -l .` (the second command exits non-zero if any file needs reformatting, which is the intended behavior)
   - `ci` — `go test -race -count=1 -tags integration -coverprofile=coverage.out ./...`, matching `TESTING.md` §CI Expectations
-- `go.mod` dependencies: pin `modernc.org/sqlite v1.28.0` (or the newest stable version at implementation time — cite whichever version supports post-`Open` `PRAGMA` statements, which every recent release does). The DSN does **not** carry pragma params; pragmas are issued after open (see Task 3.1). Also pin `github.com/BurntSushi/toml` at its current release.
+- `go.mod` dependencies: pin `modernc.org/sqlite v1.28.0` or newer — the version must support the `_txlock=immediate` DSN parameter (stable since `v1.20.x`) and expose `sqlite.RegisterConnectionHook` (or the older `RegisterConnectHook` spelling, both are acceptable — verify which your pinned version exports). The DSN carries only `?_txlock=immediate` (no pragma params); genuine SQLite pragmas (`journal_mode`, `busy_timeout`, `foreign_keys`, `defer_foreign_keys`) are issued post-open via the connect hook. See Task 3.1 for the full rationale. Also pin `github.com/BurntSushi/toml` at its current release and `golang.org/x/term` (used by `internal/output/` for TTY width detection in Task 4.3).
+- **Verify `_txlock=immediate` support before Phase 3 begins.** Before Task 3.1 lands, run a one-shot verification: open a DB with `?_txlock=immediate`, hold the write lock from one connection, assert a second `BeginTx` blocks until the first releases (not fails immediately). Commit the verification result to `internal/store/testdata/_txlock_verify.md` so future driver upgrades can re-run it. If the pinned driver version does not recognize `_txlock=immediate`, every `BeginImmediate` silently degrades to `BEGIN` (deferred) and the exit-code-7 contract collapses — the failure mode is catastrophic, so verify the foundational assumption before building on it.
 - `CHANGELOG.md` seed content per `STANDARDS.md` §Changelog. File contents literally:
   ```markdown
   # Changelog
-
-  Follows Keep a Changelog (https://keepachangelog.com/).
 
   ## [Unreleased]
 
@@ -110,7 +109,7 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
   ### Fixed
   ### Schema
   ```
-  The six `###` sections stay even when empty so later edits only need to add bullets.
+  The six `###` sections stay even when empty so later edits only need to add bullets. The "Follows Keep a Changelog" reference lives in `STANDARDS.md` §Changelog (not in the seed file) to keep the seed minimal.
 - `.gitignore`: `quest` binary, `quest-export/`, `.quest/quest.db*`, `coverage.out`.
 
 **Tests:** none yet; verify `go build ./...` and `go test ./...` succeed on the empty scaffolding.
@@ -130,9 +129,28 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
 - `internal/buildinfo/buildinfo.go` defines `var Version = "dev"`.
 - `Makefile` `build` target injects the version: `go build -ldflags "-X $(MODULE)/internal/buildinfo.Version=$(VERSION)" -o quest ./cmd/quest`, where `VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)`.
 - `quest version` output matches spec §`quest version`: `--format json` (default) emits `{"version": "..."}` with a single always-present `version` field; `--format text` emits the bare version string followed by a newline. Pin the JSON shape in the Task 13.1 contract test (`TestVersionOutputShape`).
-- Version command runs the standard startup flow (config load, logging init, `telemetry.Setup`). It does **not** need a special early-exit path — the no-op OTEL providers from `OTEL.md` §7.2 make telemetry setup zero-cost when disabled, and version works with no workspace because it never opens the DB.
+- Version command runs the standard startup flow. Concretely `main.run()` (`OTEL.md` §7.1) performs:
+  1. Parse global flags (`--format`, `--log-level`) from `os.Args[1:]` into `config.Flags`. `main.run()` owns flag parsing so the logger / telemetry are built with the resolved values; `cli.Execute` does not re-parse.
+  2. `cfg := config.Load(flags)` — infallible.
+  3. `logger := logging.Setup(cfg.Log)` then `slog.SetDefault(logger)` (no OTEL bridge yet; the bridge is added after `telemetry.Setup`).
+  4. Call `telemetry.Setup` with a fully-populated `telemetry.Config` including `CaptureContent` from `cfg.Telemetry.CaptureContent`:
+     ```go
+     bridge, otelShutdown, _ := telemetry.Setup(ctx, telemetry.Config{
+         ServiceName:    "quest-cli",
+         ServiceVersion: buildinfo.Version,
+         AgentRole:      cfg.Agent.Role,
+         AgentTask:      cfg.Agent.Task,
+         AgentSession:   cfg.Agent.Session,
+         CaptureContent: cfg.Telemetry.CaptureContent,
+     })
+     ```
+     Errors from `Setup` are logged and ignored (telemetry is a secondary output; `Setup` always returns usable providers). `defer otelShutdown(shutdownCtx)` with a 5-second timeout. Omitting `CaptureContent` here would silently make `OTEL_GENAI_CAPTURE_CONTENT=true` a no-op at runtime; every field on `telemetry.Config` must be set explicitly.
+  5. `logger = logging.Setup(cfg.Log, bridge)`; re-install as default — this is the fan-out that adds the otelslog handler.
+  6. `ctx = telemetry.ExtractTraceFromConfig(ctx, cfg.Agent.TraceParent, cfg.Agent.TraceState)` — the **one and only** place in the code that extracts the inbound W3C trace context. Must happen before any child span is created; vigil→quest trace correlation depends on it. `cli.Execute` does not re-extract.
+  7. `return cli.Execute(ctx, cfg, remainingArgs, os.Stdin, os.Stdout, os.Stderr)`. `cli.Execute` takes the resolved `cfg` directly — no second `config.Load`.
+  `version` works with no workspace because its descriptor has `RequiresWorkspace=false`; the dispatcher skips `cfg.Validate`, store open, and migrate.
 - Per `OTEL.md` §4.2, `version` is explicitly suppressed from span and metric emission — no `CommandSpan` call, no operation counter increment. Suppression happens at dispatch time inside `cli.Execute`, not by skipping setup.
-- **Accepted trade-off:** when OTEL is *enabled* (the non-default case), `quest version` pays the cost of `telemetry.Setup` and `Shutdown` — exporter construction, batch-processor goroutines, W3C propagator install — even though the command emits nothing. This is an intentional simplification; revisit only if a scripted consumer materially cares about version latency with OTEL enabled.
+- **Accepted trade-off** (see `OTEL.md` §4.2 "Excluded from span instrumentation" > version): when OTEL is *enabled* (the non-default case), `quest version` pays the cost of `telemetry.Setup` and `Shutdown` — exporter construction, batch-processor goroutines, W3C propagator install — even though the command emits nothing. This is an intentional simplification; revisit only if a scripted consumer materially cares about version latency with OTEL enabled.
 - **Shutdown wiring.** `main.run()` defers `otelShutdown` with a 5-second timeout context per `OTEL.md` §7.1 (`context.WithTimeout(..., 5*time.Second)`). This upper-bounds the flush on exit so a misconfigured collector cannot hang the CLI. The same pattern is mirrored by `telemetry.Setup`'s returned shutdown function in Task 12.1.
 
 **Tests:** Layer 4 CLI test. Build the binary in `TestMain`, run `quest version`, assert exit 0 and that stdout parses as JSON with a `version` key.
@@ -187,13 +205,13 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
 
 ### Task 1.3 — `internal/config/`: env/flag resolution + `Load` + `Validate`
 
-**Deliverable:** `config.Config` struct, `config.Flags` struct, `config.Load(flags Flags) Config`, `config.Validate(cfg Config) error`, `config.IsElevated(role string, elevated []string) bool`.
+**Deliverable:** `config.Config` struct, `config.Flags` struct, `config.Load(flags Flags) Config`, `(Config).Validate() error`, `config.IsElevated(role string, elevated []string) bool`.
 
 **Spec anchors:** `STANDARDS.md` Part 1 (full section, especially §Config Struct, §Validation, §Defaults), `quest-spec.md` §Role Gating (env var names), `OBSERVABILITY.md` §Correlation Identifiers, `OTEL.md` §6.2 and §7.1 (telemetry consumes resolved identity strings, never env vars).
 
 **Implementation notes:**
 
-- Shape exactly as laid out in `STANDARDS.md` §Config Struct: `Workspace`, `Agent`, `Log`, `Telemetry`. `WorkspaceConfig` carries a `DBPath` field populated as `filepath.Join(Root, ".quest/quest.db")` at load time — downstream packages (store, init) take this as a parameter rather than recomputing it.
+- Shape exactly as laid out in `STANDARDS.md` §Config Struct: `Workspace`, `Agent`, `Log`, `Telemetry`, `Output`. `WorkspaceConfig` carries a `DBPath` field populated as `filepath.Join(Root, ".quest/quest.db")` at load time — downstream packages (store, init) take this as a parameter rather than recomputing it. `OutputConfig` carries a `Format string` field populated from `flags.Format` (default `"json"`); handlers read `cfg.Output.Format` to decide between JSON and text rendering. Format is rendering, not logging, so it gets its own section rather than riding on `LogConfig`.
 - `config.Flags` is a two-field struct matching the two global flags that survive after the `--color` drop:
   ```go
   type Flags struct {
@@ -206,8 +224,8 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
 - Precedence: `flag > env var > .quest/config.toml > default`. Implement with a `firstNonEmpty` helper.
 - `Log.Level` default `"warn"`, `Log.OTELLevel` default `"info"`. These are the only two logging knobs per `OBSERVABILITY.md` §Logger Setup.
 - `Telemetry.CaptureContent` is parsed with `strconv.ParseBool` on `OTEL_GENAI_CAPTURE_CONTENT`. An unparseable value (e.g., `yes`, `on`, `1.0`) does **not** fail startup: emit `slog.Warn("invalid OTEL_GENAI_CAPTURE_CONTENT", "value", raw)` once and default `CaptureContent` to `false`. Content capture is strictly opt-in, so silent-off-on-malformed is the safe default; the warn makes the operator error visible.
-- **`Load` is tolerant; `Validate` is explicit.** `Load(flags) Config` always returns a populated config struct (never an error). `Validate(cfg) error` collects every validation error into a single returned multi-line string (`<source>: <what's wrong>` per `STANDARDS.md` §Validation) and is called by the dispatcher for commands that require a workspace — `quest init` and `quest version` run without calling `Validate` because they must work in directories that have no `.quest/` (for `init`) or where `IDPrefix` is absent (for `version`). This is the resolution for the version-command startup conflict: the validation choice belongs to the caller, not the loader. See Task 4.2 dispatch sequence.
-- I/O errors reading `.quest/config.toml` other than "file missing" (permission denied on an existing file, malformed TOML, read error mid-walk-up) are logged once via `slog.Warn` naming the path and the raw OS error, then `Load` populates defaults as if the file were absent. This keeps `Load` infallible; `Validate` surfaces the resulting missing fields when the dispatcher calls it. Matches the behavior documented in `STANDARDS.md` §Defaults after the C3 resolution.
+- **`Load` is tolerant; `Validate` is explicit.** `Load(flags) Config` always returns a populated config struct (never an error). `(Config).Validate() error` is a method (matches `STANDARDS.md` §Validation) that collects every validation error into a single returned multi-line string (`<source>: <what's wrong>`) and is called by the dispatcher for commands that require a workspace — `quest init` and `quest version` run without calling `Validate` because they must work in directories that have no `.quest/` (for `init`) or where `IDPrefix` is absent (for `version`). This is the resolution for the version-command startup conflict: the validation choice belongs to the caller, not the loader. See Task 4.2 dispatch sequence.
+- I/O errors reading `.quest/config.toml` other than "file missing" (permission denied on an existing file, malformed TOML, read error mid-walk-up) are logged once via `slog.Warn` naming the path and the raw OS error, then `Load` populates defaults as if the file were absent. This keeps `Load` infallible; `Validate` surfaces the resulting missing fields when the dispatcher calls it. Matches `STANDARDS.md` §Defaults.
 - This package is the only reader of `.quest/config.toml`. `ReadFile` from Task 1.1 is called from `Load`; if the file is missing (`quest init` hasn't run yet), `Load` populates defaults and `Validate` — if later called — reports the missing fields.
 - Export one helper: `config.IsElevated(role string, elevated []string) bool` — used by the role gate in Phase 4. Keep the gate decision centralized.
 
@@ -226,11 +244,11 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
 
 ## Phase 2 — Logging and errors
 
-**Implementation order:** land Task 2.3 (telemetry no-op shell) **before** Task 2.1 and Task 2.2, so `telemetry.TraceIDsFromContext` and the other telemetry stubs exist when `internal/logging/` starts importing them. The task numbering below reflects topical grouping; dependency order is 2.3 → 2.1 → 2.2.
+**Implementation order:** Task 2.3 imports `store.Store` (via `telemetry.WrapStore`), so land Task 3.3's `Store` interface declaration as a Phase-2 prerequisite **before** Task 2.3. Concretely: create `internal/store/store.go` at Phase 2 containing only the `type Store interface { ... }` declaration and the `store.TxKind` enum — no `*sqliteStore`, no method implementations. Task 3.1 / 3.3 flesh out the concrete type and stub method bodies. Then land Task 2.3 (telemetry no-op shell) **before** Task 2.1 and Task 2.2, so `telemetry.TraceIDsFromContext` and the other telemetry stubs exist when `internal/logging/` starts importing them. Final dependency order for Phase 2: store-interface-declaration → 2.3 → 2.1 → 2.2.
 
 ### Task 2.1 — `internal/logging/`: slog stderr handler + level/format parsing
 
-**Deliverable:** `logging.NewStderrHandler(cfg StderrConfig) slog.Handler`, `logging.LevelFromString(s string) slog.Level`, a fan-out handler type that wraps N children, and a `logging.Setup(cfg config.LogConfig, extra ...slog.Handler) *slog.Logger` entry point.
+**Deliverable:** `logging.NewStderrHandler(cfg StderrConfig) slog.Handler`, `logging.LevelFromString(s string) (slog.Level, bool)`, a fan-out handler type that wraps N children, and a `logging.Setup(cfg config.LogConfig, extra ...slog.Handler) *slog.Logger` entry point.
 
 **Spec anchors:** `OBSERVABILITY.md` §Logger Setup, §Log Levels, §Standard Field Names; `OTEL.md` §3.1 (the OTEL bridge plugs into this fan-out in Task 12.1).
 
@@ -246,7 +264,7 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
 
 **Tests:** Layer 1 tests:
 
-- Level parsing: `"debug"`, `"DEBUG"`, `"info"`, `"warn"`, `"error"`, `""` (→ default), `"garbage"` (→ error).
+- Level parsing: `"debug"`, `"DEBUG"`, `"info"`, `"warn"`, `"error"` all return `(<level>, true)`; `""` returns `(slog.LevelInfo, false)` and lets the caller decide whether empty is "use default" or "reject"; `"garbage"` returns `(slog.LevelInfo, false)` so `config.Validate` can flag the typo via `if _, ok := logging.LevelFromString(cfg.Log.Level); !ok { ... }`.
 - Fan-out: two mock handlers both receive a record; `Enabled` returns true if any child returns true.
 - Level gating: a child with `Info` level does not see `Debug` records.
 
@@ -292,7 +310,7 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
 
 ### Task 2.3 — `internal/telemetry/`: no-op shell
 
-**Deliverable:** the package exposes `telemetry.Setup`, `telemetry.CommandSpan`, `telemetry.WrapCommand`, `telemetry.GateSpan`, `telemetry.MigrateSpan`, `telemetry.ExtractTraceFromConfig`, a family of `RecordX` stubs, and `telemetry.TraceIDsFromContext`. Signatures below. All bodies are no-ops in Phase 2; Task 12 replaces them.
+**Deliverable:** the package exposes `telemetry.Setup`, `telemetry.CommandSpan`, `telemetry.WrapCommand`, `telemetry.GateSpan`, `telemetry.MigrateSpan`, `telemetry.ExtractTraceFromConfig`, `telemetry.SpanEvent`, a family of `RecordX` stubs, and `telemetry.TraceIDsFromContext`. Signatures below. All bodies are no-ops in Phase 2; Task 12 replaces them.
 
 ```go
 type Config struct {
@@ -307,13 +325,21 @@ type Config struct {
 func Setup(ctx context.Context, cfg Config) (bridge slog.Handler, shutdown func(context.Context) error, err error)
 func ExtractTraceFromConfig(ctx context.Context, traceparent, tracestate string) context.Context
 func CommandSpan(ctx context.Context, cmd string, elevated bool) (context.Context, trace.Span)
-func WrapCommand(ctx context.Context, cmd string, elevated bool, fn func(context.Context) error) error
+func WrapCommand(ctx context.Context, cmd string, fn func(context.Context) error) error
 func GateSpan(ctx context.Context, agentRole string, allowed bool)
 func MigrateSpan(ctx context.Context, from, to int) (context.Context, func(applied int, err error))
+func SpanEvent(ctx context.Context, name string, attrs ...attribute.KeyValue)
+func StoreSpan(ctx context.Context, name string) (context.Context, func(err error))
 func TraceIDsFromContext(ctx context.Context) (traceID, spanID string, ok bool)
 func WrapStore(s store.Store) store.Store
+// RecordTaskContext sets the §4.3 task-affecting attributes (quest.task.id, tier, type)
+// on the active command span. Called from every task-affecting handler (show, accept,
+// update, complete, fail, cancel, move, deps, tag, untag, graph).
+func RecordTaskContext(ctx context.Context, id, tier, taskType string)
 // plus one RecordX per observable event (see OTEL.md §8.6)
 ```
+
+`telemetry.SpanEvent` is the wrapper handlers use when they need to emit a mid-body span event (a loop iteration, a conditional branch, etc.). It grabs `trace.SpanFromContext(ctx)` and calls `AddEvent(name, trace.WithAttributes(attrs...))`. `telemetry.StoreSpan(ctx, name)` is the handler-side wrapper used by `quest move` (`quest.store.rename_subgraph`) and the query/graph handlers (`quest.store.traverse`) — it starts a child span under the command span, returns an `end(err)` closure that applies the three-step error pattern, and ends the span. Handlers never import `go.opentelemetry.io/otel/trace` directly — the import boundary in `OTEL.md` §10.1 and the Task 2.3 grep tripwire both depend on this.
 
 `Setup` returns the `otelslog` bridge handler as its first return value (nil in the disabled path) so `main.run()` can pass it into `logging.Setup(cfg.Log, bridge)` without `internal/logging/` ever importing OTEL. `MigrateSpan` takes both the stored `from` version and the supported `to` version so the span's `quest.schema.from`/`quest.schema.to` attributes are set at `tracer.Start` time per `OTEL.md` §8.8. `ExtractTraceFromConfig` exists from Phase 2 because `cli.Execute` calls it before dispatch (`OTEL.md` §6.2 / §7.1); in Phase 2 it returns `ctx` unchanged, Phase 12.1 swaps in the real implementation.
 
@@ -325,12 +351,14 @@ func WrapStore(s store.Store) store.Store
 
 **Implementation notes:**
 
-- In Phase 2, `Setup` returns a nil bridge handler, a no-op shutdown, and installs nothing. `CommandSpan` returns the input context and `trace.SpanFromContext(ctx)` (the non-recording background span — valid to `End()` / `SetStatus` and cheap). `WrapCommand` simply calls `fn(ctx)` and returns its error. `GateSpan` returns without recording. `MigrateSpan` returns the input context and a no-op end function. `ExtractTraceFromConfig` returns the input ctx. `WrapStore` returns its argument. `RecordX` and `TraceIDsFromContext` are empty. This lets the dispatcher (Task 4.2) and command handlers call the real signatures from day one, so Task 12 is a drop-in replacement.
+- In Phase 2, `Setup` returns a nil bridge handler, a no-op shutdown, and installs nothing. `CommandSpan` returns the input context and `trace.SpanFromContext(ctx)` (the non-recording background span — valid to `End()` / `SetStatus` and cheap). `WrapCommand` in its Phase-2 stub simply calls `fn(ctx)` and returns its error; note that the real Phase-12 version is also a no-start/no-end middleware (per `OTEL.md` §8.2) — it picks up the active span via `trace.SpanFromContext(ctx)` and applies the three-step error pattern, never calling `span.End()`. `GateSpan` returns without recording. `MigrateSpan` returns the input context and a no-op end function. `ExtractTraceFromConfig` returns the input ctx. `SpanEvent` is a no-op; the real Phase-12 version adds an `if !span.IsRecording() { return }` short-circuit (see `OTEL.md` §8.3). `StoreSpan` returns the input context and a no-op `end(err error)` closure; Phase-12 fills it in as a thin wrapper that opens a child span under the current command span. Phase-2 callers should still gate content expansion at the call site (see Task 12.7) so stub-vs-real behavior is indistinguishable from the caller's side. `WrapStore` returns its argument. `RecordX` and `TraceIDsFromContext` are empty. This lets the dispatcher (Task 4.2) and command handlers call the real signatures from day one, so Task 12 is a drop-in replacement.
 - **No `context.go` file.** The package layout is `setup.go`, `identity.go`, `propagation.go`, `command.go`, `gate.go`, `migrate.go`, `recorder.go`, `store.go`, `validation.go`, `truncate.go` (matches `OTEL.md` §8.1). Quest does not need explicit context keys — the command span lives on `context.Context` via the SDK, and handlers pull it with `trace.SpanFromContext(ctx)`.
+- **`validation.go` and `store.go` ship as empty `package telemetry` declarations at Phase 2.** Contents land in Tasks 12.4 (`store.go` — the `InstrumentedStore` decorator) and 12.6 (`validation.go` — the `quest.validate` span + phase children). The files are present in Phase 2 to lock in the OTEL.md §8.1 file inventory but carry no symbols the Phase-2 callers invoke.
 - The stub _may_ import `go.opentelemetry.io/otel/trace` for the `trace.Span` return type (API-only, not SDK) — that matches `OTEL.md` §10.1's "API yes, SDK only in setup.go" boundary. All other OTEL imports stay out until Task 12.1.
-- **Who calls what.** `CommandSpan` and `WrapCommand` are **dispatcher primitives** — `cli.Execute` calls them; command handlers do not. Handlers call `telemetry.RecordX` and `telemetry.GateSpan` only; they receive a `context.Context` that already carries the command span and pull the span handle via `trace.SpanFromContext(ctx)` when they need to emit span events mid-body. This matches `OTEL.md` §8.2 after the C1 resolution.
+- **Who calls what.** `CommandSpan` and `WrapCommand` are **dispatcher primitives** — `cli.Execute` calls them; command handlers do not. Handlers call `telemetry.RecordX`, `telemetry.GateSpan` (only from `quest update`'s mixed-flag path), and `telemetry.SpanEvent(ctx, name, attrs...)` (when they need to emit a mid-body span event). Handlers never import `go.opentelemetry.io/otel/trace` — the `SpanEvent` wrapper is the only path for mid-body events. This preserves the §10.1 boundary and makes the Task 2.3 grep tripwire a durable enforcement mechanism, not documentation fiction.
 - **No `Enabled()` export.** The enabled-check exists only as a package-private `enabled()` helper used by `WrapStore` (`OTEL.md` §8.3) to skip the store decorator. Callers must not gate on it — the no-op SDK providers make every `RecordX` / `CommandSpan` / `GateSpan` call already-cheap when telemetry is disabled.
 - **`roleOrUnset` applied at the cache-load step.** `Setup` calls an internal `setIdentity(role, task, session)` that stores `roleOrUnset(role)` once; every subsequent span attribute and metric dimension carrying role uses that cached value. Empty `AGENT_ROLE` therefore renders as the literal string `"unset"` consistently across spans and metrics per `OTEL.md` §8.6. Wire this into the Phase 2 stub so the symbol is present even though the attributes are not yet emitted.
+- **`telemetry.Truncate(s string, max int) string` is exported** from `internal/telemetry/truncate.go`. UTF-8-safe truncation per `OTEL.md` §3.6 is the shared helper for span attribute values *and* for slog `err` fields (per `OBSERVABILITY.md` §Error Handling, which shows `truncate(err.Error(), 256)` in handler code). Handlers that need to truncate an error message for an slog field import `telemetry.Truncate` — this is the single source of UTF-8-safe truncation in the codebase. Do not re-implement in `internal/errors/` or `internal/logging/`.
 
 **Tests:** Layer 1 — call each stub, assert no panic, no allocation in the disabled path (benchmarks land in Task 12.5).
 
@@ -342,24 +370,39 @@ func WrapStore(s store.Store) store.Store
 
 ### Task 3.1 — `internal/store/`: SQLite open, WAL, busy_timeout
 
-**Deliverable:** `store.Open(path string) (Store, error)` returning the `Store` interface declared in Task 3.3 (backed by an unexported `*sqliteStore`), `(Store).Close() error`, and the `store.TxKind` enum matching `OTEL.md` §4.3 / §5.3 after the H1 tx_kind broadening: `accept`, `create`, `complete`, `fail`, `reset`, `cancel`, `cancel_recursive`, `move`, `batch_create`, `link`, `unlink`, `tag`, `untag`, `update`.
+**Deliverable:** `store.Open(path string) (Store, error)` returning the `Store` interface declared in Task 3.3 (backed by an unexported `*sqliteStore`), `(Store).Close() error`, and the `store.TxKind` enum matching `OTEL.md` §4.3 / §5.3: `accept`, `create`, `complete`, `fail`, `reset`, `cancel`, `cancel_recursive`, `move`, `batch_create`, `link`, `unlink`, `tag`, `untag`, `update`. Migrations deliberately do not use this enum (see Task 3.2) — they call `db.BeginTx` directly so `quest.db.migrate` is the only span on that code path, and the `dept.quest.store.tx.duration{tx_kind}` histogram is not polluted by migrations that run orders of magnitude slower than ordinary writes.
 
 **Spec anchors:** `quest-spec.md` §Storage (WAL mode, `PRAGMA busy_timeout = 5000`, serialized writes), `OTEL.md` §4.3 / §5.3 (`tx_kind` enum).
 
 **Implementation notes:**
 
 - Driver: `modernc.org/sqlite` pinned at the version chosen in Task 0.1 (pure Go, no CGo — preferred for CLI portability). Import as `_ "modernc.org/sqlite"`.
-- DSN carries the path only: `file:<path>` (plus `cache=shared` if a later task needs it). Do **not** encode pragmas in the DSN — modernc.org/sqlite's DSN parameter syntax has shifted across minor versions, and the reliable path is to open first and issue explicit `PRAGMA` statements immediately after. The plan only needs one code path for configuring the connection; the post-open `PRAGMA` approach is it.
-- **Per-connection pragmas via a connect hook.** `journal_mode=WAL` is a *database-header* pragma (persistent); set it once post-open on the primary connection and assert the result equals `"wal"`. `busy_timeout` and `foreign_keys` are *per-connection* pragmas and default to 0 / OFF on every fresh connection Go's pool may open. Register `sqlite.RegisterConnectHook(func(conn driver.Conn) error { ... })` (or the driver-equivalent in the pinned modernc.org version) to issue `PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA defer_foreign_keys=OFF;` on every new connection. Without the hook, a pool-allocated second writer would get `SQLITE_BUSY` immediately instead of waiting 5s, breaking the exit-code-7 contract. Layer 3 test: hold the write lock from one connection for 3s, assert a second writer blocks and then succeeds. Do not cap `MaxOpenConns` — WAL gives free concurrent reads; the connect hook makes the pool safe.
-- **`Open` does not migrate.** It establishes the connection and applies pragmas; the schema check is a separate call (`store.Migrate`, Task 3.2) driven by the dispatcher (Task 4.2 step 3) so the migration span is a sibling of the command span per `OTEL.md` §4.1 / §8.8. `Open` is cheap and safe to call from any command-handler path without creating a migration span underneath the command span.
+- **DSN: `file:<path>?_txlock=immediate`.** `_txlock` is a driver-level parameter (not a SQLite pragma) recognized by `modernc.org/sqlite`; setting it causes `db.BeginTx` to issue `BEGIN IMMEDIATE` instead of the default `BEGIN` (deferred). This is the only correct path to an IMMEDIATE transaction through `database/sql` — issuing `Exec("BEGIN IMMEDIATE")` on a `*sql.Tx` returned by `BeginTx` fails with "cannot start a transaction within a transaction" because `BeginTx` has already opened its own `BEGIN`. `_txlock` must be on the DSN (driver-level parameters cannot be set post-open); genuine pragmas (`journal_mode`, `busy_timeout`, `foreign_keys`, `defer_foreign_keys`) are still issued post-open via the connect hook. **Do not add `cache=shared`** — WAL gives adequate concurrent-read behavior without shared cache's mutex complexity; this exclusion is documented so future performance debugging does not guess at it.
+- **Per-connection pragmas via a connect hook.** `journal_mode=WAL` is a *database-header* pragma (persistent); set it once post-open on the primary connection and assert the result equals `"wal"`. `busy_timeout` and `foreign_keys` are *per-connection* pragmas and default to 0 / OFF on every fresh connection Go's pool may open. Register the hook from a **package-level `init()`** in `internal/store/`: `modernc.org/sqlite`'s `RegisterConnectionHook` is a package-global mechanism, so calling it from `store.Open` would re-register the hook on every `Open` call (harmless but a slow leak — the driver would invoke N hooks per new connection). Installing in `func init()` guarantees exactly-once registration before any `store.Open` call. Issue `PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;` on every new connection (the `defer_foreign_keys` pragma is intentionally excluded — see below). In `modernc.org/sqlite` v1.28+ the canonical spelling is `RegisterConnectionHook`; on older driver versions that expose only `RegisterConnectHook` (no `-ion-`), use that name. If neither exists, issue the two pragmas on each `BeginImmediate` (one extra round-trip). Without the hook, a pool-allocated second writer would get `SQLITE_BUSY` immediately instead of waiting 5s, breaking the exit-code-7 contract. Layer 3 test: hold the write lock from one connection for 3s, assert a second writer blocks and then succeeds. Do not cap `MaxOpenConns` — WAL gives free concurrent reads; the connect hook makes the pool safe.
+- **Do not issue `PRAGMA defer_foreign_keys = OFF` in the connect hook.** The pragma defaults to OFF in SQLite and automatically resets on every `COMMIT`/`ROLLBACK` — it is a per-transaction override that never persists across transactions, so a connect-hook `OFF` is always a no-op. The only place `defer_foreign_keys` matters is inside the `quest move` transaction (Task 8.3), which explicitly sets it to `ON` before the FK-cascade UPDATE pass. Keeping the connect hook minimal prevents future readers from assuming the pragma is load-bearing.
+- **`Open` does not migrate.** It establishes the connection and applies pragmas; the schema check is a separate call (`store.Migrate`, Task 3.2) driven by the dispatcher (Task 4.2 step 5) so the migration span is a sibling of the command span per `OTEL.md` §4.1 / §8.8. `Open` is cheap and safe to call from any command-handler path without creating a migration span underneath the command span.
 - `Store` is an interface (Task 3.3). `Open` returns the interface backed by `*sqliteStore`; the concrete type is unexported. This lets the `InstrumentedStore` decorator (Task 12.4) wrap the store without embedding a concrete `*Store`, and lets `internal/testutil/` substitute fakes. Define `Store` in `store.go` (alongside `Open`) or in its own `interface.go` — either works.
 - `*sqliteStore` wraps `*sql.DB`. Do not cap `MaxOpenConns` — the driver already serializes writes at the SQLite layer, and readers are free under WAL.
 - **`BeginImmediate` takes a `TxKind` and returns `*store.Tx`.** Signature:
   ```go
   BeginImmediate(ctx context.Context, kind TxKind) (*store.Tx, error)
   ```
-  `store.Tx` is a thin typed wrapper (declared in `store/tx.go`) that embeds `*sql.Tx` plus carries the `TxKind` (for telemetry attributes) and the `time.Time` at which `BEGIN IMMEDIATE` returned (for lock-wait computation). Handlers treat `*store.Tx` as a drop-in `*sql.Tx`: `tx.Exec`, `tx.Query`, `tx.QueryRow`, `tx.Commit`, `tx.Rollback`. The concrete implementation calls `db.BeginTx(ctx, &sql.TxOptions{})` followed by `Exec("BEGIN IMMEDIATE")`, records the timestamp, and wraps the result. This is the single seam the `InstrumentedStore` decorator uses to emit `quest.store.tx` spans (`OTEL.md` §8.4) — the decorator's `BeginImmediate` override starts the span and returns an instrumented `*store.Tx` that closes the span on `Commit`/`Rollback`.
-- **`CurrentSchemaVersion(ctx, s Store) (int, error)`** is exported alongside `Open` — used by the dispatcher (Task 4.2 step 4) to read the stored `meta.schema_version` before calling `telemetry.MigrateSpan(ctx, from, to)`. Returns 0 (not an error) when the `meta` table does not yet exist — see Task 3.2 for how migration 001 bootstraps it.
+  `store.Tx` (declared in `store/tx.go`) wraps an unexported `*sql.Tx` field and exposes the full public API:
+  ```go
+  func (tx *Tx) Commit() error
+  func (tx *Tx) Rollback() error
+  func (tx *Tx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)   // auto-accumulates rows_affected
+  func (tx *Tx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)   // pass-through
+  func (tx *Tx) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row           // pass-through
+  func (tx *Tx) MarkOutcome(outcome string)                                                         // handler hints outcome before close
+  ```
+  Internal fields: `kind TxKind` (for the decorator's `quest.store.tx` span attribute), `invokedAt time.Time` (captured when `BeginImmediate` is called), `startedAt time.Time` (captured after the underlying `BEGIN IMMEDIATE` returns — their delta is `quest.tx.lock_wait_ms`), `rowsAffected int64` (running sum maintained by the `ExecContext` wrapper), `outcome string` (set by `MarkOutcome`; defaulted by the hook to `committed` on successful commit or `rolled_back_error` on rollback), and optional `onCommit` / `onRollback` hook fields populated by the `InstrumentedStore` decorator in Task 12.4 (nil on the bare store). `Commit()` / `Rollback()` call the hook (if set) after the underlying method returns — that is how the decorator closes its `quest.store.tx` span without needing to override methods on a concrete type. The `rowsAffected` counter and `outcome` string are read by `onCommit` / `onRollback` to populate `quest.tx.rows_affected` and `quest.tx.outcome` on the span (Task 12.4).
+  Concrete implementation, because `_txlock=immediate` is on the DSN: record `invokedAt = time.Now()`, call `db.BeginTx(ctx, nil)` (which issues `BEGIN IMMEDIATE`), record `startedAt = time.Now()`, wrap the `*sql.Tx` in `*store.Tx`, and return. No separate `Exec("BEGIN IMMEDIATE")` call. The timing fields are the single source of truth for lock-wait — the decorator reads them, never re-computes (see `OTEL.md` §8.4 and Task 12.4).
+  **`ExecContext` is a thin wrapper that auto-accumulates `rows_affected`.** Body: call `inner.ExecContext(ctx, query, args...)`; if the returned `sql.Result` is non-nil, read `RowsAffected()` and add to `tx.rowsAffected` (skip the addition if `RowsAffected()` returns an error or `-1` — some drivers report `-1` for INSERT without `LastInsertId` interest). Return the `sql.Result` and error to the caller unchanged. This keeps accumulation invisible to handlers — no per-Exec `tx.AddRowsAffected(n)` call required. Handlers can opt out of counting via an `(tx *Tx).IgnoreRows()` helper for queries whose "rows returned" is not interesting (reserved for future; v0.1 always counts).
+  `MarkOutcome(outcome string)` lets handlers override the default outcome classification for the span attribute: `rolled_back_precondition` (expected precondition check failed, e.g., parent not in `open`, non-terminal children on complete) versus `rolled_back_error` (unexpected failure). Precondition rollbacks surface exit code 5 but are not bugs; separating them keeps dashboards clean. **If `MarkOutcome` is not called, the hook auto-infers from the returned error** — `committed` on successful commit; otherwise `errors.Is(err, errors.ErrConflict)` / `errors.Is(err, errors.ErrNotFound)` / `errors.Is(err, errors.ErrPermission)` → `rolled_back_precondition`; any other error → `rolled_back_error`. Handlers therefore do not need to call `MarkOutcome` for the common precondition paths — returning the right typed error sentinel is enough. `MarkOutcome` stays available as an escape hatch for future error classes or bespoke tagging.
+  Handlers call the explicit methods only: `tx.ExecContext`, `tx.QueryContext`, `tx.QueryRowContext`, `tx.MarkOutcome`, `tx.Commit`, `tx.Rollback`. Per-DML `quest.store.op` span events are explicitly not part of the design (`OTEL.md` §4.2 / §8.3 / §19) — the transaction-level `quest.store.tx` span plus the three named child spans (`quest.role.gate`, `quest.db.migrate`, `quest.batch.*` phase spans) are the full store-side instrumentation contract. Handlers therefore pass plain `ExecContext(ctx, sql, args...)` without op/target strings.
+- **Per-transaction DEBUG bookends on bare `*store.Tx`.** Per `OBSERVABILITY.md` §Boundary Logging §Per-Transaction Boundaries, `*store.Tx` emits `slog.DebugContext` records at `BEGIN IMMEDIATE` acquire, commit, and rollback — `"BEGIN IMMEDIATE acquired" tx_kind=<kind> lock_wait_ms=<dur>`, `"tx committed" tx_kind=<kind> rows_affected=<n>`, `"tx rolled back" tx_kind=<kind> outcome=<outcome>`. These land on the bare `*store.Tx` (not the telemetry decorator) so they fire regardless of whether OTEL is configured — slog bookends and OTEL spans are independent signals. The records use the same `tx_kind` / `rows_affected` / `outcome` field names as the span attributes for cross-reference.
+- **`(Store).CurrentSchemaVersion(ctx) (int, error)`** is a method on the `Store` interface (declared as a Phase-2 prerequisite per the Phase 2 implementation-order note) — used by the dispatcher (Task 4.2 step 5) to read the stored `meta.schema_version` before calling `telemetry.MigrateSpan(ctx, from, to)`. Returns 0 (not an error) when the `meta` table does not yet exist — see Task 3.2 for how migration 001 bootstraps it. **Error mapping:** `sqlite3 code 5 (SQLITE_BUSY)` → wraps `ErrTransient` (exit 7); any other driver error → wraps `ErrGeneral` (exit 1); the "meta table missing" sentinel is the only non-error zero return. The method lives on the interface so the `InstrumentedStore` decorator (Task 12.4) can wrap it and so test fakes can stub a specific version without hitting SQLite; the "meta missing" bootstrap is internal to `*sqliteStore`.
 
 **Tests:** Layer 3 integration tests (tagged `//go:build integration`):
 
@@ -373,19 +416,20 @@ func WrapStore(s store.Store) store.Store
 
 ### Task 3.2 — Migration framework + schema v1
 
-**Deliverable:** `internal/store/migrate.go` exporting `store.Migrate(ctx context.Context, s Store) error`, `internal/store/migrations/001_initial.sql` with the full initial schema, and `store.SchemaVersion` / `store.SupportedSchemaVersion` constants.
+**Deliverable:** `internal/store/migrate.go` exporting `store.Migrate(ctx context.Context, s Store) (applied int, err error)`, `internal/store/migrations/001_initial.sql` with the full initial schema, and the `store.SupportedSchemaVersion` constant (a single integer — the schema version this binary supports). There is no separate `SchemaVersion` constant; the DB's current version is read at runtime via `(Store).CurrentSchemaVersion`, and the compile-time upper bound lives only in `SupportedSchemaVersion`.
 
 **Spec anchors:** `quest-spec.md` §Storage (`schema_version` meta table, forward-only migrations, newer-than-supported refuses to run), `STANDARDS.md` §Schema Migration Rules, `OTEL.md` §4.1 / §8.8 (migration span is a sibling of the command span — drives where `Migrate` is called from in Task 4.2).
 
 **Implementation notes:**
 
 - Migrations are embedded via `//go:embed migrations/*.sql`.
-- `store.Migrate(ctx, s)` is a standalone function (not a method) that accepts the open store and runs the schema check + any pending migrations inside one `*sql.Tx` via `BeginImmediate`. Callers: the dispatcher for workspace-bound commands (Task 4.2 step 3), and `quest init` explicitly after creating the DB (Task 5.1). Keeping migration out of `Open` is the mechanism that lets `OTEL.md` §8.8's sibling-span contract work — the dispatcher can wrap this call in its own `quest.db.migrate` span before creating the command span.
-- Migration runner: read `meta.schema_version` via `store.CurrentSchemaVersion(ctx, s)` (Task 3.1). The helper first checks `SELECT name FROM sqlite_master WHERE type='table' AND name='meta'`; if the `meta` table does not exist (fresh DB), it returns `0` (not an error). Compare to `store.SupportedSchemaVersion` (an integer constant in code).
-  - `stored > supported` → return `ErrGeneral` wrapping a clear message: `"database schema version N is newer than this binary supports -- upgrade quest"`. Exit 1 per spec.
-  - `stored == supported` → no-op, return nil.
-  - `stored < supported` → apply each pending migration inside a single `*sql.Tx`. Migration 001 is responsible for creating the `meta` table and setting `schema_version = 1`. If any step fails, rollback and leave the DB at the prior version. Do **not** proceed with partial migration.
-- `store.Migrate` returns only an error — the `from`/`to` values required by `telemetry.MigrateSpan` come from the dispatcher reading `CurrentSchemaVersion` and the compile-time `SupportedSchemaVersion` constant before it calls `MigrateSpan(ctx, from, to)`.
+- `store.Migrate(ctx, s)` is a standalone function (not a method) that accepts the open store and runs the schema check + any pending migrations inside a single `*sql.Tx`. Callers: the dispatcher for workspace-bound commands (Task 4.2 step 5), and `quest init` explicitly after creating the DB (Task 5.1). Keeping migration out of `Open` is the mechanism that lets `OTEL.md` §8.8's sibling-span contract work — the dispatcher wraps this call in its own `quest.db.migrate` span before creating the command span.
+- **Migrations do not use `BeginImmediate`.** `store.Migrate` accesses the underlying `*sql.DB` directly (via an unexported accessor on `*sqliteStore`, e.g. `(s).db()`) and calls `db.BeginTx(ctx, nil)`. Because the DSN carries `_txlock=immediate` (Task 3.1), the returned `*sql.Tx` already holds the IMMEDIATE lock. Avoiding `BeginImmediate` means migrations do not emit a nested `quest.store.tx` span under `quest.db.migrate` and do not need a `migrate` entry in the `TxKind` enum — migrations are orders of magnitude slower than ordinary writes, and including them would distort the `dept.quest.store.tx.duration{tx_kind}` histogram. `OTEL.md` §8.8 already describes `quest.db.migrate` as the only migration span.
+- Migration runner: read the stored version via `s.CurrentSchemaVersion(ctx)` (Task 3.3). The method first checks `SELECT name FROM sqlite_master WHERE type='table' AND name='meta'`; if the `meta` table does not exist (fresh DB), it returns `0` (not an error). Compare to `store.SupportedSchemaVersion` (an integer constant in code).
+  - `stored > supported` → return `(0, ErrGeneral)` wrapping a clear message: `"database schema version N is newer than this binary supports -- upgrade quest"`. Exit 1 per spec.
+  - `stored == supported` → return `(0, nil)`.
+  - `stored < supported` → apply each pending migration inside the single `*sql.Tx`. Migration 001 is responsible for creating the `meta` table and setting `schema_version = 1`. Return `(count, nil)` where `count` is the number of migration files actually executed. If any step fails, rollback, leave the DB at the prior version, and return `(0, err)`. Do **not** proceed with partial migration.
+- The returned `applied` count populates the `quest.schema.applied_count` attribute on the `quest.db.migrate` span (`OTEL.md` §8.8 / §4.3). `store.Migrate` is the only component that knows which SQL files actually ran — callers cannot synthesize this from version math because migration files may be added, renumbered, or skipped across binary versions. The dispatcher passes the count through to `MigrateSpan`'s end closure: `ctx, end := telemetry.MigrateSpan(ctx, from, to); applied, err := store.Migrate(ctx, s); end(applied, err)`.
 - Schema v1 tables (derive from the spec; this is the load-bearing inventory):
   - `meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)` — holds `schema_version` only. Do **not** mirror `id_prefix` from `.quest/config.toml` — the file is the single source of truth and the filesystem layout already binds the DB to it.
   - `tasks(id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', context TEXT NOT NULL DEFAULT '', type TEXT NOT NULL DEFAULT 'task', status TEXT NOT NULL DEFAULT 'open', role TEXT, tier TEXT, acceptance_criteria TEXT, metadata TEXT NOT NULL DEFAULT '{}', parent TEXT, owner_session TEXT, started_at TEXT, completed_at TEXT, handoff TEXT, handoff_session TEXT, handoff_written_at TEXT, debrief TEXT, created_at TEXT NOT NULL)` with `FOREIGN KEY(parent) REFERENCES tasks(id) ON UPDATE CASCADE` and an index on `parent`, `status`, `(status, role)`. `created_at` is an internal column for query/ordering convenience — it is **not** part of the `quest show` JSON contract (spec §Task Entity Schema does not list it). The `store.Task` Go type must tag it `json:"-"`.
@@ -395,7 +439,7 @@ func WrapStore(s store.Store) store.Store
   - `tags(task_id TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (task_id, tag), FOREIGN KEY(task_id) REFERENCES tasks(id) ON UPDATE CASCADE)` with an index on `tag`.
   - `prs(task_id TEXT NOT NULL, url TEXT NOT NULL, added_at TEXT NOT NULL, PRIMARY KEY (task_id, url), FOREIGN KEY(task_id) REFERENCES tasks(id) ON UPDATE CASCADE)` — append-only, idempotent per spec §Idempotency.
   - `notes(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, timestamp TEXT NOT NULL, body TEXT NOT NULL, FOREIGN KEY(task_id) REFERENCES tasks(id) ON UPDATE CASCADE)` with an index on `(task_id, timestamp)`.
-  - `task_counter(prefix TEXT PRIMARY KEY, next_value INTEGER NOT NULL)` for the project-global top-level ID counter; `subtask_counter(parent_id TEXT PRIMARY KEY, next_value INTEGER NOT NULL)` for per-parent sub-task counters. (See Task 4.1.) `subtask_counter.parent_id` is not FK'd — counters outlive the parent row intentionally (a parent can be cancelled and still not reuse sub-task numbers).
+  - `task_counter(prefix TEXT PRIMARY KEY, next_value INTEGER NOT NULL)` for the project-global top-level ID counter; `subtask_counter(parent_id TEXT PRIMARY KEY, next_value INTEGER NOT NULL, FOREIGN KEY(parent_id) REFERENCES tasks(id) ON UPDATE CASCADE ON DELETE NO ACTION)` for per-parent sub-task counters. (See Task 4.1.) The `ON UPDATE CASCADE` ensures `quest move` rewrites counter rows automatically alongside the task-id rename, so sub-task numbering never collides with a moved parent. `ON DELETE NO ACTION` preserves the counter row even if a task is hard-deleted (none are in v0.1, but the invariant stays: counters outlive their parent — a cancelled parent does not reuse sub-task numbers).
 - **FK cascade strategy.** Every side table (`history`, `dependencies` both columns, `tags`, `prs`, `notes`) declares `FOREIGN KEY(task_id) REFERENCES tasks(id) ON UPDATE CASCADE`. `quest move` (Task 8.3) relies on this: issuing `PRAGMA defer_foreign_keys = ON` inside the move transaction and updating `tasks.id` causes SQLite to cascade every side-table FK to the new ID in the same transaction. This collapses Task 8.3's six manual cross-table UPDATEs to one (plus history append) and makes `quest tag` / `quest untag` on a missing task fail with a constraint error that maps cleanly to `ErrNotFound`. Handlers still do explicit existence checks before the FK fires so the error message can cite the missing ID; the FK is defense-in-depth.
 - Emit a `slog.InfoContext` when a migration runs, per `OBSERVABILITY.md` §Log Levels.
 
@@ -411,20 +455,38 @@ func WrapStore(s store.Store) store.Store
 
 ### Task 3.3 — Store interface skeleton
 
-**Deliverable:** `type Store interface { ... }` declared in `internal/store/`, covering every read and write method the command handlers will call. The unexported `*sqliteStore` (Task 3.1) is the only implementation; method bodies return `errors.New("not implemented")` until they land alongside each command in Phase 5+.
+**Deliverable:** the `type Store interface { ... }` declaration landed in Phase 2 (per the Phase 2 implementation-order note); Task 3.3 completes the file by adding Go types (`store.Task`, `store.History`, etc.) and the unexported `*sqliteStore` with stub method bodies returning `errors.New("not implemented")` until they land alongside each command in Phase 5+.
 
 **Spec anchors:** `quest-spec.md` §Task Entity Schema, §Status Lifecycle, §Worker Commands, §Planner Commands; `OTEL.md` §8.3 (the decorator wraps the interface).
 
 **Implementation notes:**
 
 - Types: `store.Task`, `store.History`, `store.Dependency`, `store.Note`, `store.PR`, `store.Tx`. JSON tags match the field names in `quest-spec.md` §Core fields / §Execution fields — this is a contract.
-- **Handler-owns-SQL model.** Per the C7 resolution, the `Store` interface is narrow: read methods plus a transaction primitive plus counter helpers. Write handlers run their own SQL inside a `*store.Tx` returned by `BeginImmediate`. The interface does **not** include coarse methods like `SetStatus`/`UpdateFields`/`AppendNote`/`AppendPR`/`SetHandoff` — those would be leaky (each command's UPDATE shape is bespoke). Decorator wrapping happens at the `BeginImmediate` seam.
-- `Store` methods (declare all now, implement later):
-  - Reads: `GetTask(ctx, id)`, `GetTaskWithDeps(ctx, id)`, `ListTasks(ctx, filter)`, `GetHistory(ctx, id)`, `GetChildren(ctx, parentID)`, `GetDependencies(ctx, id)`, `GetDependents(ctx, id)`, `GetTags(ctx, id)`, `GetPRs(ctx, id)`, `GetNotes(ctx, id)`.
-  - Identity: `NextTaskID(ctx context.Context, tx *store.Tx, prefix string) (string, error)`, `NextSubTaskID(ctx context.Context, tx *store.Tx, parentID string) (string, error)` — both take a live transaction because the counter read-modify-write and the task insert must share the write lock.
-  - Lifecycle: `Close() error`, `BeginImmediate(ctx context.Context, kind TxKind) (*store.Tx, error)`, `CurrentSchemaVersion(ctx context.Context) (int, error)`.
+- **Handler-owns-SQL model.** The `Store` interface is narrow: read methods plus a transaction primitive plus schema-version lookup. Write handlers run their own SQL inside a `*store.Tx` returned by `BeginImmediate`. The interface does **not** include coarse methods like `SetStatus`/`UpdateFields`/`AppendNote`/`AppendPR`/`SetHandoff` — those would be leaky (each command's UPDATE shape is bespoke). Decorator wrapping happens at the `BeginImmediate` seam.
+- **Full `Store` interface signatures** (declare all now, implement later):
+  ```go
+  type Store interface {
+      // Reads
+      GetTask(ctx context.Context, id string) (Task, error)
+      GetTaskWithDeps(ctx context.Context, id string) (Task, error)       // Task with denormalized Dependencies
+      ListTasks(ctx context.Context, filter Filter) ([]Task, error)
+      GetHistory(ctx context.Context, id string) ([]History, error)
+      GetChildren(ctx context.Context, parentID string) ([]Task, error)
+      GetDependencies(ctx context.Context, id string) ([]Dependency, error)  // outgoing edges
+      GetDependents(ctx context.Context, id string) ([]Dependency, error)    // incoming edges
+      GetTags(ctx context.Context, id string) ([]string, error)
+      GetPRs(ctx context.Context, id string) ([]PR, error)
+      GetNotes(ctx context.Context, id string) ([]Note, error)
+      // Lifecycle
+      Close() error
+      BeginImmediate(ctx context.Context, kind TxKind) (*Tx, error)
+      CurrentSchemaVersion(ctx context.Context) (int, error)
+  }
+  ```
+  `Filter` is a value struct with nullable / zero-value fields per spec §`quest list`: `Statuses []string`, `Parents []string`, `Tags []string` (all entries AND-combined — see below), `Roles []string`, `Types []string`, `Tiers []string`, `Ready bool`, `Columns []string`. Empty slices / false booleans mean "no filter"; the query builder in `ListTasks` AND/ORs per the spec §`quest list` semantics. Note that `Tags` is a flat `[]string`: every tag entered (whether via a single comma-separated value or across repeated `--tag` flags) is ANDed — `--tag go,auth --tag concurrency` requires `go AND auth AND concurrency`, matching the spec and Task 10.2's tag semantics. The flat shape keeps the SQL builder straightforward; audit rendering for span attributes (if ever needed) computes the joined view from the flat slice.
+- **ID allocation lives in `internal/ids/`, not on the `Store` interface.** The `ids.NewTopLevel(ctx, tx *store.Tx, prefix string) (string, error)` and `ids.NewSubTask(ctx, tx *store.Tx, parent string) (string, error)` helpers (Task 4.1) own both the counter read-modify-write and the base36/base10 formatting — one logical operation, one package. The counter SQL runs on the caller's live `*store.Tx`, so atomicity with the task insert is preserved without widening the `Store` interface. Do not add `NextTaskID` / `NextSubTaskID` methods to `Store`; they would duplicate the same operation in two packages.
 - **`store.AppendHistory` is a package-level function, not a `Store` method.** Signature: `func AppendHistory(ctx context.Context, tx *store.Tx, h History) error`. Every write handler calls it inside its transaction after the primary UPDATE/INSERT. `AppendHistory` is the sole call site that converts empty `Role` and `Session` to `sql.NullString{}` — this keeps the nullable-column contract (`quest show` emits `null`, not `""`) enforced at a single point. It is not on the interface because it takes a raw `*store.Tx`, lives inside the store package's implementation, and does not need the decorator's span-wrapping (the `quest.store.tx` span already covers the surrounding transaction).
-- **Interface-first shape enables the decorator.** `InstrumentedStore` (Task 12.4) stores `inner Store` and wraps each method one-to-one; the key wrap point is `BeginImmediate`, where the decorator starts a `quest.store.tx` span and returns an instrumented `*store.Tx` that ends the span on `Commit`/`Rollback` and records `quest.tx.rows_affected`, `quest.tx.outcome`, and `quest.tx.lock_wait_ms`. Test fakes in `internal/testutil/` implement `Store` directly.
+- **Interface-first shape enables the decorator.** `InstrumentedStore` (Task 12.4) stores `inner Store` and wraps each method one-to-one; the key wrap point is `BeginImmediate`, where the decorator populates the `onCommit` / `onRollback` hook fields on the returned `*store.Tx` so its `Commit`/`Rollback` methods close a `quest.store.tx` span and record `quest.tx.rows_affected`, `quest.tx.outcome`, and `quest.tx.lock_wait_ms`. Test fakes in `internal/testutil/` implement `Store` directly.
 - Every status transition (`accept`, `complete`, `fail`, `reset`, `cancel`) runs inside `BeginImmediate(ctx, TxKind<value>)` — leaves and parents alike — per the spec's §Storage > Atomicity update (see Task 6.2 rationale). Write handlers own the UPDATE/INSERT SQL; the transaction boundary is the only OTEL seam.
 - Errors from the store must map cleanly to `errors.Err*` sentinels (`ErrNotFound` when the target row doesn't exist, `ErrConflict` when a precondition fails, `ErrTransient` when the busy_timeout is exceeded — detect `sqlite3 error code 5 (SQLITE_BUSY)` in the driver).
 
@@ -438,14 +500,16 @@ func WrapStore(s store.Store) store.Store
 
 ### Task 4.1 — ID generator (`internal/ids/generator.go`)
 
-**Deliverable:** `ids.NewTopLevel(ctx, tx *store.Tx, prefix string) (string, error)` and `ids.NewSubTask(ctx, tx *store.Tx, parent string) (string, error)`. These are called _inside_ a transaction so concurrent allocators can't collide. The `*store.Tx` wrapper exposes `Exec`/`Query`/`QueryRow` with the same signatures as `*sql.Tx`, so the helpers remain driver-agnostic.
+**Deliverable:** `ids.NewTopLevel(ctx, tx *store.Tx, prefix string) (string, error)` and `ids.NewSubTask(ctx, tx *store.Tx, parent string) (string, error)`. These are the sole owners of ID allocation — both counter SQL (read-modify-write against `task_counter` / `subtask_counter`) and base36/base10 formatting live here. They are called _inside_ a transaction so concurrent allocators can't collide. The `*store.Tx` wrapper exposes `ExecContext`/`QueryContext`/`QueryRowContext` (pass-through to the embedded `*sql.Tx`), so the helpers remain driver-agnostic.
 
 **Spec anchors:** `quest-spec.md` §Task IDs (format, base36 for top-level, base10 for sub-tasks, 2-char min width, 3-level depth cap, structural immutability).
 
 **Implementation notes:**
 
 - Top-level: increment `task_counter[prefix].next_value`; format as base36, left-pad to min width 2. Concretely: values 1–35 render as `01`–`0z`; 36–1295 render as `10`–`zz`; 1296 is the first 3-char ID and renders as `100`; 46656 is the first 4-char ID and renders as `1000`.
+  SQL: `INSERT INTO task_counter(prefix, next_value) VALUES (?, 1) ON CONFLICT(prefix) DO UPDATE SET next_value = task_counter.next_value + 1 RETURNING next_value`. Single round-trip; seeds at 1 for the first top-level task; subsequent calls bump by 1.
 - Sub-task: increment `subtask_counter[parent_id].next_value`; format as base10 without padding. ID = `parent + "." + N`.
+  SQL: `INSERT INTO subtask_counter(parent_id, next_value) VALUES (?, 1) ON CONFLICT(parent_id) DO UPDATE SET next_value = subtask_counter.next_value + 1 RETURNING next_value`. Same shape as top-level: first sub-task of a given parent seeds the row at 1; later sub-tasks bump. `RETURNING` is stable in SQLite since 3.35 (2021); the pinned `modernc.org/sqlite` minimum (v1.28.0, SQLite 3.45+) is well past that threshold — no fallback is needed. If a future driver downgrade is ever considered, bump the pin rather than adding an untested fallback path.
 - Expose `ids.Depth(id string) int` and `ids.ValidateDepth(id string) error` — depth is the count of `.` segments + 1. Reject depth > 3.
 - `ids.Parent(id string) string` returns the parent ID (`"proj-01.1.2"` → `"proj-01.1"`, `"proj-01"` → `""`). This is what the move / graph commands use.
 - Counters live in the same transaction as the task insert so that a rolled-back insert does not permanently consume an ID.
@@ -457,7 +521,7 @@ func WrapStore(s store.Store) store.Store
 - `Parent` for every level.
 - Base36 formatting: round-trip the first 1500 values; assert width 2 for 1..1295, width 3 for 1296..46655.
 
-Layer 3 (with store): concurrent `NextTaskID` calls return distinct IDs — 50 goroutines, each opening its own transaction via `BeginImmediate`, all calling `NextTaskID(prefix)`; assert 50 distinct IDs returned with no duplicates.
+Layer 3 (with store): concurrent `ids.NewTopLevel` calls return distinct IDs — 50 goroutines, each opening its own transaction via `BeginImmediate`, all calling `ids.NewTopLevel(ctx, tx, prefix)`; assert 50 distinct IDs returned with no duplicates.
 
 **Done when:** unit + integration tests pass; ID collisions are structurally impossible under normal use.
 
@@ -471,12 +535,12 @@ Layer 3 (with store): concurrent `NextTaskID` calls return distinct IDs — 50 g
 
 **Implementation notes:**
 
-- Parse global flags (`--format`, `--log-level`) in a first pass that ignores unknown flags — they belong to the subcommand. Use a small hand-rolled parser; `flag` alone does not support position-independent globals cleanly. `--color` is not a flag in v0.1 (see cross-cutting rules).
-- After globals are extracted, the first remaining positional is the command name. Everything else goes to a per-command parser.
+- Global flag parsing (`--format`, `--log-level`) lives in an `internal/cli/flags.go` helper exported for `main.run()` to call. The helper runs a hand-rolled parse pass that ignores unknown flags (they belong to the subcommand) and returns both a resolved `config.Flags` value and the remaining non-global positional arguments. `cli.Execute` assumes `args` has already had the globals stripped upstream — it does **not** re-parse. `--color` is not a flag in v0.1 (see cross-cutting rules).
+- The first entry of the already-stripped `args` is the command name. Everything else goes to a per-command parser inside the handler.
 - Dispatch table: `map[string]commandDescriptor`. Each descriptor carries:
   - `Name string` — the command token.
   - `Handler func(ctx, cfg, s store.Store, args, stdin, stdout, stderr) error` — the command function.
-  - `Elevated bool` — requires a role listed in `elevated_roles` (`WrapCommand`'s inner closure runs the gate when this is true).
+  - `Elevated bool` — requires a role listed in `elevated_roles`. The dispatcher runs the role gate (step 3) before any workspace-state work when this is true; non-elevated descriptors skip the gate at dispatch level (e.g., `update`, which runs its own mixed-flag gate inside the handler).
   - `RequiresWorkspace bool` — `true` for every command except `version` and `init`. Drives whether the dispatcher calls `config.Validate`, opens the store, and runs `store.Migrate` before the command.
   - `SuppressTelemetry bool` — `true` for `version` only (extensible to any future purely-informational command). Drives the version suppression in `OTEL.md` §4.2; the dispatcher skips `telemetry.WrapCommand` and does not increment the operations counter for descriptors with this flag set.
 - **Descriptor inventory.** The authoritative list for `TestRoleGateDenials` (Task 13.1) and the dispatch table:
@@ -505,22 +569,60 @@ Layer 3 (with store): concurrent `NextTaskID` calls return distinct IDs — 50 g
   | `export` | true | true | false |
 
   `quest update` is worker-level at dispatch (so workers can call `--note` / `--pr` / `--handoff`), but any elevated flag inside the handler re-runs the role gate and emits its own `quest.role.gate` span — see Task 6.3.
-- On an unknown command: return `ErrUsage` with a message listing valid commands. On missing workspace when `RequiresWorkspace` is true: `ErrUsage` with `"not in a quest workspace — run 'quest init --prefix PFX' first"` (exit 2). `quest init` and `quest version` proceed.
-- **Dispatch sequence** (this ordering is load-bearing — parenthood in `OTEL.md` §4.1 and the sibling relationship in §8.8 depend on it):
-  1. Parse global flags and identify the command token.
-  2. Look up the descriptor. Unknown command → return `ErrUsage` (exit 2) before any span exists. Cost: pure in-memory; no instrumentation.
-  3. `cfg := config.Load(flags)` (`Load` is infallible per Task 1.3). If `descriptor.RequiresWorkspace`, call `cfg.Validate()`; on error, return `ErrUsage` carrying the collected validation errors (exit 2). `version` and `init` skip `Validate` so they work in directories without a populated `.quest/config.toml`.
-  4. If `descriptor.RequiresWorkspace`: open the store with `s, _ := store.Open(cfg.Workspace.DBPath)`, wrap it with `s = telemetry.WrapStore(s)` (no-op until Task 12.4 lights up the decorator), read `from, _ := store.CurrentSchemaVersion(ctx, s)`, then call `ctx, end := telemetry.MigrateSpan(ctx, from, store.SupportedSchemaVersion); applied, err := store.Migrate(ctx, s); end(applied, err)`. This runs **before** constructing the command span, so `quest.db.migrate` is a sibling per `OTEL.md` §8.8. `WrapStore` is the single construction-site seam — every downstream handler sees the instrumented store.
-  5. If `descriptor.SuppressTelemetry` is true, call `descriptor.Handler(ctx, cfg, s, ...)` directly (no `CommandSpan`, no operation counter) and return its exit code. Used today only by `version`.
-  6. Otherwise, call `telemetry.WrapCommand(ctx, descriptor.Name, descriptor.Elevated, fn)` where `fn` is a closure that:
-     - Computes `allowed := config.IsElevated(cfg.Agent.Role, cfg.Workspace.ElevatedRoles)`.
-     - If `descriptor.Elevated == true`, emits `telemetry.GateSpan(ctx, cfg.Agent.Role, allowed)` (gate spans fire only for elevated commands per `OTEL.md` §8.7 — worker→worker decisions do not emit to keep the retrospective signal clean; mixed-flag gates inside `quest update` emit their own gate span from the handler, see Task 6.3).
-     - If `descriptor.Elevated && !allowed`, logs `role gate denied` at INFO and returns `ErrRoleDenied` (exit 6).
-     - Otherwise calls `descriptor.Handler(ctx, cfg, s, args, stdin, stdout, stderr)` and returns its error.
-     `WrapCommand` owns the root `execute_tool quest.<name>` span, the §4.4 three-step error pattern, and the `dept.quest.operations` / `dept.quest.errors` counters — so role-denied commands now produce a command span with `exit_code=6` and both counters increment. This is the C1 resolution: putting the gate inside `WrapCommand` gives role denials the same observability surface as any other error.
-- Centralizing workspace validation, migration, store wrapping, the role gate, and the command span in dispatch keeps all cross-command security/observability boundaries in one place and matches OTEL.md's hierarchy.
-- **Pre-handler error carve-out.** Errors returned by the dispatcher before `WrapCommand` runs (unknown command in step 2, `config.Validate` failure in step 3, migration failure in step 4) do **not** increment `dept.quest.operations` / `dept.quest.errors` because no command span exists yet. Their signal is the exit code on the process and the `quest.db.migrate` span (for migration failures). Document this explicitly on any "quest error rate" dashboard — the rate is scoped to post-dispatch command invocations. See `OTEL.md` §4.2 / §5.1 for the scoping note to mirror on the telemetry side.
-- Workers see a minimal usage banner when they run `quest` or `quest --help` — list only worker commands. Planners see the full list. This is a context-window concern, not a cosmetic one.
+- On an unknown command: return `ErrUsage` (exit 2) with a message listing valid commands (role-filtered per step 1 above) and a "did you mean" suggestion from `cli.Suggest` when a close match exists. Message shape: `unknown command 'stauts'; did you mean 'status'?` followed by the valid-command enumeration. On missing workspace when `RequiresWorkspace` is true: `ErrUsage` with `"not in a quest workspace — run 'quest init --prefix PFX' first"` (exit 2). `quest init` and `quest version` proceed.
+- **`cli.Suggest(bad string, valid []string) string`** lives in `internal/cli/suggest.go` and returns the closest match from `valid` when the Levenshtein edit distance is ≤ 2 or ≤ half the input length (whichever is larger), empty string otherwise. Used by: this step's unknown-command rejection, Task 10.2's `--status` / `--type` / `--tier` / `--columns` validation, and any future unknown-enum error site. One helper keeps the "did you mean" error shape consistent across the CLI surface. Implementation is ~15 lines of standard Levenshtein — no external dependency.
+- **`cli.Execute` signature.** Takes `cfg config.Config` as a parameter rather than calling `config.Load` itself: `cli.Execute(ctx context.Context, cfg config.Config, args []string, stdin io.Reader, stdout, stderr io.Writer) int`. `main.run()` is the single caller — it parses the global flags (see Task 0.2 `main.run` flow), calls `config.Load(flags)`, runs `telemetry.Setup`, calls `telemetry.ExtractTraceFromConfig` on the resolved `cfg.Agent.TraceParent`/`TraceState`, then passes `ctx` (carrying the inbound W3C trace context) and `cfg` into `cli.Execute`. No double-load, no double-parse.
+- **Dispatch sequence** (this ordering is load-bearing — parenthood in `OTEL.md` §4.1 and the sibling relationship in §8.8 depend on it; the role gate sits above workspace-state operations per spec §Error precedence's "role denial is uniform regardless of workspace state" rule):
+  1. Identify the command token from `args`. Unknown command → return `ErrUsage` (exit 2) with a role-filtered banner plus a `cli.Suggest` "did you mean" hint when a close match exists — workers see only the worker commands; elevated roles see the full list. This matches the role-gating rationale: don't leak planner commands to workers.
+  2. Look up the descriptor. Save the inbound context: `parentCtx := ctx` (this carries the vigil `TRACEPARENT` per `main.run`'s `ExtractTraceFromConfig` step; it is **not** the command span). Open the command span: `ctx, span := telemetry.CommandSpan(parentCtx, descriptor.Name, descriptor.Elevated); defer span.End()` (skipped entirely when `descriptor.SuppressTelemetry == true`, which today covers only `version`). Opening the span here — before the role gate, config validation, and migration — means every pre-handler error (role-denied, config-invalid, migration-failed) records on this span via the three-step error pattern, and `dept.quest.operations` / `dept.quest.errors` include them. The span's duration therefore covers total dispatcher work (parse → handler return), not just the handler body; see `OTEL.md` §4.2 for the dashboard-meaning note. **Critical:** keep `parentCtx` in scope — migration (step 5) uses it, not the command-span-bearing `ctx`, so the migrate span is a sibling of the command span per `OTEL.md` §8.8.
+  3. **Role gate (elevated commands only).** If `descriptor.Elevated == true`, compute `allowed := config.IsElevated(cfg.Agent.Role, cfg.Workspace.ElevatedRoles)` and emit `telemetry.GateSpan(ctx, cfg.Agent.Role, allowed)` as a child of the command span. If `!allowed`, log `role gate denied` at INFO with the attribute set pinned in `OTEL.md` §3.2 (`command`, `agent.role`, `required=elevated`) and return `errorExit(ctx, span, errors.ErrRoleDenied)` (exit 6; `errorExit` handles the three-step error pattern, the operations/errors counter increments, and the stderr line). **This runs before `cfg.Validate` (step 4) and `store.Open`/migrate (step 5), so role denial is uniform regardless of workspace state** — a worker invoking any elevated command gets exit 6 whether the workspace config is valid, the DB needs migrating, or the DB is at a newer-than-supported schema version. Spec §Error precedence requires this: "role denial is uniform regardless of workspace state." For non-elevated descriptors (today: `version`, `init`, `show`, `accept`, `update`, `complete`, `fail`), skip the gate entirely at this step. `quest update`'s mixed-flag gate still fires later from inside its handler (Task 6.3) — the dispatcher-level gate only applies to descriptors with `Elevated: true`.
+  4. If `descriptor.RequiresWorkspace`, call `cfg.Validate()`; on error, return `errorExit(ctx, span, err)` (exit 2) with the collected validation errors. `version` and `init` skip `Validate`.
+  5. If `descriptor.RequiresWorkspace`:
+     ```go
+     s, err := store.Open(cfg.Workspace.DBPath)
+     if err != nil {
+         return errorExit(ctx, span, err)  // records on span, increments errors counter, returns the mapped exit code
+     }
+     defer s.Close()
+     s = telemetry.WrapStore(s)  // no-op until Task 12.4 lights up the decorator
+     from, err := s.CurrentSchemaVersion(ctx)
+     if err != nil {
+         return errorExit(ctx, span, err)
+     }
+     switch {
+     case from < store.SupportedSchemaVersion:
+         // parentCtx — NOT ctx — so quest.db.migrate is a sibling of the command span.
+         migCtx, end := telemetry.MigrateSpan(parentCtx, from, store.SupportedSchemaVersion)
+         applied, err := store.Migrate(migCtx, s)
+         end(applied, err)
+         if err != nil {
+             return errorExit(ctx, span, err)
+         }
+     case from > store.SupportedSchemaVersion:
+         return errorExit(ctx, span, fmt.Errorf("%w: schema version %d newer than supported %d", errors.ErrGeneral, from, store.SupportedSchemaVersion))
+     }
+     ```
+     `quest.db.migrate` is **emitted only when the stored schema version lags** the binary (`from < SupportedSchemaVersion`). Per `OTEL.md` §4.1 / §8.8, the migrate span is a sibling of the command span, emitted only when a real migration is about to run — gating here preserves that "one migration = one span + one metric" contract and prevents every workspace-bound command from emitting a no-op `applied_count=0` span. When the stored version equals the supported version, skip both `MigrateSpan` and `store.Migrate` entirely. When it exceeds the supported version, fail with `ErrGeneral` (exit 1) — this is the forward-only schema-check described in `quest-spec.md` §Storage. The migrate span starts from `parentCtx` (the inbound `TRACEPARENT`), not from the command span. `WrapStore` is the single construction-site seam. Errors from `store.Open` and `CurrentSchemaVersion` map to `ErrGeneral` (exit 1) via `errorExit`; never discard them with `_`. `CurrentSchemaVersion` additionally maps `SQLITE_BUSY` to `ErrTransient` per Task 3.1. Because role denial short-circuits at step 3, a role-denied worker never reaches `store.Open` or migration — migration activity on the `dept.quest.schema.migrations` counter therefore correlates only to legitimate (non-role-denied) command invocations.
+  6. If `descriptor.SuppressTelemetry`, call `descriptor.Handler(ctx, cfg, s, ...)` directly and return its exit code. Used today only by `version`, which suppresses span/metric emission per `OTEL.md` §4.2.
+  7. Otherwise, call `telemetry.WrapCommand(ctx, descriptor.Name, fn)` where `fn` calls `descriptor.Handler(ctx, cfg, s, args, stdin, stdout, stderr)` and returns its error. `WrapCommand` is a **no-start / no-end middleware** per `OTEL.md` §8.2 — it picks up the already-active command span via `trace.SpanFromContext(ctx)`, applies the §4.4 three-step error pattern to the wrapped handler error, and increments `dept.quest.operations` / `dept.quest.errors`. It never starts a new span and never calls `span.End()` — `cli.Execute`'s step-2 `defer span.End()` owns the span's lifetime. Role-denied commands have already short-circuited at step 3 via `errorExit`, which performs the same counter increments — so role-denial observability is preserved without WrapCommand needing to know about it.
+  8. **Panic recovery.** `cli.Execute` installs a top-level `defer recover()` that wraps the entire dispatch body (not inside `WrapCommand`). This covers the `SuppressTelemetry` short-circuit branch (step 6, `version`), the `WrapCommand` path (step 7), and any panic during steps 3–5 — a panic anywhere is translated into `ErrGeneral` wrapping `fmt.Errorf("panic: %v", r)`, logged at ERROR, and recorded on whatever command span is active (non-recording for `version`). Panic slog record shape: `err` field = truncated panic message (256 chars, via `telemetry.Truncate` for UTF-8 safety — matches `OBSERVABILITY.md` §Standard Field Names); `stack` field = captured via `runtime/debug.Stack()` truncated to 2048 bytes. Placing recovery at the dispatcher level (rather than inside `WrapCommand`) keeps the "every quest invocation produces a slog record on panic" invariant intact regardless of descriptor flags. `WrapCommand` stays focused on the three-step error pattern for handler-returned errors.
+- **Handler boundary bookends.** `cli.Execute` emits `slog.DebugContext(ctx, "quest command start", attrs...)` after step 2 and `slog.DebugContext(ctx, "quest command complete", ...)` immediately before returning. Build attrs conditionally: always include `"command"` and `"agent.role"`; only include `"dept.task.id"` / `"dept.session.id"` when the resolved value is non-empty, matching `OBSERVABILITY.md` §Standard Field Names (omit-if-empty semantics). The complete bookend also adds `exit_code` and `duration_ms`. Handlers stay silent on boundaries; the dispatcher owns both bookend log records per `OBSERVABILITY.md` §Boundary Logging. Moving the bookends into the dispatcher keeps the call out of twelve handler files and guarantees consistent keys.
+- Centralizing workspace validation, migration, store wrapping, the role gate, and the command span in dispatch keeps all cross-command security/observability boundaries in one place and matches `OTEL.md`'s hierarchy.
+- **`errorExit` helper** (private to `internal/cli/`). Signature `func errorExit(ctx context.Context, span trace.Span, err error) int` — the single place pre-handler errors are recorded and converted to exit codes. Body:
+  ```go
+  func errorExit(ctx context.Context, span trace.Span, err error) int {
+      span.RecordError(err)
+      span.SetStatus(codes.Error, err.Error())
+      telemetry.IncError(ctx, errors.Class(err))   // increments dept.quest.errors{error_class}
+      telemetry.IncOperation(ctx, "error")          // increments dept.quest.operations{status=error}
+      slog.ErrorContext(ctx, "dispatch error", "err", telemetry.Truncate(err.Error(), 256), "class", errors.Class(err))
+      errors.EmitStderr(err, stderr)
+      return errors.ExitCode(err)
+  }
+  ```
+  Called from every early-return in the dispatch sequence (steps 3, 4, 5). Role-denied invocations (step 3) and workspace-failure invocations (steps 4, 5) therefore produce the same observability as a failed handler run: command span closed with the error recorded, `dept.quest.operations{status=error}` + `dept.quest.errors{error_class=<class>}` both incremented. Handlers themselves return errors unchanged — `WrapCommand` records them via the same three-step pattern on the already-open command span and emits its own `dept.quest.operations` increment (status=ok on success, status=error on handler-returned error).
+- **Per-command flag parsing + `--help`.** Each handler constructs its own `flag.FlagSet` (`flag.NewFlagSet(descriptor.Name, flag.ContinueOnError)`), which makes `-h` and `--help` work natively — the standard library prints usage and returns `flag.ErrHelp`, which the handler translates to exit 0 (help is a success outcome). `quest` with no subcommand or `quest --help` prints the dispatcher's banner and exits 0. The `--help` text is not a contract (spec is silent); tests only assert it exists and exits 0. **`--help` does not short-circuit workspace / role checks.** A worker running `quest create --help` outside a workspace receives exit 2 (no workspace), and a worker running `quest create --help` inside a workspace receives exit 6 (role denied) — both are intentional. Help is gated by the same preconditions as running the command; a worker asking for help on a command they cannot run would still be blocked at the role gate a moment later. This departs from common CLI convention (git / kubectl / docker all short-circuit `--help`); tracked in *Deliberate deviations from spec* below with rationale.
+- **Worker vs planner usage banner.** Workers see `{show, accept, update, complete, fail, init, version}`. `init` and `version` are always listed regardless of role per spec §System & Info Commands — a worker outside a workspace needs the `init` hint to bootstrap. Planners (any role listed in `.quest/config.toml` `elevated_roles`) see every entry in the descriptor inventory. The banner on unknown-command errors and on `quest --help` is filtered by the caller's resolved role.
 
 **Tests:** Layer 4 CLI tests:
 
@@ -529,6 +631,8 @@ Layer 3 (with store): concurrent `NextTaskID` calls return distinct IDs — 50 g
 - Worker role invoking `quest create` → exit 6 with `quest: role_denied: ...`.
 - No workspace → exit 2 with the required message; `quest version` still works.
 - `quest version` emits no span and no operation-counter increment (asserted via in-memory exporter; see Task 13.1 `TestVersionOutputShape`).
+- `config.Validate` failure produces a command span with `class=usage_error` and increments `dept.quest.errors{error_class=usage_error}` — pre-handler errors feed the errors counter because the command span opens at step 2.
+- A handler that panics produces a command span with `class=general_failure`, an ERROR slog record with a stack, and exit 1 — verifies the panic-recovery layer.
 
 **Done when:** a structural end-to-end path (no real handlers yet) returns the correct exit codes for the happy and error cases above, and the span hierarchy (migration sibling + gate child) matches `OTEL.md` §4.1.
 
@@ -536,7 +640,7 @@ Layer 3 (with store): concurrent `NextTaskID` calls return distinct IDs — 50 g
 
 ### Task 4.3 — Output renderer (`internal/output/`)
 
-**Deliverable:** `output.Emit(w io.Writer, format string, value any) error`, `output.EmitJSONL(w io.Writer, values iter.Seq[any]) error`, helpers for table rendering (`output.Table`) and tree rendering (`output.Tree`).
+**Deliverable:** `output.Emit(w io.Writer, format string, value any) error`, `output.EmitJSONL[T any](w io.Writer, values []T) error`, `output.OrderedRow` for dynamic-column rows, helpers for table rendering (`output.Table`) and tree rendering (`output.Tree`).
 
 **Spec anchors:** `quest-spec.md` §Output & Error Conventions (flat JSON, `null`/`[]`/`{}` never omitted), `STANDARDS.md` §CLI Surface Versioning (JSON is a contract).
 
@@ -546,6 +650,7 @@ Layer 3 (with store): concurrent `NextTaskID` calls return distinct IDs — 50 g
 - `text` mode column behavior: fixed default widths when `w` is not a TTY; auto-size to terminal width when it is. Use `golang.org/x/term` (or `x/sys/unix` directly) to query width; fall back to 80 columns when detection fails.
 - Table truncation uses a trailing `...` per `quest-spec.md` §Text-mode formatting. Never split multi-byte runes — walk back to a rune boundary.
 - **Nullable field pattern.** Optional string fields on task structs are declared as `*string` in Go; `encoding/json` already serializes `nil *string` as `null` and a populated pointer as a quoted string. Do not add a `output.NullString` helper — it was considered and dropped as redundant. The only responsibility of `internal/output/` around nulls is to *not* flatten the pointer.
+- **Ordered-row emission for dynamic-column output.** `quest list --columns` determines field set and order at runtime, so a struct-per-command approach does not apply. Provide `output.OrderedRow` with signature `type OrderedRow struct { Columns []string; Values map[string]any }` and a `MarshalJSON` method that iterates `Columns` and emits `{"k1":v1,"k2":v2,...}` with keys in the supplied order. `json.Marshal` on a `map[string]any` sorts keys alphabetically — using `OrderedRow` is the only way to preserve `--columns` order per spec §`quest list` (row shape rules). Task 10.2 builds one `OrderedRow` per result row; `output.Emit` then writes the array.
 - Provide `testutil.AssertSchema(t *testing.T, got []byte, required []string)` in `internal/testutil/` for contract tests (used heavily in Phase 6+). It lives in `testutil` because it is a test-side helper; the package prefix matches the import path.
 
 **Tests:** Layer 1:
@@ -583,8 +688,24 @@ Layer 3 (with store): concurrent `NextTaskID` calls return distinct IDs — 50 g
 
   Use `os.WriteFile` with mode `0o644`. The `.quest/` directory is `0o755`.
 
-- Open the DB at `.quest/quest.db` via `store.Open`, wrap it with `telemetry.WrapStore(s)` (same single-seam rule as Task 4.2), and run migrations inside `telemetry.MigrateSpan` so the migration is still observable: `from, _ := store.CurrentSchemaVersion(ctx, s); ctx, end := telemetry.MigrateSpan(ctx, from, store.SupportedSchemaVersion); applied, err := store.Migrate(ctx, s); end(applied, err)`. Because init is the one command where migration runs from inside the handler (rather than via the dispatcher's pre-handler step), `quest.db.migrate` ends up as a *child* of the `execute_tool quest.init` command span — the documented carve-out in `OTEL.md` §8.8. Metrics increment identically to the sibling case. A failed migration leaves the DB at the prior version (empty, in the init case) per spec §Storage — no cleanup needed. Re-running `quest init` after a migration failure is safe because `config.toml` is already written and the DB is either empty or intact.
-- Output JSON matches spec §`quest init`: `{"workspace": "<absolute path>", "id_prefix": "<prefix>"}` — both fields always present. In `--format text` the output is the bare absolute workspace path followed by a single newline — no prefix, no framing, no prefix echo (spec §`quest init`). `TestInitOutputShape` (Task 13.1) pins this.
+- Open the DB at `.quest/quest.db` via `store.Open`, wrap it with `telemetry.WrapStore(s)`, and run migrations inside `telemetry.MigrateSpan` so the migration is still observable:
+  ```go
+  cwd, err := os.Getwd()
+  if err != nil { return err }
+  dbPath := filepath.Join(cwd, ".quest/quest.db")
+  s, err := store.Open(dbPath)
+  if err != nil { return err }
+  defer s.Close()
+  s = telemetry.WrapStore(s)
+  from, err := s.CurrentSchemaVersion(ctx)
+  if err != nil { return err }
+  migCtx, end := telemetry.MigrateSpan(ctx, from, store.SupportedSchemaVersion)
+  applied, err := store.Migrate(migCtx, s)
+  end(applied, err)
+  if err != nil { return err }
+  ```
+  **Init derives the DB path locally, not from `cfg.Workspace.DBPath`.** `cfg.Workspace.DBPath` is populated from `cfg.Workspace.Root`, which is empty when `config.DiscoverRoot` does not find a `.quest/` — exactly the state `quest init` runs in. Every other workspace-bound command uses `cfg.Workspace.DBPath`; init is the one carve-out because it is the handler that *creates* the workspace. Compute the path post-mkdir via `filepath.Join(cwd, ".quest/quest.db")` and do not rely on the resolved config value. Because init is the one command where migration runs from inside the handler (rather than via the dispatcher's pre-handler step), `quest.db.migrate` ends up as a *child* of the `execute_tool quest.init` command span — the documented carve-out in `OTEL.md` §8.8. Metrics increment identically to the sibling case. A failed migration leaves the DB at the prior version (empty, in the init case) per spec §Storage — no cleanup needed. Re-running `quest init` after a migration failure is safe because `config.toml` is already written and the DB is either empty or intact. **Note:** init is the only handler-path caller of `telemetry.WrapStore`; every other command receives an already-wrapped store from the dispatcher. Do not copy this pattern into other handlers.
+- Output JSON matches spec §`quest init`: `{"workspace": "<absolute path to .quest/>", "id_prefix": "<prefix>"}` — both fields always present. The `workspace` field is the absolute path to the `.quest/` directory itself (e.g. `/abs/path/to/project/.quest`), not the workspace root. `TestInitOutputShape` (Task 13.1) uses `filepath.Base(workspace) == ".quest"` (cross-platform, avoids Windows `\` separators) so a regression that emits the root is caught immediately. In `--format text` the output is the bare absolute `.quest/` path followed by a single newline — no prefix, no framing, no prefix echo (spec §`quest init`).
 
 **Tests:** Layer 4 CLI:
 
@@ -615,6 +736,8 @@ These are the smallest surface and every downstream command depends on them. Imp
 - `store.GetTaskWithDeps(ctx, id)` performs one query for the task row, one for dependencies (joined with the target task to pick up `title` and `status` — spec requires these denormalized onto the dependency array), one for tags, one for PRs, and one for notes.
 - **Missing ID returns exit 3.** When no task row matches, return `ErrNotFound` — exit 3 per spec §Error precedence. No partial response, no empty object on stdout, no dependency fetch. The contract test (`TestShowJSONHasRequiredFields`) implicitly covers this; being explicit here prevents an accidental empty-body response.
 - `--history` adds `history []History`; without it, the returned object has no `history` field at all. Spec §`quest show` documents this as the sole carve-out to "all fields always present."
+- **Telemetry wiring** (Phase 12): after loading the task row, call `telemetry.RecordTaskContext(ctx, id, tier, taskType)` so the command span carries the mandatory task-affecting attributes (`quest.task.id`, `quest.task.tier`, `quest.task.type`) per `OTEL.md` §4.3. Centralizing in a single helper ensures uniform coverage across every task-affecting handler (`show`, `accept`, `update`, `complete`, `fail`, `cancel`, `move`, `deps`, `tag`, `untag`); new handlers simply call the helper.
+- **History `payload` flattening.** When serializing a history entry, unmarshal the stored `payload` JSON blob into a `map[string]any` and merge its keys into the top level of the entry object alongside `timestamp`, `role`, `session`, `action`. Spec §History field shows `reason`, `fields`, `content`, `target`, `link_type`, `old_id`, `new_id`, `url` at the top level of the emitted entry — the flat shape is a contract, but the opaque blob is the storage shape. This flattening also applies to `quest export` (Task 11.1's `history.jsonl`).
 - JSON field order in the emitted object matches the spec example exactly. Go's `encoding/json` preserves struct field order — define a struct per command output rather than `map[string]any`.
 
 **Tests:** Layer 2 contract test: `TestShowJSONHasRequiredFields` per `STANDARDS.md` §CLI Output Contract Tests. Layer 3 handler test for happy path, missing task (exit 3), `--history` flag changes the payload shape.
@@ -631,7 +754,7 @@ These are the smallest surface and every downstream command depends on them. Imp
 
 **Implementation notes:**
 
-- Route every path through `tx, err := s.BeginImmediate(ctx, store.TxAccept)` — leaves and parents alike. The tx_kind enum was broadened in `OTEL.md` §4.3 / §5.3 to describe the operation category (not the structural shape), so a single value covers both cases. Do **not** use the atomic-UPDATE-with-RowsAffected shortcut for leaves: it conflates exit 3 (`not_found`, task ID unknown) and exit 5 (`conflict`, task exists in wrong status). The spec (§Storage > Atomicity and §Error precedence) now requires every status transition to use `BEGIN IMMEDIATE` with SELECT-then-UPDATE regardless of shape.
+- Route every path through `tx, err := s.BeginImmediate(ctx, store.TxAccept)` — leaves and parents alike. The `tx_kind` enum (`OTEL.md` §4.3 / §5.3) describes the operation category, not the structural shape, so a single value covers both cases. Do **not** use the atomic-UPDATE-with-RowsAffected shortcut for leaves: it conflates exit 3 (`not_found`, task ID unknown) and exit 5 (`conflict`, task exists in wrong status). The spec (§Storage > Atomicity and §Error precedence) requires every status transition to use `BEGIN IMMEDIATE` with SELECT-then-UPDATE regardless of shape.
 - Inside the transaction:
   1. `tx.QueryRow("SELECT status FROM tasks WHERE id=?", id).Scan(&status)`. `sql.ErrNoRows` → `ErrNotFound` (exit 3). This is safe from TOCTOU because `BEGIN IMMEDIATE` holds the write lock from the start.
   2. If status is not `open` → `ErrConflict` (exit 5).
@@ -650,6 +773,7 @@ These are the smallest surface and every downstream command depends on them. Imp
     "non_terminal_children": [{ "id": "proj-a1.1", "status": "accepted" }]
   }
   ```
+- **Accept on a non-open task (any of `accepted`, `complete`, `failed`, `cancelled`) emits exit 5 with an empty stdout and the standard stderr two-liner.** The vigil-coordination cancelled-body (`{"error":"conflict","task":"...","status":"cancelled","message":"task was cancelled"}`) from spec §In-flight worker coordination is scoped to `update`/`complete`/`fail` — it tells vigil to route a mid-flight worker's debrief. Accept is not in that coordination set (a worker that hasn't accepted yet has no in-flight debrief to route), so it emits no structured body on stdout. All four non-open from-statuses are handled uniformly: stderr carries `quest: conflict: task is not in open status (current: <status>)` + `quest: exit 5 (conflict)`, stdout is empty. The structured `non_terminal_children` body (exit 5 due to non-terminal children on parent accept) is a separate case and *is* emitted on stdout per the shape above. Do not reflexively copy the cancelled-body emitter from Task 6.4 into this handler.
 - Call `telemetry.RecordStatusTransition(ctx, id, "open", "accepted")` (no-op until Task 12.5, but the call site must exist).
 
 **Tests:** Layer 2 idempotency (re-accepting a non-open task → exit 5). Layer 3: leaf happy path, leaf already-accepted (exit 5), leaf not-found (exit 3), parent with non-terminal child (exit 5 + structured body), parent with all terminal (success). Layer 5 concurrency lives in Task 13.2 (`TestConcurrentAcceptLeavesOnlyOneWinner` — N goroutines race on a single `open` task; exactly one wins, the other N-1 receive exit 5 with no silent loss). Match `TESTING.md` §Concurrency Tests on the goroutine count (10).
@@ -666,21 +790,23 @@ These are the smallest surface and every downstream command depends on them. Imp
 
 **Implementation notes:**
 
-- Expand `@file` arguments via `input.Resolve(val string, stdin io.Reader) (string, error)` in `internal/input/` (package from Task 0.1). `@-` reads stdin, `@path` reads the file relative to CWD. Size cap, missing-file behavior, and error format come from spec §Input Conventions > Size limit: cap at 1 MiB (1,048,576 bytes), oversized input → `ErrUsage` with `"file @<path> exceeds 1 MiB limit (observed <N> bytes)"`, and missing / unreadable file → `ErrUsage` with `"failed to read @<path>: <os error>"` naming the flag and underlying error. Both map to exit 2. Per the plan preamble cross-cutting rule, `input.Resolve` tracks whether `@-` has been consumed and rejects a second `@-` in the same invocation with `"stdin already consumed by <first-flag>; at most one @- per invocation"`.
+- Expand `@file` arguments via an `*input.Resolver` — **each handler constructs its own** at entry: `r := input.NewResolver(stdin); value, err := r.Resolve("--debrief", raw)`. One handler per invocation means the "one resolver per invocation" invariant already holds without adding a parameter to every handler's signature. `internal/input/` (package from Task 0.1) exports `type Resolver struct { ... }` with `NewResolver(stdin io.Reader) *Resolver` and `(r *Resolver) Resolve(flag, val string) (string, error)`. `@-` reads stdin, `@path` reads the file relative to CWD, bare strings pass through. Size cap, missing-file behavior, and error format come from spec §Input Conventions > Size limit: cap at 1 MiB (1,048,576 bytes), oversized input → `ErrUsage` with `"<flag>: file @<path> exceeds 1 MiB limit (observed <N> bytes)"`, and missing / unreadable file → `ErrUsage` with `"<flag>: failed to read @<path>: <os error>"` — the flag name is always the leading token so agents can programmatically route on it. Both map to exit 2. The `Resolver` instance tracks whether `@-` has been consumed and rejects a second `@-` on the same invocation with `"stdin already consumed by <first-flag>; at most one @- per invocation"` (exit 2). State lives on the instance, not the package — parallel tests and nested invocations stay isolated.
 - Worker flags: `--note`, `--pr`, `--handoff`. Elevated flags: `--title`, `--description`, `--context`, `--type`, `--tier`, `--role`, `--acceptance-criteria`, `--meta KEY=VALUE` (repeatable).
   - `--meta` parsing: split on `=` once. Reject `--meta foo` (no `=`) and `--meta =bar` (empty key) with `ErrUsage` (exit 2) and a message naming the offending flag. Empty *value* (`--meta foo=`) is also `ErrUsage` — spec §`quest update` requires a value per key.
-  - **Empty-value rejection** (spec §`quest update` after L20 resolution): `--role ""`, `--handoff ""`, `--title ""`, `--description ""`, `--context ""`, `--acceptance-criteria ""`, and `--note ""` all return `ErrUsage` (exit 2) with a message naming the flag. There is no clear-field mechanism in v0.1; passing an empty string is always a planner-side mistake.
-  - **`--type` transition check** (spec §`quest update` after L21 resolution): when `--type task` is requested, `SELECT 1 FROM dependencies WHERE (task_id=? OR target_id=?) AND link_type IN ('caused-by','discovered-from') LIMIT 1` inside the transaction. Any match → `ErrConflict` (exit 5) with a body listing the blocking links. The check must run inside the same transaction as the UPDATE so a concurrent `quest link` cannot slip a link in between the check and the retype.
+  - **Empty-value rejection** (spec §`quest update`): `--role ""`, `--handoff ""`, `--title ""`, `--description ""`, `--context ""`, `--acceptance-criteria ""`, and `--note ""` all return `ErrUsage` (exit 2) with a message naming the flag. There is no clear-field mechanism in v0.1; passing an empty string is always a planner-side mistake.
+  - **`--type` transition check** (spec §`quest update`): when `--type task` is requested, `SELECT 1 FROM dependencies WHERE task_id=? AND link_type IN ('caused-by','discovered-from') LIMIT 1` inside the transaction. Any match → `ErrConflict` (exit 5) with a body listing the blocking links. The predicate checks **outgoing** links only — `dependencies.task_id` is the source, `dependencies.target_id` is the target, and the spec's invariant applies to the source's type. A retrospective project with accumulated `discovered-from`/`caused-by` edges must still allow retyping of upstream targets (the incoming edges do not block). The check must run inside the same transaction as the UPDATE so a concurrent `quest link` cannot slip a link in between the check and the retype.
 - Terminal-state gating per spec §`quest update` *Terminal-state gating*: on `complete` / `failed` tasks, only `--note`, `--pr`, `--meta` are accepted; everything else → `ErrConflict` with a message listing the blocked flags. On `cancelled` tasks, **every** `update` variant (including `--note` / `--pr` / `--meta` / `--handoff`) → `ErrConflict` with the structured body from §*In-flight worker coordination* (`{"error":"conflict","task":"...","status":"cancelled","message":"task was cancelled"}`). Cancelled is the signal that tells vigil to terminate the worker; letting any update through would defeat it.
 - Non-owning worker on an accepted task: `ErrPermission` (exit 4). Owning workers OR any elevated role pass.
-- **Every update runs inside `s.BeginImmediate(ctx, store.TxUpdate)`** — no append-only shortcut path. The M8 resolution: every `update` invocation has at least the existence + terminal-state preconditions, so the "pure append-only, no precondition" allowance in spec §Storage Atomicity doesn't match the actual check set. Using one code path makes `dept.quest.store.tx{kind=update}` consistent across worker-only and mixed invocations.
+- **Every update runs inside `s.BeginImmediate(ctx, store.TxUpdate)`** — no append-only shortcut path. Every `update` invocation has at least the existence + terminal-state preconditions, so the "pure append-only, no precondition" carve-out doesn't match the actual check set. Spec §Storage was updated to require `BEGIN IMMEDIATE` on every `update` regardless of flags — the single-path rule keeps `dept.quest.store.tx{tx_kind=update}` observability uniform across worker-only and mixed-flag invocations, which is load-bearing for the spec's daemon-upgrade signal (sustained exit-7 rate). The cost — one `BEGIN IMMEDIATE` per update on an otherwise-uncontended DB — is microseconds and shows up as real contention only in the regime where the daemon-upgrade signal should already be firing.
+- `--meta` uses **read-merge-write semantics** per spec §Idempotency (`update --meta`: "overwrites the value for an existing key; sets it for a new key"). Inside the same transaction: `SELECT metadata FROM tasks WHERE id=?`, `json.Unmarshal` into `map[string]any`, overlay each `KEY=VALUE` from this invocation (later keys in the same invocation overwrite earlier ones; pre-existing keys not on this command line are preserved), re-marshal via `json.Marshal` to canonical JSON, and `UPDATE tasks SET metadata=? WHERE id=?`. Each `KEY=VALUE` pair is a string-valued entry (already JSON-safe); if future work adds `--meta-json` (accepting raw JSON), that path parses the input with `json.Unmarshal` first and emits `ErrUsage` (exit 2) on parse failure, keeping `tasks.metadata` invariant: always valid JSON. Per-key `field_updated` history entries track the delta: for each changed key, emit `{fields: {"metadata.<key>": {from, to}}}` — `from` is `null` when the key was absent before.
 - **Mixed-flag gate span.** If any elevated flag is present in the args, the handler emits `telemetry.GateSpan(ctx, cfg.Agent.Role, allowed)` before the elevated-flag check, where `allowed = config.IsElevated(...)`. This is the one case where a handler (not the dispatcher) emits the gate span — `quest update` is dispatched at worker level (so workers can `--note`) but the mixed-flag path still needs the gate observability. Without the handler-side emission, retrospective queries for "how often did workers attempt elevated ops?" would undercount `update --tier` / `--role` attempts.
-- Precondition order inside the transaction must match spec §Output & Error Conventions *Error precedence*: existence (3) → role gate on elevated flags (6) → ownership (4) → terminal-state / cancelled gating (5) → flag-shape usage errors (2) → `--type` transition check (5). Do not reorder these checks — agent retry logic switches on the resulting exit code, and the reviewer flagged this as a deterministic-exit-code requirement.
+- Precondition order inside the transaction must match spec §Output & Error Conventions *Error precedence*: existence (3) → role gate on elevated flags (6) → ownership (4) → terminal-state / cancelled gating (5) → `--type` transition check (5) → flag-shape usage errors (2). State checks (5) always fire before usage checks (2) per the spec's deterministic-contract rule — `quest update proj-a1 --type task --tier T99` on a task with a `caused-by` link must produce exit 5 (blocked by link), not exit 2 (bad tier). Do not reorder these checks — agent retry logic switches on the resulting exit code.
 - `--handoff` is an upsert — write `handoff`, `handoff_session` (from `AGENT_SESSION`), `handoff_written_at` atomically; append a `handoff_set` history entry with `content` per spec §History field. Survives `quest reset`.
 - `--note` appends a `notes` row AND a `note_added` history entry; do NOT include the note body in the history payload (the body lives on the `notes` table).
 - `--pr` is idempotent on the URL. If duplicate, skip both the `prs` insert and the history entry per spec §History field. (A clean `INSERT OR IGNORE` works, but you still need to check whether it inserted — `RowsAffected` > 0 → append history.)
 - Elevated field edits write a `field_updated` history entry per spec with `{fields: {<name>: {from, to}}}`. Collect old values inside the same transaction before the update.
 - **Stdout on success** is the action-ack shape per spec §Write-command output shapes: `{"id": "<id>"}`. No echo of which fields changed — callers run `quest show` for the post-state. Text mode emits a single line (e.g., `proj-a1.3 updated`) and is not a contract.
+- **Telemetry wiring** (Phase 12): on every successful status-transition path emitted by this handler (none in `update`'s normal case, since `update` does not change `status`), call `telemetry.RecordStatusTransition` — here, there are no status changes, so the handler emits content recorders only. For each mutated elevated field call the appropriate `telemetry.RecordContentX` (`title`, `description`, `context`, `acceptance_criteria`) when `CaptureContentEnabled()` returns true (Task 12.7's gate-at-call-site pattern). For `--note` call `telemetry.RecordContentNote`; for `--handoff` call `telemetry.RecordContentHandoff`.
 
 **Tests:** Layer 2 (contract idempotency table for `--pr`, `--handoff`), Layer 3 (each flag's happy + failure path, terminal-state gate, ownership check), Layer 4 (the `@file` resolver end-to-end).
 
@@ -696,23 +822,29 @@ These are the smallest surface and every downstream command depends on them. Imp
 
 **Implementation notes:**
 
-- Both require `--debrief`; empty or missing → `ErrUsage`. The debrief flag is resolved through `input.Resolve` per spec §Input Conventions — identical behavior to `--note` / `--handoff` in Task 6.3: `@file` and `@-` supported, 1 MiB cap, missing/unreadable file → exit 2 with the flag and OS error in the message.
-- `complete` runs inside `s.BeginImmediate(ctx, store.TxComplete)`; `fail` runs inside `s.BeginImmediate(ctx, store.TxFail)`. The broadened tx_kind enum (`OTEL.md` §4.3 / §5.3) keeps dashboards able to distinguish the two outcomes. Same rationale as Task 6.2 for wrapping leaves: unified code path, distinguishable exit codes.
-- Inside the transaction, `SELECT` the task; zero rows → `ErrNotFound` (exit 3). Then check the valid from-statuses:
-  - `complete` accepts `accepted` (dispatched verifier or worker) and `open` (lead direct-close of a parent). Any other → `ErrConflict`.
-  - `fail` accepts only `accepted`. `open → failed` is not a supported transition; a lead cancels an undispatched task, not fails it.
-- If the task has children, verify every child is terminal (`complete`/`failed`/`cancelled`); collect non-terminal IDs + statuses on failure.
+- Both require `--debrief`. `@file` / `@-` resolution runs at arg-parse time via the handler-constructed `*input.Resolver` (Task 6.3); resolution errors (missing file, oversized file, second `@-`) exit 2 immediately, before any DB I/O — those are unrecoverable I/O failures, not shape checks.
+- `complete` runs inside `s.BeginImmediate(ctx, store.TxComplete)`; `fail` runs inside `s.BeginImmediate(ctx, store.TxFail)`. The `tx_kind` enum (`OTEL.md` §4.3 / §5.3) keeps dashboards able to distinguish the two outcomes. Same rationale as Task 6.2 for wrapping leaves: unified code path, distinguishable exit codes.
+- **Precondition ordering overview.** Arg-parse time fires only `@file` / `@-` resolution errors (exit 2). Every other check — existence, ownership, from-status, children-terminal, and the empty-debrief check — runs inside the transaction in the order below, so that `quest complete nonexistent-task --debrief ""` exits 3 (not found), not 2 (empty debrief). State checks always precede usage checks (spec §Error precedence).
+- **Precondition order inside the transaction** (same deterministic-contract rule as Task 6.3, mirroring spec §Error precedence):
+  1. **Existence (3).** `SELECT` the task; zero rows → `ErrNotFound` (exit 3).
+  2. **Ownership (4, applies to leaves AND parents).** `store.CheckOwnership(tx, taskID, session, elevated) error` — a shared package-level helper used by `complete`, `fail`, and `update`. Signature: the check passes when either `owner_session == session` OR `elevated == true`; otherwise returns `ErrPermission` (exit 4). This applies uniformly to leaf tasks and parent tasks (both the dispatched-verifier path where `owner_session` is set by `accept`, and the lead direct-close path where `owner_session` is null and `elevated` must be true). Spec §`quest accept`: "only the owning session (or an elevated role) can call `quest update`, `quest complete`, or `quest fail` on the task" — unconditional, not leaf-scoped. The prior "leaves only" scoping had a hole: a non-owning worker could close another verifier's accepted parent because the ownership check was skipped on the parent path. The single-line helper now closes it.
+  3. **From-status (5).**
+     - `complete` accepts `accepted` (dispatched verifier or worker) and `open` (lead direct-close of a parent). Any other → `ErrConflict` (exit 5).
+     - `fail` accepts only `accepted`. `open → failed` is not a supported transition.
+  4. **Children-terminal (5, parents only).** If the task has children, verify every child is terminal (`complete`/`failed`/`cancelled`); collect non-terminal IDs + statuses on failure and emit the structured body.
+  5. **Empty-debrief usage (2).** A resolved `--debrief` value that is empty or whitespace-only → `ErrUsage` (exit 2). Last in the ladder so state-level errors (exit 3/4/5) take precedence — see the precondition-ordering overview above.
 - **Cancelled-task rejection.** When the blocking from-status is `cancelled`, emit the structured conflict body on stdout in addition to the stderr exit-5 line, mirroring `quest update` per spec §`quest update` ("`quest complete` and `quest fail` on a cancelled task are rejected for the same reason"):
   ```json
   {"error":"conflict","task":"<id>","status":"cancelled","message":"task was cancelled"}
   ```
   Reuse the emitter introduced in Task 6.3 so the body shape is identical across commands.
 - Record `completed_at` (second-precision RFC3339 UTC per the plan's cross-cutting rule) and append history (`action=completed` or `action=failed`).
-- `--pr` is accepted on both; append+idempotent semantics as in `update --pr`.
+- `--pr` is accepted on both; append+idempotent semantics as in `update --pr`. When `--pr` introduces a URL not already attached to the task, append a `pr_added` history entry alongside the `completed` / `failed` lifecycle entry (both inside the same transaction, in the order: lifecycle entry first, then `pr_added`). Duplicate URLs (already attached) produce only the lifecycle entry and no `pr_added` entry, consistent with `update --pr`'s idempotence. Spec §History field has been broadened to cover all three commands.
 - Debrief text goes into `tasks.debrief`; it is **not** appended to history (history carries the action, not the content). Export writes debriefs as separate markdown files in Task 11.1.
 - **Stdout on success** per spec §Write-command output shapes: `complete` emits `{"id": "<id>", "status": "complete"}`; `fail` emits `{"id": "<id>", "status": "failed"}`. Both fields always present.
+- **Telemetry wiring** (Phase 12): on success call `telemetry.RecordStatusTransition(ctx, id, from, to)` with the resolved `from` (`"accepted"` for verifier/worker path, `"open"` for lead direct-close) and `to` (`"complete"` or `"failed"`). Also call `telemetry.RecordTaskCompleted(ctx, id, outcome)` where `outcome` is the literal `"complete"` or `"failed"` — this increments `dept.quest.tasks.completed` per `OTEL.md` §8.6. Call `telemetry.RecordContentDebrief(ctx, debrief)` gated on `CaptureContentEnabled()`. If `--pr` appends a new URL, call `telemetry.RecordPRAdded(ctx, id, url)`.
 
-**Tests:** Layer 3: happy paths, parent with non-terminal children (exit 5 + structured body), terminal → terminal attempt (exit 5), missing debrief (exit 2).
+**Tests:** Layer 3: happy paths, parent with non-terminal children (exit 5 + structured body), terminal → terminal attempt (exit 5), missing debrief (exit 2), `TestCompleteFromNonOwningSessionReturnsExit4` and `TestFailFromNonOwningSessionReturnsExit4` (a second session attempts to close a task owned by the first; exits 4 without mutating state), and the precondition-order cases (`quest complete nonexistent-task --debrief ""` → exit 3; `quest complete unowned-task --debrief ""` → exit 4; `quest complete own-task --debrief ""` → exit 2).
 
 **Done when:** lifecycle table `open → accepted → complete|failed` and parent direct-close `open → complete` both work.
 
@@ -730,12 +862,13 @@ These are the smallest surface and every downstream command depends on them. Imp
 
 - Flags per the spec table. `--title` is required; everything else is optional.
 - `--tag` is comma-separated (not repeatable for a single invocation). Apply spec §Tags > Validation: lowercase every tag, then require each to match `^[a-z0-9][a-z0-9-]*$` and be 1–32 characters. Whitespace, `.`, `_`, `/`, or other punctuation → exit 2 naming the offending tag. `quest tag` / `quest untag` (Task 9.2) and the `tags` field in `quest batch` lines (Task 7.3) reuse the same validator.
-- `--meta` repeatable, same parsing as `quest update --meta`.
+- `--meta` repeatable, same parsing and JSON re-serialization as `quest update --meta` (Task 6.3). `tasks.metadata` is always valid JSON on write.
 - `--parent`: must be in `open` status (spec §Parent Tasks); depth-check — new depth = `Depth(parent)+1`, reject if > 3 with `ErrConflict` citing "depth exceeded".
 - Dependency flags (`--blocked-by`, `--caused-by`, `--discovered-from`, `--retry-of`): validated in-process via `deps.ValidateSemantic` (Task 7.2). `--blocked-by` is repeatable (accumulates multiple upstream dependencies); `--caused-by`, `--discovered-from`, and `--retry-of` are single-value flags (spec §`quest create` — each describes one originating event; express multiple origins as `quest link` calls after creation).
-- Transaction: every create runs inside `s.BeginImmediate(ctx, store.TxCreate)` — top-level and parented alike. The counter read-modify-write plus row insert share the write lock, and the `quest.store.tx` span is emitted per invocation so dashboards track top-level create timing the same way they track parented creates (see `OTEL.md` §4.3 after the H1 broadening). Generate ID inside the tx via `ids.NewTopLevel` or `ids.NewSubTask`.
-- Append a `created` history row with the payload shape pinned in spec §History field after the M1 resolution: captures non-default values of `tier`, `role`, `type` (when ≠ default `task`), `parent`, `tags`, and any initial `dependencies`. Fields left at defaults are omitted from the payload, not serialized as `null`.
+- Transaction: every create runs inside `s.BeginImmediate(ctx, store.TxCreate)` — top-level and parented alike. The counter read-modify-write plus row insert share the write lock, and the `quest.store.tx` span is emitted per invocation so dashboards track top-level create timing the same way they track parented creates (`OTEL.md` §4.3 — `tx_kind` covers both cases with a single value). Generate ID inside the tx via `ids.NewTopLevel` or `ids.NewSubTask`.
+- Append a `created` history row with the payload shape pinned in spec §History field: captures non-default values of `tier`, `role`, `type` (when ≠ default `task`), `parent`, `tags`, and any initial `dependencies`. Fields left at defaults are omitted from the payload, not serialized as `null`.
 - **Stdout on success** per spec §Write-command output shapes: `{"id": "<new-id>"}` — the only field. Callers that need the full task row run `quest show` immediately after. Text mode emits the new ID followed by a newline.
+- **Telemetry wiring** (Phase 12): on success call `telemetry.RecordTaskCreated(ctx, id, tier, role, taskType)` — increments `dept.quest.tasks.created{tier, role}` per `OTEL.md` §8.6. Call `telemetry.RecordContentTitle`, `RecordContentDescription`, `RecordContentContext`, `RecordContentAcceptanceCriteria` as applicable for each field supplied, each gated on `CaptureContentEnabled()` per Task 12.7.
 
 **Tests:** Layer 3 full matrix of precondition failures: parent-not-open (exit 5), depth exceeded (exit 5), missing title (exit 2), each dep-validation rule (see Task 7.2 for the table).
 
@@ -746,6 +879,26 @@ These are the smallest surface and every downstream command depends on them. Imp
 ### Task 7.2 — Dependency validator (`internal/batch/deps.go`, shared with batch)
 
 **Deliverable:** `deps.ValidateSemantic(ctx, store, source TaskShape, edges []Edge) []SemanticDepError` — returns every dependency-rule violation, not just the first. The function's scope is strictly dependency-edge semantics (cycle + per-link-type constraints); structural concerns like parse/reference uniqueness and graph depth belong to the batch phases (Task 7.3).
+
+Types used by the signature (declared in `internal/batch/deps.go`):
+
+```go
+type TaskShape struct {
+    Type string // "task" | "bug" | ... — the only field ValidateSemantic reads
+}
+
+type Edge struct {
+    Target   string // task ID of the edge target
+    LinkType string // "blocked-by" | "caused-by" | "discovered-from" | "retry-of"
+}
+
+type SemanticDepError struct {
+    Code   string // one of the codes below
+    Target string // the edge's target ID
+    Type   string // the edge's link_type
+    Detail string // free-form diagnostic (e.g., the cycle path)
+}
+```
 
 **Spec anchors:** `quest-spec.md` §Dependency validation (cycle detection for `blocked-by`, semantic constraints per link type), §Multi-type links.
 
@@ -758,7 +911,7 @@ These are the smallest surface and every downstream command depends on them. Imp
   - `retry-of` → target must be `failed`.
   - `caused-by` → source must have `type=bug`.
   - `discovered-from` → source must have `type=bug`.
-- Error codes on `SemanticDepError`: `cycle`, `blocked_by_cancelled`, `retry_target_status`, `source_type_required`, `unknown_task_id`. These codes feed both the CLI stderr JSONL and the OTEL events. The batch parse/reference/graph phases have their own, disjoint code set (`malformed_json`, `missing_field`, `empty_file`, `duplicate_ref`, `unresolved_ref`, `ambiguous_reference`, `depth_exceeded`) owned by `internal/batch/`; do not merge the two.
+- Error codes on `SemanticDepError`: `cycle`, `blocked_by_cancelled`, `retry_target_status`, `source_type_required`, `unknown_task_id`. These codes feed both the CLI stderr JSONL and the OTEL events. The batch parse/reference/graph phases emit their own code set (`malformed_json`, `missing_field`, `empty_file`, `duplicate_ref`, `unresolved_ref`, `ambiguous_reference`, `depth_exceeded`, `invalid_tag`, `invalid_link_type`) owned by `internal/batch/`. Some string values (`cycle`, `blocked_by_cancelled`, `retry_target_status`, `source_type_required`, `unknown_task_id`) appear in both sets and describe the same class of failure; the `phase` discriminator on batch errors (which is absent on `SemanticDepError`) disambiguates which code path emitted them. `TestBatchStderrShape` iterates spec §Batch error output; a new `TestValidateSemanticErrorCodes` iterates the `SemanticDepError` set independently.
 
 **Tests:** Layer 1 cycle detection on in-memory graphs; Layer 3 semantic checks against real tasks in the store.
 
@@ -780,12 +933,14 @@ These are the smallest surface and every downstream command depends on them. Imp
 - Atomic mode (default): any validation error → zero tasks created, exit 2.
 - `--partial-ok`: create the subset of lines that passed every phase AND whose references all resolve to created-or-existing tasks. Exit 2 even on partial success (the non-zero exit signals the planner that follow-up is needed). Emit the full ref→id mapping on stdout (JSONL) for created tasks; emit errors on stderr (JSONL).
 - **Runtime failures are atomic in both modes** per spec §Batch error handling: `--partial-ok` applies to validation failures only. The creation step runs in a single transaction regardless of mode; if a runtime error occurs mid-insert (constraint violation, lock timeout, internal error), the whole transaction rolls back and no tasks from the batch are created. Exit 7 for lock timeout, 1 for unexpected failures. No partial-success output is produced for runtime failures — only the error is emitted.
-- Stderr JSONL goes through the same `output.EmitJSONL(w io.Writer, ...)` helper introduced in Task 4.3, with `w = os.Stderr`. Keeping the renderer shared between stdout ref→id mapping and stderr error stream prevents the two emitters from drifting on quoting, trailing-newline, or UTF-8 handling. This is the one place in quest where JSONL is written to stderr (per `OBSERVABILITY.md` §Stderr); every other stderr line is either a slog record or the `quest: <class>: ...` tail.
-- Validation prunes failure-dependent lines before creation begins (spec §Batch validation: "A line that fails an earlier phase is excluded from later-phase evaluation"), so the creation step only sees lines whose refs all resolve. Wrap creation in a single `s.BeginImmediate(ctx, store.TxBatchCreate)` transaction regardless of whether the batch contains top-level or parented creates (the broadened tx_kind enum in `OTEL.md` §4.3 / §5.3 uses `batch_create` specifically for batch-level atomicity). If the transaction fails for a runtime reason (constraint violation, lock timeout, etc.), abort the whole tx and report cleanly.
-- Phase 4 (`quest.batch.semantic`) calls `deps.ValidateSemantic` (Task 7.2) per line. Phase 3 (`quest.batch.graph`) owns cycle detection across all proposed edges at once plus `depth_exceeded` — do not fold those into `ValidateSemantic`. The batch error-code set is disjoint from `SemanticDepError`'s set by design; each phase emits only its own codes.
+- Stderr JSONL goes through the same `output.EmitJSONL(w io.Writer, ...)` helper introduced in Task 4.3, with `w = stderr` (the handler-passed writer; tests substitute a `bytes.Buffer`). Do not hardcode `os.Stderr` inside the handler — the Task 4.2 descriptor shape explicitly passes `stderr io.Writer` through to every handler, and tests rely on that seam. Keeping the renderer shared between stdout ref→id mapping and stderr error stream prevents the two emitters from drifting on quoting, trailing-newline, or UTF-8 handling. This is the one place in quest where JSONL is written to stderr (per `OBSERVABILITY.md` §Stderr); every other stderr line is either a slog record or the `quest: <class>: ...` tail.
+- Validation prunes failure-dependent lines before creation begins (spec §Batch validation: "A line that fails an earlier phase is excluded from later-phase evaluation"), so the creation step only sees lines whose refs all resolve. Wrap creation in a single `s.BeginImmediate(ctx, store.TxBatchCreate)` transaction regardless of whether the batch contains top-level or parented creates (the `tx_kind` enum in `OTEL.md` §4.3 / §5.3 uses `batch_create` specifically for batch-level atomicity). If the transaction fails for a runtime reason (constraint violation, lock timeout, etc.), abort the whole tx and report cleanly.
+- Phase 4 (`quest.batch.semantic`) calls `deps.ValidateSemantic` (Task 7.2) per line. Phase 3 (`quest.batch.graph`) owns cycle detection across all proposed edges at once plus `depth_exceeded` — do not fold those into `ValidateSemantic`. Some codes appear in both the batch phase set and the `SemanticDepError` set (`cycle`, `blocked_by_cancelled`, `retry_target_status`, `source_type_required`, `unknown_task_id`) because they describe the same class of failure; the `phase` discriminator on batch errors distinguishes which code path emitted them.
 - Any `tags` field in a batch line goes through the same validator as `quest create --tag` (spec §Tags > Validation: `^[a-z0-9][a-z0-9-]*$`, 1–32 chars after lowercasing). Validation failures emit the `invalid_tag` code added in spec §Batch error output (phase `semantic`), with `field` (e.g., `tags[2]` — zero-indexed position within the line's tags array) and `value` (the offending tag). `TestBatchStderrShape` (Task 13.1) iterates the full error-code table including `invalid_tag`.
 - `ref` resolution: `ref` maps to an internal batch label; during creation, resolve to the actual generated ID. External `id` references are looked up in the store.
-- `parent` accepts three input shapes per spec §Batch file format: a bare string (shorthand for `{"ref": "<s>"}`), `{"ref": "<s>"}`, or `{"id": "<s>"}`. The same object shape already applies to `dependencies[]` entries — factor the parse+validation into one `parseRef(raw json.RawMessage) (RefTarget, error)` helper used by both. `RefTarget` is a small struct with exactly-one-of `Ref string` / `ID string`; having both keys set or neither set returns the `ambiguous_reference` parse error (phase 1) with `field` set to `parent` or `dependencies[n]`. Unresolved `ref` → `unresolved_ref`; unknown `id` → `unknown_task_id` (both phase 2, unchanged from spec).
+- `parent` accepts three input shapes per spec §Batch file format: a bare string (shorthand for `{"ref": "<s>"}`), `{"ref": "<s>"}`, or `{"id": "<s>"}`. The same object shape already applies to `dependencies[]` entries — factor the parse+validation into one `parseRef(raw json.RawMessage, allowBareString bool) (RefTarget, error)` helper used by both call sites. **The bare-string shorthand is spec-scoped to `parent` only**: `parseRef` is called with `allowBareString=true` from the parent path and `allowBareString=false` from the dependencies path. A bare string in a `dependencies[]` entry returns the `ambiguous_reference` parse error (phase 1) with `field` set to `dependencies[n]` — the spec requires dependencies to use the disambiguated `{"ref": "..."}` or `{"id": "..."}` object form. `RefTarget` is a small struct with exactly-one-of `Ref string` / `ID string`; having both keys set or neither set returns the same `ambiguous_reference` error with `field` set to `parent` or `dependencies[n]`. Unresolved `ref` → `unresolved_ref`; unknown `id` → `unknown_task_id` (both phase 2, unchanged from spec). Layer 2 contract test: a batch line with `"dependencies": ["task-1"]` emits `ambiguous_reference` on stderr with `field: "dependencies[0]"`.
+- **Dependencies `type` enum check at phase `semantic`.** Each `dependencies[n]` entry carries a `type` string that must be one of `blocked-by`, `caused-by`, `discovered-from`, `retry-of`. Validate this inside phase 4 (`quest.batch.semantic`) — the same phase as `invalid_tag`, which is the nearest precedent for an enum-rejection check. Unknown values emit the `invalid_link_type` code (now in spec §Batch error output per the amendment) with `field` set to `dependencies[n].type` (zero-indexed array position) and `value` set to the offending string. Without this check, a typo (`"blockd-by"`) would reach the creation step and surface as a SQL constraint violation with a less helpful message. `TestBatchStderrShape` (Task 13.1) includes `invalid_link_type` in its coverage.
+- **Text-mode output.** `--format text` renders the ref→id map as a two-column table (`REF`, `ID`) via `output.Table` (Task 4.3). Text mode remains not-a-contract per spec §Output & Error Conventions; agents consume `--format json` (the default).
 
 **Tests:** Layer 2 contract (every error code appears on stderr with the documented fields), Layer 3 (atomic vs partial, cross-phase isolation, the cycle/depth edge cases), Layer 1 for the pure parse/reference phases.
 
@@ -808,10 +963,12 @@ Fixtures in `internal/batch/testdata/` — see `TESTING.md` §Test Fixtures for 
 - Without `-r`: `s.BeginImmediate(ctx, store.TxCancel)`. The precondition check (no non-terminal children) is multi-row, which is why we still use `BEGIN IMMEDIATE` — but the tx touches a single row, so the single-row `cancel` label is the correct dashboard signal.
 - With `-r`: `s.BeginImmediate(ctx, store.TxCancelRecursive)` — the enum keeps `cancel_recursive` distinct because the lock-wait profile differs materially from a single-row `cancel` (`OTEL.md` §5.3). Recursive descendant walk; transition `open` and `accepted` descendants to `cancelled`; record skipped (already-terminal) descendants. Report both sets in the response. `-r` on a leaf task (no descendants) proceeds normally per spec §`quest cancel`: `cancelled` contains the target, `skipped` is `[]`.
 - Idempotent on already-cancelled (exit 0). Rejects `complete` / `failed` (exit 5 — terminal states are permanent).
-- `--reason` is optional and goes through `input.Resolve` per spec §Input Conventions (supports `@file` and `@-`). Empty value records as `null` in history.
-- History: `cancelled` with `reason` in the payload.
+- `--reason` is optional and goes through the handler-constructed `*input.Resolver` per spec §Input Conventions (supports `@file` and `@-`). Empty value (`--reason ""`) is equivalent to omitting the flag per spec §`quest cancel`; history records `reason: null` in both cases.
+- **Skipped descendants with `-r`** include every descendant already in a terminal state (`complete`, `failed`, OR `cancelled`) per spec §`quest cancel`. Emit one `{"id": "<id>", "status": "<status>"}` entry per skipped descendant in the `skipped` array; the caller distinguishes freshly-cancelled from previously-cancelled by which array a descendant appears in.
+- History: `cancelled` with `reason` in the payload (reason field is part of the spec per §History field; quest-spec has been updated to list `reason` on `cancelled` alongside `reset`).
 - Do not signal vigil or any external system; worker termination is out of scope per spec.
 - **Stdout shape** per spec §`quest cancel`: `{"cancelled": [...], "skipped": [...]}`, both arrays always present (empty allowed).
+- **Telemetry wiring** (Phase 12): on success call `telemetry.RecordCancelOutcome(ctx, targetID, recursive, cancelledCount, skippedCount)` per Task 12.10 and `OTEL.md` §8.6. If `--reason` is supplied and `CaptureContentEnabled()` returns true, call `telemetry.RecordContentReason(ctx, reason)`.
 
 **Tests:** Layer 3: all four before-states, `-r` on a multi-level tree, idempotency on already-cancelled.
 
@@ -827,11 +984,12 @@ Fixtures in `internal/batch/testdata/` — see `TESTING.md` §Test Fixtures for 
 
 **Implementation notes:**
 
-- Route through `s.BeginImmediate(ctx, store.TxReset)` — the broadened tx_kind enum has a dedicated `reset` value (`OTEL.md` §4.3), so dashboards track `reset` separately from `accept`. The transaction shape is the same as accept: SELECT to distinguish not-found from wrong-status, then UPDATE. Do not use the atomic-UPDATE shortcut; same rationale as Task 6.2 (must distinguish exit 3 from exit 5).
+- Route through `s.BeginImmediate(ctx, store.TxReset)` — the `tx_kind` enum has a dedicated `reset` value (`OTEL.md` §4.3), so dashboards track `reset` separately from `accept`. The transaction shape is the same as accept: SELECT to distinguish not-found from wrong-status, then UPDATE. Do not use the atomic-UPDATE shortcut; same rationale as Task 6.2 (must distinguish exit 3 from exit 5).
 - Missing task → exit 3. Task exists but not in `accepted` status → exit 5.
 - On success: `UPDATE tasks SET status='open', owner_session=NULL, started_at=NULL WHERE id=?`. Preserve `handoff`, `handoff_session`, `handoff_written_at`, `notes` — the next session inherits them.
-- `--reason` is optional and goes through `input.Resolve` per spec §Input Conventions (supports `@file` and `@-`). Empty value records as `null` in history.
+- `--reason` is optional and goes through the handler-constructed `*input.Resolver` per spec §Input Conventions (supports `@file` and `@-`). Empty value (`--reason ""`) is equivalent to omitting the flag per spec §`quest reset`; history records `reason: null` in both cases.
 - History: `reset` with `reason` in the payload.
+- **Stdout on success** per spec §Write-command output shapes: `{"id": "<id>", "status": "open"}`. Both fields always present; `status` is the literal string `"open"` on success.
 
 **Tests:** Layer 3: accepted → open + preserved handoff; non-accepted → exit 5.
 
@@ -854,10 +1012,11 @@ Fixtures in `internal/batch/testdata/` — see `TESTING.md` §Test Fixtures for 
   - `NEW_PARENT` is in `open` status.
   - No circular parentage: `NEW_PARENT` is not the moved task or any of its descendants.
   - The resulting depth of the deepest descendant ≤ 3.
-- **Rename algorithm, cascade-driven.** Compute the new root ID via `NextSubTaskID(NEW_PARENT)`; for every descendant, derive the new ID by swapping the old prefix for the new. At the start of the move transaction, issue `tx.Exec("PRAGMA defer_foreign_keys = ON")` — the per-transaction escape hatch (defers FK enforcement until COMMIT, resets automatically on COMMIT/ROLLBACK; re-assert at every move transaction since it does not persist across transactions). Then for each task in the moved subgraph (root first, then descendants by depth), run a single `UPDATE tasks SET id=?, parent=? WHERE id=?`. The `ON UPDATE CASCADE` FKs on `history`, `dependencies` (both `task_id` and `target_id`), `tags`, `prs`, and `notes` (see Task 3.2 schema) propagate the new `id` to every side table automatically in the same transaction. This is the L3 resolution: no manual cross-table UPDATEs, and the history-FK carve-out in spec §History field authorizes it. Also update `subtask_counter.parent_id` (not FK'd) manually — those rows must be preserved across the move.
+- **Rename algorithm, cascade-driven.** Compute the new root ID via `ids.NewSubTask(ctx, tx, NEW_PARENT)`; for every descendant, derive the new ID by swapping the old prefix for the new. At the start of the move transaction, issue `tx.ExecContext(ctx, "PRAGMA defer_foreign_keys = ON")` — the per-transaction escape hatch (defers FK enforcement until COMMIT, resets automatically on COMMIT/ROLLBACK; re-assert at every move transaction since it does not persist across transactions). Wrap the cascade loop with `ctx2, end := telemetry.StoreSpan(ctx, "quest.store.rename_subgraph"); defer func() { end(err) }()` so the span captures the cascade UPDATE pass per `OTEL.md` §4.2 (the decorator no longer emits this span; handlers do — see Task 12.4). Then for each task in the moved subgraph (root first, then descendants by depth), run a single `UPDATE tasks SET id=?, parent=? WHERE id=?`. The `ON UPDATE CASCADE` FKs on `history`, `dependencies` (both `task_id` and `target_id`), `tags`, `prs`, and `notes` (see Task 3.2 schema) propagate the new `id` to every side table automatically in the same transaction — no manual cross-table UPDATEs, and the history-FK carve-out in spec §History field authorizes it.
 - (Note: `PRAGMA foreign_keys = OFF` is a no-op inside a transaction and is _not_ the right mechanism; an earlier plan draft had this wrong.)
 - Append one `moved` history entry per renamed task with `old_id` / `new_id` in the payload. Updates to dependency references are side-effects of the FK cascade, not their own history entries.
 - Output per spec §`quest move`: `{"id": "<new-id-of-moved-task>", "renames": [{"old": "...", "new": "..."}, ...]}`. `renames` is always present, contains at least the moved task itself, and is ordered by old ID ascending. Text mode emits one `OLD → NEW` line per rename. Both fields always present.
+- **Telemetry wiring** (Phase 12): on success call `telemetry.RecordMoveOutcome(ctx, oldID, newID, subgraphSize, depUpdates)` per Task 12.10 and `OTEL.md` §8.6 — `oldID`/`newID` are the moved task's own IDs, `subgraphSize` is the count of tasks renamed, `depUpdates` is the count of `dependencies` rows rewritten by the FK cascade.
 
 **Tests:** Layer 3: the full constraint list; subgraph rename round-trip; ID uniqueness after move.
 
@@ -881,6 +1040,7 @@ Fixtures in `internal/batch/testdata/` — see `TESTING.md` §Test Fixtures for 
 - History (only when `RowsAffected > 0`): `linked` / `unlinked` with `target` and `link_type` in the payload.
 - Default relationship is `--blocked-by` when no flag is provided.
 - **Stdout on success** per spec §Write-command output shapes: both commands emit `{"task": "<id>", "target": "<id>", "type": "<link-type>"}` identifying the edge. Same shape on idempotent no-op (the edge that was already present or already absent) — callers cannot distinguish "added now" from "already present" from the success body; the absence of a history row is the distinguishing signal if they care.
+- **Telemetry wiring** (Phase 12): when `RowsAffected > 0`, `link` calls `telemetry.RecordLinkAdded(ctx, taskID, targetID, linkType)` and `unlink` calls `telemetry.RecordLinkRemoved(ctx, taskID, targetID, linkType)` (per `OTEL.md` §8.6). On idempotent no-ops (`RowsAffected == 0`), skip the recorder call — no state change, no event.
 
 **Tests:** Layer 3: each link type, cycle on add (exit 5), duplicate-add no-op, unlink no-op.
 
@@ -902,6 +1062,7 @@ Fixtures in `internal/batch/testdata/` — see `TESTING.md` §Test Fixtures for 
 - When `RowsAffected == 0` for a given tag (no-op on add or remove), exclude that tag from the history payload; if every tag in the invocation was a no-op, skip the history append entirely (same rule as Task 9.1 link/unlink).
 - History (when at least one tag changed): `tagged` / `untagged` with the effective tag list in the payload.
 - **Stdout on success** per spec §Write-command output shapes: both commands emit `{"id": "<id>", "tags": [...]}` where `tags` is the full post-state tag list (sorted alphabetically, lowercased — the canonical form from the `tags` table). Same shape on idempotent no-op (unchanged post-state list).
+- **Telemetry wiring** (Phase 12): call `telemetry.RecordTaskContext(ctx, id, tier, taskType)` so the command span carries `quest.task.id` / `quest.task.tier` / `quest.task.type` per `OTEL.md` §4.3. No dedicated `RecordTagAdded` / `RecordTagRemoved` recorder — the cross-cutting `quest.store.tx` span plus the task-context attributes are sufficient observability for tag churn; dashboards that need tag-change counts derive from history.
 
 **Tests:** Layer 3 add + remove + idempotency.
 
@@ -920,7 +1081,9 @@ Fixtures in `internal/batch/testdata/` — see `TESTING.md` §Test Fixtures for 
 **Implementation notes:**
 
 - Unlike worker commands, `deps` does not default to `AGENT_TASK`. Require an explicit ID; missing → `ErrUsage`.
+- Wrap the dependency read with `ctx2, end := telemetry.StoreSpan(ctx, "quest.store.traverse"); defer func() { end(err) }()` so graph/list traversals emit `quest.store.traverse` per `OTEL.md` §4.2 (handler-side emission; the decorator no longer emits this span — see Task 12.4).
 - Return dependencies with title and status denormalized (same shape as the `dependencies` array on `quest show`).
+- **Telemetry wiring** (Phase 12): on success call `telemetry.RecordQueryResult(ctx, "deps", resultCount, filter)` per Task 12.9. The `filter` value has only `Parents=[id]` set — `deps` is a single-ID traversal. Also call `telemetry.RecordTaskContext(ctx, id, tier, taskType)` so the command span carries the mandatory `quest.task.id`, `quest.task.tier`, `quest.task.type` attributes per `OTEL.md` §4.3.
 
 **Tests:** Layer 3 happy path; not-found; zero deps → empty array.
 
@@ -938,13 +1101,17 @@ Fixtures in `internal/batch/testdata/` — see `TESTING.md` §Test Fixtures for 
   - Enum-style filters (`--status`, `--role`, `--tier`, `--type`, `--parent`): comma-separated values are **OR**; repeated flags union (also OR).
   - `--tag`: comma-separated values are **AND** (a task tagged `go` _and_ `auth`); repeated flags add further AND conditions. Matches `quest create --tag` convention and the spec example.
 - This asymmetry is deliberate: enums are mutually-exclusive so OR is the only useful semantics; tags compose multiplicatively so AND is the only useful semantics.
+- **Default `--status` filter** (spec §`quest list`): when the user omits `--status`, the handler sets `filter.Statuses = []string{"open","accepted","complete","failed"}` before calling `store.ListTasks` — cancelled tasks are excluded from the default listing. Passing an explicit `--status` that includes `cancelled` (or any subset that omits other statuses) is honored as-is. The defaulting lives in the handler, not in `ListTasks`; the store treats an empty `filter.Statuses` slice as "no status filter" (uniform with the other enum filters). `TestListDefaultStatusExcludesCancelled` (Task 13.1) pins this behavior.
 - `--ready` has the trickiest semantics per spec:
   - Leaves: `status == open` AND every `blocked-by` target is `complete`.
   - Parents: `status == open` AND every `blocked-by` target is `complete` AND every child is terminal.
   - Mix leaves and parents in a single response; the presence of `children` tells the caller which is which — request `--columns id,status,children,title` (or similar) to opt in to the distinguisher, since `children` is in the available-columns list but not the defaults.
-- Column selection: `--columns` overrides defaults (`id`, `status`, `blocked-by`, `title`). Available columns match spec §`quest list` after the M6 addition: `id`, `title`, `status`, `type`, `tier`, `role`, `tags`, `parent`, `blocked-by`, `children`.
+- Column selection: `--columns` overrides defaults (`id`, `status`, `blocked-by`, `title`). Available columns per spec §`quest list`: `id`, `title`, `status`, `type`, `tier`, `role`, `tags`, `parent`, `blocked-by`, `children`.
 - **Unknown column names are rejected with exit 2.** `--columns foo,bar` where any name is not in the available-columns set returns `ErrUsage` (exit 2) with a message naming the first offender and listing the valid names. Silent fall-through on typos is a footgun (`--columns ttitle` would produce rows with missing data); explicit rejection surfaces planner mistakes at the CLI. Task 13.1's `TestListJSONRowShape` matrix adds a case for this rejection.
+- **Unknown `--status` / `--type` / `--tier` values are rejected with exit 2.** Same rationale as `--columns`: a planner running `quest list --status compelete` (typo) would otherwise get an empty result and conclude "no complete tasks" — silent footgun. When any value in `--status`, `--type`, or `--tier` is not in the valid set, return `ErrUsage` (exit 2) with a "did you mean" suggestion produced by the shared `cli.Suggest` helper (Task 4.2). Valid sets: `--status` ∈ {`open`, `accepted`, `complete`, `failed`, `cancelled`}; `--type` ∈ {`task`, `bug`}; `--tier` ∈ {`T0`, `T1`, `T2`, `T3`, `T4`, `T5`, `T6`}. Error-body shape mirrors the usage-error pattern: `{"error":"usage","message":"unknown status 'compelete'; did you mean 'complete'?","valid":["open","accepted","complete","failed","cancelled"]}`. When no close match exists (`Suggest` returns ""), drop the "did you mean" clause and emit just the enumeration. Task 13.1 adds `TestListUnknownStatusRejected`, `TestListUnknownTypeRejected`, `TestListUnknownTierRejected`, and `TestListFuzzySuggestion` to pin these.
 - JSON output is an array, not JSONL — `list` is a bounded result set. Shape is pinned by spec §`quest list` (row shape rules): keys exactly match the requested columns in `--columns` order, scalars are strings, unset `role` / `tier` / `parent` emit `null` (never `""`), `tags` and `children` are always arrays of strings (possibly empty), `blocked-by` is always an array of task ID strings (not `{id,status,title}` objects — that richer shape belongs to `quest graph`), and a zero-match query emits `[]` (never `null`, never a missing key). Task 13.1 pins these invariants via `TestListJSONRowShape`.
+- Wrap the `ListTasks` call with `ctx2, end := telemetry.StoreSpan(ctx, "quest.store.traverse"); defer func() { end(err) }()` — the handler-side emission point for list traversal per `OTEL.md` §4.2.
+- **Telemetry wiring** (Phase 12): on success call `telemetry.RecordQueryResult(ctx, "list", resultCount, filter)` per Task 12.9. The recorder emits bounded-enum filter attributes and the `quest.query.ready` bool; tag and parent filters are intentionally not mirrored onto span attributes.
 
 **Tests:** Layer 3 matrix — every flag combination has at least one case. `--ready` has its own test covering leaf-ready, leaf-blocked, parent-ready-roleful (dispatch), parent-ready-roleless (direct-close), parent-not-ready (non-terminal children).
 
@@ -958,11 +1125,13 @@ Fixtures in `internal/batch/testdata/` — see `TESTING.md` §Test Fixtures for 
 
 **Implementation notes:**
 
-- **Explicit ID required.** `quest graph` does not default to `AGENT_TASK` (spec §`quest graph` after H10 resolution). Missing ID → `ErrUsage` (exit 2) with `"quest graph requires an explicit task ID"`. Mirrors `quest deps` (Task 10.1) — both are elevated query commands used by planners to inspect a specific subtree.
+- **Explicit ID required.** `quest graph` does not default to `AGENT_TASK` (spec §`quest graph`). Missing ID → `ErrUsage` (exit 2) with `"quest graph requires an explicit task ID"`. Mirrors `quest deps` (Task 10.1) — both are elevated query commands used by planners to inspect a specific subtree.
+- Wrap the traversal with `ctx2, end := telemetry.StoreSpan(ctx, "quest.store.traverse"); defer func() { end(err) }()` — graph is the canonical traversal command and the traverse span is emitted handler-side per `OTEL.md` §4.2.
 - Traverse from `ID` through `children` (parent-child) and follow outgoing dependency edges.
 - Any target reached via a dependency edge that is _not_ a descendant of `ID` is an **external** node: it appears in `nodes` with `children: []` and its own edges are not expanded. Consumers detect it via ID prefix comparison.
 - `edges[]` uses quest-specific field names (`task`, `target`, `type`, `target_status`), not generic `source`/`target`.
 - Text mode: indented tree per the spec example, with dependency edges listed under the owning task.
+- **Telemetry wiring** (Phase 12): on success call `telemetry.RecordGraphResult(ctx, rootID, nodeCount, edgeCount, externalCount, traversalNodes)` per Task 12.9 and `OTEL.md` §8.6. The recorder emits `quest.task.id`, `quest.graph.node_count`, `quest.graph.edge_count`, `quest.graph.external_count` on the span and increments `dept.quest.graph.traversal_nodes` on the metric.
 
 **Tests:** Layer 3: root at epic (full tree); root at leaf (just the leaf + external deps); dep-only cross-prefix external; depth-limited traversal correctness.
 
@@ -979,10 +1148,10 @@ Fixtures in `internal/batch/testdata/` — see `TESTING.md` §Test Fixtures for 
 **Implementation notes:**
 
 - Default output: `./quest-export/` (a sibling of `.quest/`).
-- Layout exactly as specified: `tasks/{id}.json` for every task, `debriefs/{id}.md` only for tasks that have a non-empty debrief, `history.jsonl` chronologically across all tasks.
+- Layout exactly as specified: `tasks/{id}.json` for every task, `debriefs/{id}.md` only for tasks that have a non-empty debrief, `history.jsonl` chronologically across all tasks. **Always create the `debriefs/` directory** even when no task has a debrief — this keeps the export layout stable for consumers that pattern-match the on-disk shape. An empty `debriefs/` directory is valid.
 - Task JSON uses the same shape as `quest show --history` (i.e., includes the full history array). Contract test asserts this equivalence.
-- Idempotent: re-running overwrites. Safe pattern: write each file with a temp suffix and `os.Rename` atomically, then remove temp entries at the end; OR remove the directory first (agent UX: confirm or allow `--dir` to be a non-existing path). The spec says "overwrites the output directory" — interpret as "makes the output directory reflect current state," which means old files for deleted tasks should be removed. Track the set of task IDs written and delete any `tasks/*.json` / `debriefs/*.md` not in the set.
-- `history.jsonl` entries: one JSON object per history row, ordered by timestamp ascending across all tasks.
+- Idempotent: re-running overwrites. **Track-and-delete-stale pattern**: (1) write every current `tasks/<id>.json` / `debriefs/<id>.md` (using temp-suffix + `os.Rename` for atomicity per file), (2) rewrite `history.jsonl`, (3) collect the set of written task IDs during the write pass, then (4) delete any `tasks/*.json` / `debriefs/*.md` not in the written set. Deletion runs **after** all writes succeed, so a mid-export failure never clobbers the previous archive. Spec §`quest export` says "overwrites the output directory" — interpret as "makes the output directory reflect current state," which means old files for deleted tasks should be removed. Do **not** remove the output directory first (opens a window where the archive is partial) and do **not** ship the temp-suffix-only pattern without delete (stale files from prior runs would accumulate).
+- `history.jsonl` entries: one JSON object per history row, ordered by timestamp ascending across all tasks. Apply the same `payload`-flattening rule as `quest show --history` (Task 6.1): merge the stored `payload` JSON into the top level of each entry so `reason`, `fields`, `content`, `target`, `link_type`, `old_id`, `new_id`, `url` appear flat alongside `timestamp`, `role`, `session`, `action`, `task_id`.
 
 **Tests:** Layer 2 contract: layout matches; task JSON field-for-field matches `quest show --history`. Layer 3: idempotency (run twice, diff the tree — should be byte-identical).
 
@@ -992,7 +1161,25 @@ Fixtures in `internal/batch/testdata/` — see `TESTING.md` §Test Fixtures for 
 
 ## Phase 12 — Telemetry (OTEL)
 
-Follow `OTEL.md` §16 "Implementation Sequence" — it is the canonical order. Each task below covers one or more numbered items in §16; the mapping is called out inline where a task groups more than one §16 step. Task count is 8 here; §16 has 14 steps.
+Follow `OTEL.md` §16 "Implementation Sequence" — it is the canonical order. Each task below covers one or more numbered items in §16.
+
+**§16 step → Phase 12 task map** (auditability per plan review):
+
+| §16 step | Task       | Notes                                                                                    |
+| -------- | ---------- | ---------------------------------------------------------------------------------------- |
+| 1, 2     | 12.1       | Real `telemetry.Setup`; providers + resource + propagator                                |
+| 3        | 12.2       | `CommandSpan` / `WrapCommand` dispatcher-owned                                           |
+| 4        | 12.1       | `telemetry.SpanEvent` wrapper (folded into 12.1's implementation)                        |
+| 5        | 12.3       | Role gate span                                                                           |
+| 6        | 12.4       | `InstrumentedStore` decorator                                                            |
+| 7        | 12.5       | Metrics registration                                                                     |
+| 8        | 6.2 etc.   | Status-transition metric wired into each handler (anchored in per-handler recorder calls) |
+| 9        | 12.6       | Batch validation spans                                                                   |
+| 10       | 12.9       | Query/graph attributes + recorders                                                       |
+| 11       | 12.10      | Move/cancel attributes + recorders                                                       |
+| 12       | 12.7       | Content capture                                                                          |
+| 13       | 12.1, 12.8 | SDK shutdown wiring; migration-end contract test                                          |
+| 14       | 13.1–13.4  | Test coverage (contract + structural + concurrency tests)                                |
 
 ### Task 12.1 — Real `telemetry.Setup` (tracer/meter/logger providers, fan-out slog bridge)
 
@@ -1004,18 +1191,28 @@ Covers §16 steps 1, 2, and 13. Replaces the no-op shell from Task 2.3 with real
 
 - Conditional: disabled → install explicit no-op providers.
 - `Setup` accepts the `telemetry.Config` shape from `OTEL.md` §7.1: `{ServiceName, ServiceVersion, AgentRole, AgentTask, AgentSession, CaptureContent}`. The agent-identity fields come from `cfg.Agent.{Role,Task,Session}`; `CaptureContent` comes from `cfg.Telemetry.CaptureContent`. Both are resolved by `internal/config/` per Task 1.3. Telemetry never calls `os.Getenv` itself.
-- `Setup` calls `setIdentity(role, task, session)` once, which stores `roleOrUnset(role)` plus the raw task/session strings for use by every subsequent `CommandSpan` / recorder without locking. `Setup` also caches `cfg.CaptureContent` in a package-level `bool captureContent` (written once before any command handler runs, read thereafter — no atomic needed). Task 12.7's content-recorder gate reads this cached value; checking `os.Getenv` per-call is explicitly avoided.
+- `Setup` calls `setIdentity(role, task, session)` once, which stores `roleOrUnset(role)` plus the raw task/session strings for use by every subsequent `CommandSpan` / recorder without locking. `Setup` also caches `cfg.CaptureContent` in a package-level `bool captureContent`, written once inside `sync.Once.Do` per `OTEL.md` §4.5 / §19 (belt-and-suspenders against any future caller that invokes `Setup` twice). Task 12.7's content-recorder gate reads this cached value; checking `os.Getenv` per-call is explicitly avoided.
 - Service name `quest-cli`, resource via `semconv/v1.40.0`.
-- Batch span/log processors with `WithBatchTimeout(1 * time.Second)`. Never `SimpleSpanProcessor`.
+- Span and log processors match `OTEL.md` §7.1 processor configuration exactly: `BatchSpanProcessor` via `sdktrace.WithBatchTimeout(1 * time.Second)`; `BatchLogRecordProcessor` via `sdklog.WithExportInterval(1 * time.Second)`. **Never `SimpleSpanProcessor`.** The two option names differ — span uses `WithBatchTimeout`, log uses `WithExportInterval` — mixing them up is a compile error or a silent no-op on a future SDK release.
 - Register the W3C composite propagator + `otel.SetErrorHandler` routing to slog.
 - Partial-init cleanup per §7.8.
 - `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` → slog warn + HTTP fallback.
 - **Shutdown timeout.** The returned shutdown function runs under a caller-supplied context; `main.run()` defers it with `context.WithTimeout(..., 5*time.Second)` per `OTEL.md` §7.1. The 5-second cap upper-bounds the flush on exit so a misconfigured collector cannot hang the CLI.
 - Install the `otelslog` bridge as the second child of the logging fan-out. The bridge handler is constructed by `internal/telemetry/` (not `internal/logging/`) and returned to `main.run()` from `Setup` as its first return value; `main.run()` then calls `logging.Setup(cfg.Log, bridge)` (the variadic signature from Task 2.1). This preserves the `OTEL.md` §10.1 rule that only `internal/telemetry/` imports OTEL packages. OTEL-level filter defaults to `info`, stderr level default stays `warn`.
-- Implement the real `telemetry.MigrateSpan(ctx, from, to int) (context.Context, func(applied int, err error))` per `OTEL.md` §8.8. The dispatcher (Task 4.2 step 4) and `quest init` (Task 5.1) both call it; `quest.db.migrate` lands as a sibling of the command span for the dispatcher path and as a child for init (the documented carve-out).
-- Implement `telemetry.ExtractTraceFromConfig(ctx, traceparent, tracestate string) context.Context` per `OTEL.md` §6.2. Build a `propagation.MapCarrier` with the two strings, call `otel.GetTextMapPropagator().Extract(ctx, carrier)`, return the derived context. Empty inputs short-circuit and return `ctx` unchanged.
+- **Implement the real `telemetry.MigrateSpan` and consolidate the migration metric.** Signature unchanged: `MigrateSpan(ctx, from, to int) (context.Context, func(applied int, err error))`. The body:
+  1. Opens a `quest.db.migrate` span with `quest.schema.from=from`, `quest.schema.to=to`.
+  2. Returns an `end(applied int, err error)` closure that:
+     - Sets `quest.schema.applied_count=applied` on the span.
+     - Applies the three-step error pattern when `err != nil`.
+     - Ends the span.
+     - Increments `dept.quest.schema.migrations{from_version=from, to_version=to}` (no-op when `applied == 0`; migrations counter counts migrations-run, not checks-attempted).
+  Callers: the dispatcher (Task 4.2 step 5) and `quest init` (Task 5.1). For the dispatcher path, `quest.db.migrate` lands as a sibling of the command span; for init, as a child (the documented §8.8 carve-out). MigrateSpan owns both the span and the metric in one closure, so "one migration = one span + one metric" is structurally guaranteed — there is only one call site for both.
+- Implement `telemetry.ExtractTraceFromConfig(ctx, traceparent, tracestate string) context.Context` per `OTEL.md` §6.2. Build a `propagation.MapCarrier` with the two strings, call `otel.GetTextMapPropagator().Extract(ctx, carrier)`, return the derived context. **When `traceparent == ""` (regardless of `tracestate`), return `ctx` unchanged.** When `traceparent` is set and `tracestate` is empty, extraction proceeds and the `tracestate` key is simply omitted from the carrier — `tracestate` alone is never a reason to short-circuit.
+- Implement `telemetry.SpanEvent(ctx, name string, attrs ...attribute.KeyValue)` per `OTEL.md` §10.1. Body is ~5 lines: `span := trace.SpanFromContext(ctx); if !span.IsRecording() { return }; span.AddEvent(name, trace.WithAttributes(attrs...))`. Handlers call this wrapper instead of importing `go.opentelemetry.io/otel/trace` themselves, so the `internal/telemetry/` grep tripwire remains a durable enforcement mechanism.
 
 **Tests:** Layer 1: disabled path returns no-op providers; partial-init failure shuts down earlier providers; protocol warn fires once; `setIdentity` + `CommandSpan` emit `gen_ai.agent.name="unset"` when `AgentRole` is empty.
+
+**Shared `tracetest` helper.** Phase-12 tests reuse `testutil.NewCapturingTracer(t) (exporter *tracetest.InMemoryExporter, recorder *tracetest.SpanRecorder)` in `internal/testutil/` — the helper constructs the exporter + provider, swaps the global via `otel.SetTracerProvider`, and registers `t.Cleanup` to restore the prior provider. Same helper pattern (and same file) for a capturing meter provider and logger provider. Prevents the exporter setup dance from drifting across test files.
 
 ---
 
@@ -1028,12 +1225,12 @@ Covers §16 steps 1, 2, and 13. Replaces the no-op shell from Task 2.3 with real
 - Identity attributes come from the `telemetry.Config` passed to `Setup` (Task 12.1); `internal/telemetry/identity.go` holds the cached struct. No `env.go`, no `sync.Once` on env reads, no `os.Getenv` in this package.
 - Apply `roleOrUnset` at the `setIdentity` step so `AGENT_ROLE=""` surfaces as the literal `"unset"` on both span attributes (`gen_ai.agent.name`) and metric dimensions (`role`) — the consistency guarantee from `OTEL.md` §8.6 that cross-signal queries depend on.
 - Two entry points in `internal/telemetry/command.go`, both used by `cli.Execute` (Task 4.2), not by handlers:
-  - Primitive: `ctx, span := telemetry.CommandSpan(ctx, "accept", elevated); defer span.End()` — the dispatcher uses this shape when it needs to run code between `Start` and the handler (e.g., post-start attribute population). The dispatcher is responsible for the §4.4 three-step error pattern on this path.
-  - Wrapper: `return telemetry.WrapCommand(ctx, "accept", elevated, handlerFunc)` — `cli.Execute` uses this shape for every standard dispatch. The wrapper owns `span.End()` and the three-step pattern for whatever error `fn` returns.
-- Command handlers do not import `CommandSpan` / `WrapCommand`. Handlers call `telemetry.RecordX` (and `trace.SpanFromContext(ctx)` when they need the span handle for mid-body span events); their signature stays `func(ctx, cfg, args, stdin, stdout, stderr) error` across phases.
-- Root span name `execute_tool quest.<command>`; required attributes per §4.3. Both call shapes produce identical span content — the wrapper is call-site sugar, not a second instrumentation point.
+  - Primitive: `ctx, span := telemetry.CommandSpan(parentCtx, "accept", elevated); defer span.End()` — starts the span and returns a context carrying it. The dispatcher always calls this as step 2 of dispatch (see Task 4.2) and owns the `defer span.End()`. The dispatcher is responsible for the §4.4 three-step error pattern for pre-handler errors (config.Validate, store.Open, store.Migrate).
+  - Middleware: `return telemetry.WrapCommand(ctx, "accept", handlerFunc)` — picks up the active command span via `trace.SpanFromContext(ctx)` and applies the §4.4 three-step pattern to `fn`'s returned error. Per `OTEL.md` §8.2, **`WrapCommand` does not start a new span and does not call `span.End()`**; it is a no-start/no-end error-handling middleware. No `elevated` parameter — the role gate lives in the dispatcher (Task 4.2 step 3), not inside `WrapCommand`, so the middleware's only job is handler-error observation and counter increments. If the span in ctx is non-recording (e.g., `SuppressTelemetry=true` descriptors skipped CommandSpan), `WrapCommand` still runs `fn` normally and records the error on whatever span `trace.SpanFromContext(ctx)` returns (the non-recording root span, which swallows the error gracefully).
+- Command handlers do not import `CommandSpan` / `WrapCommand`. Handlers call `telemetry.RecordX` and `telemetry.SpanEvent` (the latter when they need to emit a mid-body span event). Handlers never import `go.opentelemetry.io/otel/trace` — `SpanEvent` wraps `trace.SpanFromContext` + `AddEvent`. Their signature stays `func(ctx, cfg, s, args, stdin, stdout, stderr) error` across phases.
+- Root span name `execute_tool quest.<command>`; required attributes per §4.3. The primitive opens the span; the middleware observes the result — together they produce a single command span per invocation.
 
-**Tests:** Layer 1 with in-memory exporter from `sdk/trace/tracetest`: assert root span name, `gen_ai.*` attributes present (with `"unset"` when identity is empty), `quest.role.elevated` bool; assert that no handler package imports `go.opentelemetry.io/otel/trace` except for `trace.SpanFromContext` (via `grep` run as part of the layer-1 suite).
+**Tests:** Layer 1 with in-memory exporter from `sdk/trace/tracetest`: assert root span name, `gen_ai.*` attributes present (with `"unset"` when identity is empty), `quest.role.elevated` bool. Assert WrapCommand does NOT call span.End() by passing a dispatcher-style setup (CommandSpan → WrapCommand → span.End on defer) and checking the exporter records exactly one command span with exactly one End event. Plus the grep tripwire as a test: `grep -rn 'go.opentelemetry.io' internal/ cmd/` returns matches only under `internal/telemetry/` — widens the Task 2.3 tripwire scope to the full source tree (matching `OTEL.md` §10.1), so a future accident in `internal/cli/` / `internal/store/` / etc. does not slip through.
 
 ---
 
@@ -1041,21 +1238,30 @@ Covers §16 steps 1, 2, and 13. Replaces the no-op shell from Task 2.3 with real
 
 **Spec anchors:** `OTEL.md` §8.7 (separation-of-concerns: gate decision lives in `internal/cli/`; telemetry observes only).
 
-**Implementation notes:** Replace the no-op `telemetry.GateSpan(ctx, agentRole string, allowed bool)` with the real implementation from `OTEL.md` §8.7. The function starts a `quest.role.gate` span, sets `quest.role.required="elevated"`, `quest.role.actual=roleOrUnset(agentRole)`, and `quest.role.allowed=<bool>`, then ends the span immediately. The function must not import `internal/config/` or evaluate policy — the caller (Task 4.2 step 6) already computed `allowed` via `config.IsElevated`. The span is emitted whether or not the command proceeds: retrospective queries care about attempts, not just denials.
+**Implementation notes:** Replace the no-op `telemetry.GateSpan(ctx, agentRole string, allowed bool)` with the real implementation from `OTEL.md` §8.7. The function starts a `quest.role.gate` span, sets `quest.role.required="elevated"`, `quest.role.actual=roleOrUnset(agentRole)`, and `quest.role.allowed=<bool>`, then ends the span immediately. The function must not import `internal/config/` or evaluate policy — the caller (Task 4.2 step 3 for elevated commands, or the `update` handler for mixed-flag gates) already computed `allowed` via `config.IsElevated`. The span is emitted whether or not the command proceeds: retrospective queries care about attempts, not just denials.
 
 ---
 
 ### Task 12.4 — `InstrumentedStore` decorator
 
-**Spec anchors:** `OTEL.md` §4.2 (span events, not spans, for uniform DML), §8.3, §4.3 (DB span attributes).
+**Spec anchors:** `OTEL.md` §8.3 (decorator-owned tx span), §4.3 (DB span attributes).
 
 **Implementation notes:**
 
-- Wrap the store. Per-operation: measure duration, call `span.AddEvent("quest.store.op", ...)` with `db.system=sqlite`, `db.operation`, `db.target`, `rows_affected`, `duration_ms`. The `db.system` attribute is constructed once at package init via `sync.Once` into a `attribute.KeyValue` and reused on every store event (per `OTEL.md` §4.3 / §19 checklist) — avoids re-allocating the key-value on every DML.
-- **Instrumented `BeginImmediate` is the single seam.** The decorator's `BeginImmediate(ctx, kind TxKind)` override starts a `quest.store.tx` span with attributes `{db.system, quest.tx.kind}` and `trace.WithTimestamp(now)`, then delegates to the inner store. It returns a wrapped `*store.Tx` whose `Commit()` and `Rollback()` end the span and record `quest.tx.lock_wait_ms` (from the `time.Now()` delta captured by `store.BeginImmediate` inside `*store.Tx`), `quest.tx.rows_affected` (accumulated as handlers call `Exec`), and `quest.tx.outcome` (`committed`, `rolled_back_precondition`, `rolled_back_error`). Handlers do not call any separate `StoreTx` helper — the decorator is the helper.
-- `quest.store.traverse` around graph/list queries; `quest.store.rename_subgraph` around `move`.
+- Wrap the store. The decorator's instrumented `BeginImmediate(ctx, kind TxKind)` is the single seam for store-side telemetry.
+- **Idempotent `WrapStore`.** `WrapStore` checks whether its argument is already an `*InstrumentedStore` and, if so, returns it unchanged. Both the dispatcher (Task 4.2 step 5) and `quest init` (Task 5.1) call `WrapStore` on the opened store — a future handler that copies the init pattern by mistake would otherwise double-wrap and emit duplicate `quest.store.tx` spans. The idempotence check inside `WrapStore` is simpler and safer than a grep-tripwire enforcement of "only one call site."
+- **`BeginImmediate` override.** Procedure:
+  1. Call `inner.BeginImmediate(ctx, kind)` on the wrapped store, getting a `*store.Tx` whose `invokedAt` and `startedAt` fields are already populated by the bare store (Task 3.1).
+  2. Start a `quest.store.tx` span via `tracer.Start(ctx, "quest.store.tx", trace.WithTimestamp(tx.invokedAt), trace.WithAttributes(attribute.String("db.system", "sqlite"), attribute.String("quest.tx.kind", string(kind))))`. The `db.system` `attribute.KeyValue` is cached at package init via `sync.Once` — avoids re-allocating it on every DML-heavy workload.
+  3. Populate `tx.onCommit` and `tx.onRollback` hooks: each closure ends the span with `quest.tx.lock_wait_ms = tx.startedAt.Sub(tx.invokedAt).Milliseconds()` and `quest.tx.outcome ∈ {committed, rolled_back_precondition, rolled_back_error}`. The hook reads `invokedAt`/`startedAt` directly from `*store.Tx` — the decorator never re-computes timing from its own clock, so the recorded `lock_wait_ms` excludes decorator overhead (the `tracer.Start` call, the hook installation). Pinning the derivation to `*store.Tx` makes the struct the single source of truth for its own life.
+  4. Return the same `*store.Tx` (now with hooks populated).
+- `quest.tx.outcome` disambiguates three close paths: `committed` (handler called `tx.Commit()`, underlying `*sql.Tx.Commit()` returned nil), `rolled_back_precondition` (handler returned a typed precondition error — `ErrConflict`, `ErrNotFound`, or `ErrPermission` — and deferred `tx.Rollback()`), `rolled_back_error` (any other error during the transaction — including `sql.ErrTxDone` on a committed-twice bug). **The hook auto-infers from the error the handler returned, so the common case needs no handler-side bookkeeping:** `committed` on Commit-success; `errors.Is(err, errors.ErrConflict|ErrNotFound|ErrPermission)` → `rolled_back_precondition`; any other error → `rolled_back_error`. Handlers can still call `tx.MarkOutcome(outcome)` to override the inferred classification (reserved for future bespoke error classes); the common precondition paths across Tasks 6.2, 6.3, 6.4, 7.1, 8.1, 8.3, 9.1, 9.2 do not need explicit `MarkOutcome` calls.
+- **Exit-7 (lock timeout) records two additional attributes** per `OTEL.md` §4.3. Inside the `onRollback` hook, detect `errors.Is(err, errors.ErrTransient)` (the sentinel the store maps `SQLITE_BUSY` / error code 5 to). When true, set `quest.lock.wait_limit_ms = 5000` (matches the `PRAGMA busy_timeout = 5000` contract) and `quest.lock.wait_actual_ms = tx.startedAt.Sub(tx.invokedAt).Milliseconds()` on the span before the three-step error pattern runs. These attributes anchor the §15 alerting query ("p95 of `quest.store.tx.lock_wait` > 2000ms") to specific traces — without them, the `dept.quest.store.lock_timeouts` counter fires but there is no trace record to drill into.
+- **`rows_affected` is populated from the `*store.Tx` accumulator** (Task 3.1's `ExecContext` wrapper sums `RowsAffected()` across DML). The hook reads `tx.rowsAffected` and sets `quest.tx.rows_affected = tx.rowsAffected`. No per-Exec instrumentation needed; accumulation is invisible to handlers.
+- **No per-DML `quest.store.op` events.** The decorator does not instrument individual `tx.ExecContext` / `tx.QueryContext` / `tx.QueryRowContext` calls — those pass through to the inner `*sql.Tx` directly. The transaction-level `quest.store.tx` span, plus the three named child spans (`quest.role.gate`, `quest.db.migrate`, `quest.batch.*` phase spans), are the complete store-side instrumentation contract. Dashboards that want per-SQL timing use `EXPLAIN`/slow-log at the DB layer, not span events.
+- **`quest.store.traverse` and `quest.store.rename_subgraph` are handler-emitted, not decorator-emitted.** The decorator's only emission point is `quest.store.tx` (from the `BeginImmediate` override and hook). Read methods pass through the decorator unchanged — `CurrentSchemaVersion`, `GetTask`, `GetTags`, `GetPRs`, `GetNotes` emit no traverse spans, since they are fast single-row meta/field reads rather than graph or list traversals. Handlers that do graph/list traversal (`quest graph`, `quest deps`, `quest list`) wrap their traversal reads with `telemetry.StoreSpan(ctx, "quest.store.traverse")` — a thin helper in `internal/telemetry/store.go` that calls `trace.SpanFromContext` + child span creation. `quest move` wraps its FK-cascade UPDATE loop with `telemetry.StoreSpan(ctx, "quest.store.rename_subgraph")`. This keeps the `Store` interface narrow (no read-kind enum), preserves the OTEL import boundary (handlers call a `telemetry` wrapper, never `go.opentelemetry.io/otel/trace` directly), and matches the spec's scoping of `quest.store.traverse` to "graph/list queries" rather than every read.
 
-**Tests:** Layer 1 + Layer 3 with the in-memory exporter: `accept` on a parent produces exactly one `quest.store.tx` span with correct attributes; `quest show` produces the expected events.
+**Tests:** Layer 1 + Layer 3 with the in-memory exporter: `accept` on a parent produces exactly one `quest.store.tx` span with correct attributes (`db.system=sqlite`, `quest.tx.kind=accept`, `quest.tx.lock_wait_ms` non-negative, `quest.tx.outcome=committed`); concurrent-writer test confirms `lock_wait_ms` reflects actual wait, not decorator overhead; `quest show` produces exactly one `quest.store.traverse` span and no store-tx span (reads go through a different seam).
 
 ---
 
@@ -1073,7 +1279,18 @@ Covers §16 steps 1, 2, and 13. Replaces the no-op shell from Task 2.3 with real
 
 **Spec anchors:** `OTEL.md` §8.5.
 
-**Implementation notes:** Wrap `quest batch`'s four validation phases in a parent `quest.validate` span with one child span per phase (`quest.batch.parse`, `quest.batch.reference`, `quest.batch.graph`, `quest.batch.semantic`). Each phase span emits a `quest.batch.error` event per validation failure (line, code, field, ref?) and increments `dept.quest.batch.errors{phase, code}`. The command span records `quest.batch.lines_total`, `quest.batch.lines_blank`, `quest.batch.partial_ok`, `quest.batch.created`, `quest.batch.errors` per §4.3.
+**Implementation notes:** Wrap `quest batch`'s four validation phases in a parent `quest.validate` span with one child span per phase (`quest.batch.parse`, `quest.batch.reference`, `quest.batch.graph`, `quest.batch.semantic`). The resulting tree (matches `OTEL.md` §4.1):
+
+```
+execute_tool quest.batch
+  └── quest.validate
+        ├── quest.batch.parse
+        ├── quest.batch.reference
+        ├── quest.batch.graph
+        └── quest.batch.semantic
+```
+
+Each phase span emits a `quest.batch.error` event per validation failure (line, code, field, ref?) and increments `dept.quest.batch.errors{phase, code}`. The command span records `quest.batch.lines_total`, `quest.batch.lines_blank`, `quest.batch.partial_ok`, `quest.batch.created`, `quest.batch.errors` per §4.3.
 
 **Tests:** Layer 1 with in-memory exporter: feed a batch covering every error code from spec §Batch error output; assert the phase-to-span mapping and the attribute set.
 
@@ -1086,7 +1303,8 @@ Covers §16 steps 1, 2, and 13. Replaces the no-op shell from Task 2.3 with real
 **Implementation notes:**
 
 - `OTEL_GENAI_CAPTURE_CONTENT` is read by `internal/config/` (Task 1.3) and surfaced as `cfg.Telemetry.CaptureContent`. Telemetry caches the value once via `telemetry.Setup` in `setup.go` (package-level `bool captureContent`; no atomic needed — write-once in `Setup`, read-after by recorders). See Task 12.1 for the wiring — this task fills in the recorder bodies.
-- Add per-command recorder calls that emit the span events listed in `OTEL.md` §4.5 (`quest.content.title`, `quest.content.description`, `quest.content.context`, `quest.content.acceptance_criteria`, `quest.content.note`, `quest.content.debrief`, `quest.content.handoff`, `quest.content.reason`). Gate on the cached flag **before** truncation so the string allocation is skipped when disabled.
+- Add per-command recorder calls that emit the span events listed in `OTEL.md` §4.5 (`quest.content.title`, `quest.content.description`, `quest.content.context`, `quest.content.acceptance_criteria`, `quest.content.note`, `quest.content.debrief`, `quest.content.handoff`, `quest.content.reason`).
+- **Gate at the call site, not inside the recorder.** Pattern: `if telemetry.CaptureContentEnabled() { telemetry.RecordContentTitle(ctx, task.Title) }`. Checking the flag inside the recorder does not save the caller's string evaluation (the argument is already on the stack). Alternatively, a recorder may accept a `func() string` closure so expansion is deferred: `telemetry.RecordContentTitle(ctx, func() string { return task.Title })`. Do not pass raw strings unconditionally. This is the mechanic that backs `OTEL.md` §14.5's "zero allocation when disabled" benchmark; tests in Task 12.7 measure allocations per `RecordContentX` call under both `CaptureContent` states.
 - **Content-emitting commands are write-side only:** `create`, `update`, `complete`, `fail`, `cancel`, `reset`, `batch`. `quest show` / `quest list` / `quest graph` are read commands and emit no content events regardless of `OTEL_GENAI_CAPTURE_CONTENT` state — per `OTEL.md` §4.5 and §9.2. A curator repeatedly reading task data would otherwise double-emit (once on the write that set the value, again on every read) and flood the collector.
 - Each write command emits one event per captured field it touches; fields not mutated by the call are not emitted.
 - Truncation limits per `OTEL.md` §4.5: title 256, description/context/debrief/handoff 1024, note/reason/acceptance_criteria 512. Use the shared `truncate` helper from `internal/telemetry/truncate.go`.
@@ -1095,13 +1313,46 @@ Covers §16 steps 1, 2, and 13. Replaces the no-op shell from Task 2.3 with real
 
 ---
 
-### Task 12.8 — Migration span
+### Task 12.8 — Migration-end contract test
 
-**Spec anchors:** `OTEL.md` §4.1 (hierarchy), §8.8 (sibling relationship).
+**Spec anchors:** `OTEL.md` §4.1 (hierarchy), §8.8 (sibling / init-child relationship), §5.1 (`dept.quest.schema.migrations` counter).
 
-**Implementation notes:** Replace the dispatcher's no-op `telemetry.MigrateSpan` (Task 12.1 placeholder) with the real span emitter. Because the dispatcher calls it before `CommandSpan` (Task 4.2 step 4), `quest.db.migrate` is a **sibling** of the forthcoming command span, not a child — this is the point of splitting `store.Open` from `store.Migrate` in Task 3.1 / 3.2. Attributes per §4.3: `quest.schema.from`, `quest.schema.to`, `quest.schema.applied_count`. Also increment `dept.quest.schema.migrations{from_version, to_version}` per §5.1 via a `telemetry.RecordMigration` helper.
+**Implementation notes:** `MigrateSpan` (emitter + attributes + metric) lives in Task 12.1 — this task only adds the integration tests that pin the contract end-to-end. Task 12.1's returned `end` closure records both the span's `quest.schema.applied_count` attribute and the `dept.quest.schema.migrations{from_version, to_version}` counter increment in a single place, so "one migration = one span + one metric" is structurally enforced.
 
-**Tests:** Layer 1 with in-memory exporter: open a pre-seeded fixture DB at schema version N-1; run any workspace-bound command; assert two sibling root spans on the same trace — `quest.db.migrate` and `execute_tool quest.<name>` — with the correct attributes on each.
+**Tests:** Layer 1 + Layer 3 with the in-memory exporter:
+
+- Open a pre-seeded fixture DB at schema version N-1; run any workspace-bound command; assert two root spans on the same trace — `quest.db.migrate` (sibling of the command span) and `execute_tool quest.<name>` — with correct attributes on each. Also assert the migrate span's parent span context equals the command span's parent span context (both anchor to the inbound TRACEPARENT, not to each other).
+- **Up-to-date DB emits no migrate span.** Run a workspace-bound command against a DB already at `SupportedSchemaVersion`; assert the exporter captures exactly one root span (the command span) and no `quest.db.migrate` sibling. Also assert `dept.quest.schema.migrations` did not increment. Pins the H1 gate: `MigrateSpan` emits only when `from < to`, so span and metric stay symmetric.
+- `quest init` on a fresh workspace produces `quest.db.migrate` as a **child** of `execute_tool quest.init` (the §8.8 carve-out — init runs migration from inside its handler).
+- The `dept.quest.schema.migrations{from_version=0, to_version=1}` counter increments exactly once per `quest init`, zero times on subsequent invocations against an already-migrated DB.
+
+---
+
+### Task 12.9 — Query / graph recorders (§16 step 10)
+
+**Spec anchors:** `OTEL.md` §8.6 (`RecordQueryResult`, `RecordGraphResult`), §4.3 (`quest.query.*`, `quest.graph.*` span attributes).
+
+**Implementation notes:** Wire the query/graph side of the per-command span-attribute enrichment and metric recorders. Attribute names come straight from `OTEL.md` §4.3; do not rename or substitute count-style variants:
+
+- `RecordQueryResult(ctx, operation string, resultCount int, filter QueryFilter)` — called from `quest list` and `quest deps` handlers. Sets bounded-enum filter values as comma-joined strings: `quest.query.filter.status`, `quest.query.filter.role`, `quest.query.filter.tier`, `quest.query.filter.type` (each is the filter's accepted values joined by `,` in a stable sorted order; omit the attribute when the filter is unset). Sets `quest.query.ready` (bool) when `--ready` is active. Sets `quest.query.result_count=resultCount`. **Do not emit** `quest.query.filter.tag` or `quest.query.filter.parent` — tag and parent ID values are unbounded and are deliberately excluded from span attributes per `OTEL.md` §4.3. Also do not emit `*_count` variants: bounded-enum filters have low cardinality, so the values themselves are the signal. Increments `dept.quest.query.result_count` histogram.
+- `RecordGraphResult(ctx, rootID string, nodeCount, edgeCount, externalCount int, traversalNodes int)` — called from `quest graph` handler. Emits the mandatory task-affecting attribute `quest.task.id=rootID` (per `OTEL.md` §4.3), plus `quest.graph.node_count`, `quest.graph.edge_count`, and `quest.graph.external_count` (count of nodes reached via a dependency edge that are not descendants of the root). Increments `dept.quest.graph.traversal_nodes` histogram with `traversalNodes` — this value lives on the metric only, not as a span attribute, per `OTEL.md` §4.3.
+- Both recorders gate on the cached `enabled()` check (no-op when disabled), but the gate is inside `internal/telemetry/` — handlers call the recorders unconditionally.
+
+**Tests:** Layer 1 with in-memory exporter — run `quest list --status open` and `quest graph proj-a1` against a fixture workspace; assert recorded attributes match the handler's resolved filter / traversal result. Assert the excluded attributes (`quest.query.filter.tag`, `quest.query.filter.parent`, `quest.graph.root_id`, `quest.graph.traversal_nodes` as a span attr) are **absent**.
+
+---
+
+### Task 12.10 — Move / cancel recorders (§16 step 11)
+
+**Spec anchors:** `OTEL.md` §8.6 (`RecordMoveOutcome`, `RecordCancelOutcome`), §4.3 (`quest.move.*`, `quest.cancel.*` span attributes).
+
+**Implementation notes:** Attribute names come straight from `OTEL.md` §4.3 — do not invent renamed variants, and reuse the mandatory `quest.task.id` task-affecting row instead of introducing a proprietary `quest.cancel.target_id`:
+
+- `RecordMoveOutcome(ctx, oldID, newID string, subgraphSize int, depUpdates int)` — called from `quest move` handler. Sets `quest.move.old_id=oldID`, `quest.move.new_id=newID`, `quest.move.subgraph_size=subgraphSize` (number of tasks being renamed), `quest.move.dep_updates=depUpdates` (count of rows in the `dependencies` table whose `task_id`/`target_id` columns were rewritten by the FK cascade — scoped specifically to dependency edges, which is the signal `quest move` dashboards are built around; do not substitute a coarser total-rows-renamed count). Attribute values are opaque IDs; cardinality-bounded by project size.
+- `RecordCancelOutcome(ctx, targetID string, recursive bool, cancelledCount, skippedCount int)` — called from `quest cancel` handler. Emits the mandatory task-affecting attribute `quest.task.id=targetID` (per `OTEL.md` §4.3). Sets `quest.cancel.recursive=recursive`, `quest.cancel.cancelled_count=cancelledCount`, `quest.cancel.skipped_count=skippedCount`. Do not emit a proprietary `quest.cancel.target_id`; the task-affecting row already covers it.
+- Both recorders are gated via the same `enabled()` pattern.
+
+**Tests:** Layer 1 with in-memory exporter — `quest move proj-a1 --parent proj-b` against a three-level fixture subgraph; assert `quest.move.subgraph_size` equals the count of tasks moved and `quest.move.dep_updates` equals the number of dependency-table rows updated. `quest cancel -r proj-a1` with mixed descendants; assert `cancelled_count` and `skipped_count` match the response object, and `quest.task.id` carries the cancel target.
 
 ---
 
@@ -1111,20 +1362,21 @@ Covers §16 steps 1, 2, and 13. Replaces the no-op shell from Task 2.3 with real
 
 Per `TESTING.md` §Layer 2, implement at minimum:
 
-- `TestShowJSONHasRequiredFields` — every field from spec §Task Entity Schema. Missing task ID → exit 3 (pinned here because spec §Error precedence makes it a contract, not a handler detail).
+- `TestShowJSONHasRequiredFields` — every field from spec §Task Entity Schema. Missing task ID → exit 3 (pinned here because spec §Error precedence makes it a contract, not a handler detail). Note: `history` is intentionally absent; see `TestShowHistoryFieldPresence`. Uses the shared `testutil.AssertJSONKeyOrder(t, got []byte, want []string)` helper to assert both presence AND order — `json.Marshal` on a Go struct preserves field declaration order today, but a future refactor to `map[string]any` would silently break ordering. The helper catches that.
 - `TestShowHistoryFieldPresence` — `quest show` without `--history` omits the `history` field entirely (spec §`quest show` carve-out); with `--history` the field is present and is an array (possibly empty).
 - `TestExitCodeStability` — the table from `STANDARDS.md` §CLI Output Contract Tests.
 - `TestIdempotencyGuarantees` — every row of the spec's idempotency table.
 - `TestHistoryEntryShape` — per-action required fields. Include assertions that `role` and `session` serialize as `null` (not `""`) when the recording session had no `AGENT_ROLE` / `AGENT_SESSION` set (the `AppendHistory` single-site conversion), and that the `created` action's payload captures non-default planning fields per spec §History field.
-- `TestBatchStderrShape` — every batch error code with the documented fields, including `invalid_tag` (added in spec after H17 resolution).
+- `TestBatchStderrShape` — every batch error code with the documented fields, including `invalid_tag` and `invalid_link_type`.
 - `TestBatchOutputShape` — `quest batch` stdout JSONL is `{"ref": "...", "id": "..."}` per created task; both fields always present.
 - `TestExportLayout` — `tasks/{id}.json`, `debriefs/{id}.md`, `history.jsonl`.
-- `TestRoleGateDenials` — every elevated command (see Task 4.2 descriptor inventory) returns exit 6 for worker role. Iterate the inventory table directly so adding a new elevated command automatically grows the test.
+- `TestRoleGateDenials` — iterates the descriptor inventory filtering on `Elevated: true` commands only; asserts each one returns exit 6 for worker role. Adding a new elevated command automatically grows the test. `update` is **skipped** by this iteration because its descriptor has `Elevated: false` at dispatch (workers can call `--note`/`--pr`/`--handoff`).
+- `TestUpdateElevatedFlagsDenied` — companion test covering the `update` mixed-flag carve-out: for each elevated flag on `update` (`--title`, `--description`, `--context`, `--type`, `--tier`, `--role`, `--acceptance-criteria`, `--meta`), assert that a worker invoking it produces exit 6. The handler-side gate span (Task 6.3) is exercised here; the dispatcher-side gate test above does not cover it.
 - `TestVersionOutputShape` — `quest version --format json` always contains the `version` key; `--format text` emits the bare version string; exit code 0. Also asserts no OTEL span is emitted (version is suppressed at dispatch per `OTEL.md` §4.2).
-- `TestInitOutputShape` — `quest init` JSON always contains `workspace` and `id_prefix`, both non-empty; `--format text` emits the bare absolute workspace path followed by a newline (no prefix, no framing — spec §`quest init` after C4 resolution).
-- `TestAcceptOutputShape` — `{"id": "...", "status": "accepted"}` on success; both fields present.
-- `TestCompleteOutputShape` — `{"id": "...", "status": "complete"}` on success; both fields present.
-- `TestFailOutputShape` — `{"id": "...", "status": "failed"}` on success; both fields present.
+- `TestInitOutputShape` — `quest init` JSON always contains `workspace` and `id_prefix`, both non-empty; asserts `filepath.Base(workspace) == ".quest"` so the test stays portable across Windows path separators; `--format text` emits the bare absolute `.quest/` path followed by a newline (no prefix, no framing — spec §`quest init`).
+- `TestAcceptOutputShape` — `{"id": "...", "status": "accepted"}` on success; both fields present. Uses `testutil.AssertJSONKeyOrder` for stable key order.
+- `TestCompleteOutputShape` — `{"id": "...", "status": "complete"}` on success; both fields present. Uses `testutil.AssertJSONKeyOrder`.
+- `TestFailOutputShape` — `{"id": "...", "status": "failed"}` on success; both fields present. Uses `testutil.AssertJSONKeyOrder`.
 - `TestCreateOutputShape` — `{"id": "<new-id>"}`; single field, no echo of planning args.
 - `TestUpdateOutputShape` — `{"id": "..."}`; single field; applies to worker-only and elevated-flag invocations alike.
 - `TestLinkOutputShape` / `TestUnlinkOutputShape` — `{"task": "...", "target": "...", "type": "..."}` on both success and idempotent no-op.
@@ -1133,40 +1385,66 @@ Per `TESTING.md` §Layer 2, implement at minimum:
 - `TestMoveOutputShape` — `quest move` JSON always contains `id` and `renames`; `renames` is a non-empty array of `{"old","new"}` pairs ordered by old ID.
 - `TestCancelOutputShape` — `quest cancel` JSON always contains both `cancelled` and `skipped` arrays (possibly empty); idempotent no-op returns both as `[]`. `-r` on a leaf returns `{"cancelled": [target], "skipped": []}`.
 - `TestResetOutputShape` — `quest reset` JSON always contains `id` and `status`; `status` is always the literal `"open"` on success.
-- `TestGraphOutputShape` — `quest graph` JSON always contains `nodes` and `edges`; each node has `id`, `title`, `type`, `status`, `tier`, `role`, `children`; each edge has `task`, `target`, `type`, `target_status`. External nodes appear in `nodes` with `children: []`. Missing ID → exit 2 (spec §`quest graph` after H10 resolution).
-- `TestListJSONRowShape` — rows contain only the requested columns in `--columns` order; `role` / `tier` / `parent` use `null` for unset values (never `""`); `tags` and `children` are always arrays of strings (possibly empty); `blocked-by` is always an array of task ID strings (not object form); empty result is `[]` (never `null`, never missing). Unknown column name → exit 2.
-- `TestAcceptConflictStructuredBody` — `quest accept` on a parent with non-terminal children emits the conflict body (`error`, `task`, `non_terminal_children`) on both stdout and stderr; exit 5.
+- `TestGraphOutputShape` — `quest graph` JSON always contains `nodes` and `edges`; each node has `id`, `title`, `type`, `status`, `tier`, `role`, `children`; each edge has `task`, `target`, `type`, `target_status`. External nodes appear in `nodes` with `children: []`. Missing ID → exit 2 (spec §`quest graph`).
+- `TestListJSONRowShape` — rows contain only the requested columns in `--columns` order; `role` / `tier` / `parent` use `null` for unset values (never `""`); `tags` and `children` are always arrays of strings (possibly empty); `blocked-by` is always an array of task ID strings (not object form); empty result is `[]` (never `null`, never missing). Unknown column name → exit 2. Also asserts key ordering explicitly: `quest list --columns title,id` emits `{"title":...,"id":...}` with `title` first — catches any regression that replaces `output.OrderedRow` with a plain `map[string]any` (which would sort keys alphabetically).
+- `TestAcceptConflictStructuredBodyOnStdout` — `quest accept` on a parent with non-terminal children emits the structured JSON conflict body (`error`, `task`, `non_terminal_children`) on stdout; exit 5. Exact-match shape (not substring).
+- `TestAcceptConflictStderrLineReferencesBlockingChildren` — the same invocation emits a plain-text `quest: conflict: ...` line on stderr that references the same blocking child IDs as the stdout JSON body. Stderr carries the two-liner (`quest: conflict: ...` + `quest: exit 5 (conflict)`), not the JSON. These are two independent contracts — per `OBSERVABILITY.md` §Output Contract, stdout gets the structured body; stderr gets the plain-text summary.
+- `TestAcceptOnNonOpenStdoutEmpty` — `quest accept` on a non-open task (one sub-test each for `accepted`, `complete`, `failed`, `cancelled` from-statuses) returns exit 5 with an empty stdout and the standard stderr two-liner (`quest: conflict: task is not in open status (current: <status>)` + `quest: exit 5 (conflict)`). No structured body is emitted on stdout. Pins the H5 carve-out so a future refactor cannot silently introduce an invented conflict body on accept.
 - `TestCompleteOnCancelledTaskStructuredBody` / `TestFailOnCancelledTaskStructuredBody` / `TestUpdateOnCancelledTaskStructuredBody` — the cancelled-task conflict body (`{"error":"conflict","task":"...","status":"cancelled","message":"task was cancelled"}`) is emitted on stdout with exit 5. This is the signal vigil uses to terminate workers; silent breakage here breaks vigil integration.
+- `TestCompleteOnNonOwnedParentReturnsExit4` / `TestFailOnNonOwnedParentReturnsExit4` — a non-owning worker invoking `complete` / `fail` on a parent they did not accept (but which was accepted by another verifier) returns exit 4 (permission denied). Prevents the "leaves only" ownership-check hole from reappearing after refactors.
+- `TestUpdateMetaMergePreservesOtherKeys` — `quest update proj-a1 --meta source=planner`, then `quest update proj-a1 --meta reviewed=true`, then `quest show proj-a1`: both keys present. Additionally, `quest show --history proj-a1` has two `field_updated` entries scoped to metadata, one per invocation, with the correct `from`/`to` deltas.
+- `TestUpdateTypeTaskAllowsIncomingCausedByLink` — a `type: bug` source with only **incoming** `caused-by` links (i.e., another task points at it via `caused-by`) can still be retyped to `task`. Pins the outgoing-only predicate from Task 6.3's `--type` transition check so a regression that reintroduces the `OR target_id=?` clause fails the test.
+- `TestUpdateRetypeBugToTaskIgnoresIncomingLinks` — companion test: outgoing `caused-by`/`discovered-from` edges still block the retype with exit 5; the exit-5 body's `blocking_links` list includes only the outgoing edges.
+- `TestListDefaultStatusExcludesCancelled` — `quest list` with no `--status` flag omits cancelled tasks from the results; passing an explicit `--status open,accepted,complete,failed,cancelled` includes them. Pins the default-filter contract from Task 10.2.
 - `TestRoleUnsetRendering` — a span emitted with empty `AGENT_ROLE` carries `gen_ai.agent.name="unset"`; the matching metric dimension (`role`) carries `"unset"` for the same invocation. Ensures span and metric use a single `roleOrUnset` rendering per `OTEL.md` §8.6.
-- `TestChildSpansOmitGenAIToolName` — capture spans via the in-memory exporter; for every child-span helper (`StoreTx`, `GateSpan`, `MigrateSpan`, `quest.batch.*` phase spans), assert `gen_ai.tool.name` is **absent** from the attribute set. Enforces the `OTEL.md` §4.2 carve-out that only root command spans carry that attribute.
-- `TestCommandSpanOnRoleDenial` — a role-denied invocation produces a command span (`execute_tool quest.<cmd>`) with `exit_code=6` / `class=role_denied`, increments `dept.quest.operations{status=error}`, and increments `dept.quest.errors{error_class=role_denied}`. Proves the C1 resolution — gate-denied commands are fully observable.
+- `TestLockTimeoutSpanShape` (moved to Task 13.2, `concurrency_test.go`) — a simulated lock timeout (two concurrent writers, one holding the lock past `busy_timeout`) produces a `quest.store.tx` span with `quest.lock.wait_limit_ms=5000` and `quest.lock.wait_actual_ms` ≥ 5000 attributes on the rolled-back transaction per `OTEL.md` §4.3. Exit code is 7 (transient failure). This test requires real concurrent writers, which belongs in Layer 5 per `TESTING.md`; the Layer-2 contract suite stays focused on shape / ordering / idempotency.
+- `TestPreconditionFailedEventShape` — a `complete` on a parent with non-terminal children produces a `quest.precondition.failed` span event on the command span with `quest.precondition=children_terminal`, `quest.blocked_by_count=<N>`, and a truncated `quest.blocked_by_ids` attribute per `OTEL.md` §13.3. Anchors handler-side event emission that would otherwise be easy to forget.
+- `TestCurrentSchemaVersionTransientError` (moved to Task 13.2, `concurrency_test.go`) — a simulated `SQLITE_BUSY` on the initial `meta` read in `CurrentSchemaVersion` surfaces as exit 7 (`ErrTransient`) per Task 3.1's error-mapping contract; any other driver error surfaces as exit 1 (`ErrGeneral`). Real busy-state requires concurrent writers, hence Layer 5 placement.
+- `TestChildSpansOmitGenAIAttributes` — capture spans via the in-memory exporter and iterate **every non-root span** the exporter recorded (rather than an enumeration of expected names). For each, assert that `gen_ai.tool.name`, `gen_ai.operation.name`, and `gen_ai.agent.name` are all absent. Enumerating by "every non-root span captured" keeps the test stable when new child spans are added (e.g., future `quest.validate` sibling spans, additional batch phases); enumerating the full `gen_ai.*` set catches future attribute additions automatically. Current child-span name set for reference: `quest.store.tx`, `quest.role.gate`, `quest.db.migrate`, `quest.validate`, `quest.batch.parse`, `quest.batch.reference`, `quest.batch.graph`, `quest.batch.semantic`, `quest.store.traverse`, `quest.store.rename_subgraph`.
+- `TestCommandSpanOnRoleDenial` — a role-denied invocation produces a command span (`execute_tool quest.<cmd>`) with `exit_code=6` / `class=role_denied`, a `quest.role.gate` child span, increments `dept.quest.operations{status=error}`, and increments `dept.quest.errors{error_class=role_denied}`. Gate-denied commands short-circuit at dispatch step 3 (before `cfg.Validate` / `store.Open` / migrate) and record via `errorExit`, which handles both counter increments plus the three-step error pattern on the command span.
+- `TestHandlerRecorderWiring` — tripwire iterating the task-affecting handler inventory (`accept`, `update`, `complete`, `fail`, `create`, `cancel`, `move`, `link`, `unlink`, `tag`, `untag`, `deps`, `list`, `graph`, `batch`) and asserting each one emits at least one `telemetry.RecordX` call on its happy path (verified via capturing recorders in `internal/testutil/`). Pins the per-handler wiring mapping from H8 so new handlers do not silently skip the recorder layer.
 
-**File location.** Per-command contract tests live alongside the handler they exercise:
+**File location.** `internal/command/` is a flat package (`package command`, one file per handler — `accept.go`, `create.go`, …), so per-command contract tests live in a single `internal/command/contract_test.go` organized by `t.Run("<command>", ...)` sub-tests. Flat layout keeps shared unexported helpers (e.g., `CheckOwnership` from H4) accessible without an extra package and avoids 12 one-directory-per-handler sub-packages for quest's small handler surface:
 
 ```
-internal/command/show/contract_test.go       TestShowJSONHasRequiredFields, TestShowHistoryFieldPresence
-internal/command/accept/contract_test.go     TestAcceptOutputShape, TestAcceptConflictStructuredBody
-internal/command/update/contract_test.go     TestUpdateOutputShape, TestUpdateOnCancelledTaskStructuredBody
-internal/command/complete/contract_test.go   TestCompleteOutputShape, TestCompleteOnCancelledTaskStructuredBody
-internal/command/fail/contract_test.go       TestFailOutputShape, TestFailOnCancelledTaskStructuredBody
-internal/command/create/contract_test.go     TestCreateOutputShape
-internal/command/link/contract_test.go       TestLinkOutputShape, TestUnlinkOutputShape
-internal/command/tag/contract_test.go        TestTagOutputShape, TestUntagOutputShape
-internal/command/cancel/contract_test.go     TestCancelOutputShape
-internal/command/reset/contract_test.go      TestResetOutputShape
-internal/command/move/contract_test.go       TestMoveOutputShape
-internal/command/deps/contract_test.go       TestDepsOutputShape
-internal/command/list/contract_test.go       TestListJSONRowShape
-internal/command/graph/contract_test.go      TestGraphOutputShape
-internal/command/init/contract_test.go       TestInitOutputShape
-internal/command/version/contract_test.go    TestVersionOutputShape
-internal/cli/contract_test.go                TestExitCodeStability, TestRoleGateDenials, TestCommandSpanOnRoleDenial, TestIdempotencyGuarantees, TestExportLayout
+internal/command/contract_test.go            One file, all per-command shape tests
+                                             organized as t.Run("show", ...), t.Run("accept", ...), etc.
+                                             Covers: TestShowJSONHasRequiredFields, TestShowHistoryFieldPresence,
+                                             TestAcceptOutputShape, TestAcceptConflictStructuredBody,
+                                             TestUpdateOutputShape, TestUpdateOnCancelledTaskStructuredBody,
+                                             TestCompleteOutputShape, TestCompleteOnCancelledTaskStructuredBody,
+                                             TestFailOutputShape, TestFailOnCancelledTaskStructuredBody,
+                                             TestCreateOutputShape, TestLinkOutputShape, TestUnlinkOutputShape,
+                                             TestTagOutputShape, TestUntagOutputShape, TestCancelOutputShape,
+                                             TestResetOutputShape, TestMoveOutputShape, TestDepsOutputShape,
+                                             TestListJSONRowShape, TestGraphOutputShape, TestInitOutputShape,
+                                             TestVersionOutputShape
+internal/cli/contract_test.go                TestRoleGateDenials, TestUpdateElevatedFlagsDenied,
+                                             TestCommandSpanOnRoleDenial,
+                                             TestChildSpansOmitGenAIAttributes, TestIdempotencyGuarantees,
+                                             TestExportLayout, TestHandlerRecorderWiring
 internal/batch/contract_test.go              TestBatchStderrShape, TestBatchOutputShape
+internal/batch/deps_test.go                  TestValidateSemanticErrorCodes — unit test
+                                             of the SemanticDepError set independent of the batch
+                                             stderr contract; lives alongside deps.go which owns
+                                             the validator.
 internal/store/contract_test.go              TestHistoryEntryShape
-internal/telemetry/contract_test.go          TestRoleUnsetRendering, TestChildSpansOmitGenAIToolName
+internal/errors/contract_test.go             TestExitCodeStability (the exit-code mapping lives
+                                             in internal/errors/, so the test lives there too)
+internal/input/resolve_test.go               Full @file/@- resolver matrix: happy path, oversized
+                                             file, missing file, second @-, binary file — one
+                                             central suite for the cross-cutting input layer.
+                                             Size-limit boundary cases pin the 1 MiB contract:
+                                             exactly 1,048,576 bytes passes; 1,048,577 fails with
+                                             exit 2 and the flag-leading error format; the
+                                             measurement is byte-exact (post-normalization content
+                                             length is NOT what's counted).
+internal/telemetry/contract_test.go          TestRoleUnsetRendering (unit-level — assert
+                                             roleOrUnset rendering on a synthetic CommandSpan
+                                             without handler round-trip)
 ```
 
-Co-locating contract tests next to their handler keeps PR review tight and lets package-level refactors land with the tests that govern them.
+Placement rationale: `TestExitCodeStability` moves to `internal/errors/` because the exit-code table lives there; split the telemetry tests into a unit test (`TestRoleUnsetRendering` stays in `internal/telemetry/`) and a cross-package contract test (`TestChildSpansOmitGenAIToolName` moves to `internal/cli/` alongside the other handler-round-trip assertions) since the latter needs every command to actually produce spans.
 
 **Done when:** all contract tests pass and any future spec-breaking change trips at least one.
 
@@ -1179,6 +1457,8 @@ Per `TESTING.md` §Layer 5 and `OTEL.md` §15:
 - `TestConcurrentAcceptLeavesOnlyOneWinner` (accept race).
 - `TestConcurrentCreateGeneratesDistinctIDs` (counter race).
 - `TestBusyTimeoutTransientFailure` (5s lock wait, exit 7).
+- `TestLockTimeoutSpanShape` — same two-writer setup as `TestBusyTimeoutTransientFailure`, but asserts the `quest.store.tx` span attributes (`quest.lock.wait_limit_ms=5000`, `quest.lock.wait_actual_ms` ≥ 5000) per `OTEL.md` §4.3.
+- `TestCurrentSchemaVersionTransientError` — hold a long write transaction, run a second invocation whose `CurrentSchemaVersion` read hits `SQLITE_BUSY`; assert exit 7 (`ErrTransient`) per Task 3.1.
 - `TestBulkBatchValidatesInReasonableTime` (500 tasks, dense blocked-by graph — soft perf target).
 
 All behind `//go:build integration` and run with `-race`.
@@ -1188,6 +1468,8 @@ All behind `//go:build integration` and run with `-race`.
 ### Task 13.3 — CLI output contract tests (Layer 4)
 
 Build the binary once in `TestMain` (`TESTING.md` §Store Fixtures and Seed Helpers), invoke it via `os/exec` for scenarios that can only be tested end-to-end: global flag positioning, `--format text` rendering, stderr `quest: <class>: <msg>` + `quest: exit N (<class>)` tail, `@file` input.
+
+Include text-mode smoke tests for the commands whose `--format text` output is most likely to drift: `quest cancel` (one-line-per-ID output), `quest move` (`OLD → NEW` rename lines), `quest reset` (bare `<id>` line), and `quest tag` / `quest untag` (post-state tag list). Text mode is not a contract (spec §Output & Error Conventions), but a smoke test guards against a renderer regression making text output silently unusable.
 
 ---
 
@@ -1229,7 +1511,7 @@ Every nullable TEXT column on `tasks` that corresponds to a JSON `null`-when-uns
 
 ### Timestamps
 
-All timestamps are written as `time.Now().UTC().Format(time.RFC3339)` — second precision, UTC, Z-terminated. Applies to `started_at`, `completed_at`, `handoff_written_at`, every `history.timestamp`, every `notes.timestamp`, and the PR `added_at`. Spec §Output & Error Conventions after L2 resolution. Sub-second precision is intentionally not used: the single-writer model makes collisions at second precision unlikely, and uniform second precision keeps downstream parsing simple.
+All timestamps are written as `time.Now().UTC().Format(time.RFC3339)` — second precision, UTC, Z-terminated. Applies to `started_at`, `completed_at`, `handoff_written_at`, every `history.timestamp`, every `notes.timestamp`, and the PR `added_at`. Spec §Output & Error Conventions. Sub-second precision is intentionally not used: the single-writer model makes collisions at second precision unlikely, and uniform second precision keeps downstream parsing simple.
 
 ### JSON field presence
 
@@ -1241,17 +1523,35 @@ User-facing stderr lines: `quest: <class>: <actionable message>` followed by `qu
 
 ### `@file` input
 
-Any flag listed in `quest-spec.md` §Input Conventions goes through the shared `input.Resolve`. Adding new flags that accept free-form text? Add them to the list and the resolver handles them automatically.
+Any flag listed in `quest-spec.md` §Input Conventions goes through an `*input.Resolver` that **each handler constructs at entry** (`r := input.NewResolver(stdin)`). Handlers call `r.Resolve("--debrief", raw)` to expand `@file` / `@-` / bare-string inputs. Adding new flags that accept free-form text? Add them to the spec list and call `r.Resolve` for them in the handler. The "one handler per invocation" property means the "one resolver per invocation" invariant already holds without adding the resolver to the handler signature — revisit if handlers ever share per-invocation state (a second resolver, a rate limiter, etc.).
 
-`input.Resolve` keeps per-invocation state: once a `@-` has been resolved for one flag, a second `@-` on the same invocation returns `ErrUsage` (exit 2) with `"stdin already consumed by <first-flag>; at most one @- per invocation"`. Stdin is a single byte stream — consuming it twice yields empty content or a block on the second read, and silent corruption is worse than an explicit rejection. Tests exercising the second-`@-` rejection land alongside `input.Resolve`'s unit suite.
+The `*input.Resolver` keeps per-invocation state: once `@-` has been resolved for one flag, a second `@-` on the same invocation returns `ErrUsage` (exit 2) with `"stdin already consumed by <first-flag>; at most one @- per invocation"` — this rule is spec-owned (`quest-spec.md` §Input Conventions) because agent retry logic depends on the contract. Stdin is a single byte stream; consuming it twice yields empty content or a block on the second read, and silent corruption is worse than an explicit rejection. Tests exercising the second-`@-` rejection, oversized-file, missing-file, and binary-content paths live in `internal/input/resolve_test.go` (one central suite, not distributed across handler tests).
 
 ### Telemetry call sites
 
-`cli.Execute` owns `CommandSpan` / `WrapCommand` per `OTEL.md` §8.2 — command handlers do not call either. Handlers receive a context that already carries the command span and call `telemetry.RecordX` at every observable event (status transition, link add/remove, batch outcome, query result count); when they need the span handle for a mid-body span event, they call `trace.SpanFromContext(ctx)`. The no-op stubs make these calls safe during Phase 2–11; Phase 12 lights them up. Do not gate calls on a telemetry-enabled check — the `enabled()` helper is package-private to `internal/telemetry/` (`OTEL.md` §8.3), and the no-op SDK providers already make the hot path cheap.
+`cli.Execute` owns `CommandSpan` / `WrapCommand` per `OTEL.md` §8.2 — command handlers do not call either. Handlers receive a context that already carries the command span and call `telemetry.RecordX` at every observable event (status transition, link add/remove, batch outcome, query result count); when they need to emit a mid-body span event, they call `telemetry.SpanEvent(ctx, name, attrs...)`. Handlers never import `go.opentelemetry.io/otel/trace` — the Task 2.3 grep tripwire enforces this. The no-op stubs make these calls safe during Phase 2–11; Phase 12 lights them up. Do not gate calls on a telemetry-enabled check — the `enabled()` helper is package-private to `internal/telemetry/` (`OTEL.md` §8.3), and the no-op SDK providers already make the hot path cheap.
 
 ### Schema evolution
 
 Any change to the DB shape is a numbered migration. Bump `schema_version`. Add a `migration_test.go` fixture at the new version. Never edit an existing migration — the binary's supported-version set is forward-only.
+
+### Duration calculation
+
+Durations recorded on spans and metrics use `float64(elapsed.Microseconds()) / 1000.0`, never `elapsed.Milliseconds()`. The latter truncates sub-millisecond durations to 0, which destroys p50 / p95 signal on fast commands (every quest command that doesn't hit disk finishes in single-digit milliseconds). `OTEL.md` §19 checklist pins this; the plan mirrors the rule here so every duration-emitting call site follows it.
+
+### Integration build tags
+
+Any test file exercising the store, goroutines, or the built binary uses `//go:build integration` per `TESTING.md` §Integration Build Tags. Tasks 5.1, 6.x, 7.x, 8.x, 9.x, 10.x, 11.1 describe Layer 3 / 4 / 5 tests without always restating the build-tag requirement — treat this cross-cutting rule as authoritative.
+
+### Deliberate deviations from spec
+
+Some plan decisions tighten or extend the spec. Track them here so a future reader inspecting divergence can find the rationale in one place. Revisit each entry when its "revisit if" condition is triggered:
+
+- **Unknown `--columns` / `--status` / `--type` / `--tier` values on `quest list` are rejected with exit 2** (Task 10.2). Spec is silent on unknown-value handling for these filter flags; rejecting at parse time with a `cli.Suggest`-powered "did you mean" hint prevents silent partial output (unknown column) and silent empty-result typos (unknown status/type/tier — e.g., `--status compelete` returning `[]` instead of an error). Revisit if agents need forward-compatible filter specs.
+- **`--help` is gated by workspace and role checks** (Task 4.2). Spec is silent; plan retains gating rather than following common CLI convention (git / kubectl / docker all short-circuit `--help`). Rationale: quest is agent-first, and a worker asking for help on a command it cannot execute indicates a calling-code bug — exit 6 (role denied) or exit 2 (no workspace) gives the agent an actionable signal that matches what the command itself would return, instead of usage text the agent will never act on. `quest help <cmd>` and `quest --help` remain gate-free for human discovery (role-filtered banner). Revisit if human-operator workflows surface real friction.
+- **`quest export` deletes stale output files** (Task 11.1). Spec §`quest export` says "re-running overwrites the output directory." Plan extends this to remove files for tasks that no longer exist (moved via `quest move`, cancelled and recreated, etc.) so the archive is a true snapshot. Revisit if a concrete workflow relies on stale files surviving.
+- **`invalid_link_type` batch error code** (Task 7.3 / spec §Batch error output). Added as a new code at phase `semantic` so typos in `link_type` produce a clear diagnostic instead of falling through to `source_type_required`. Spec has been amended; this entry exists for audit trail.
+- **Empty `--reason` on cancel / reset records `null`** (Tasks 8.1 / 8.2). Spec is silent; plan treats empty value as equivalent to omitting the flag, asymmetric with `quest update` where empty strings are exit-2 errors. Rationale: `--reason` annotates a state transition rather than attaching task data. Spec has been amended with this behavior.
 
 ### Agent discipline
 

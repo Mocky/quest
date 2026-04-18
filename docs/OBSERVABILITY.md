@@ -47,25 +47,18 @@ Use `log/slog` from the standard library. Do not introduce `zap`, `zerolog`, `lo
 
 ### Initialization
 
-Initialize the logger once at startup through the shared `internal/logging` package. A single invocation wires two handlers behind a fan-out:
+Initialize the logger once at startup through the shared `internal/logging` package. Two handlers — a stderr handler and the OTEL slog bridge — compose behind a fan-out. The OTEL bridge handler is constructed by `internal/telemetry/` (returned from `telemetry.Setup` as a `slog.Handler`), not by `internal/logging/` — this keeps `internal/logging/` free of OTEL imports per `OTEL.md` §10.1. `main.run()` is the seam that wires them together:
 
 ```go
 // In cmd/quest/main.go (roughly)
-stderrH := logging.NewStderrHandler(logging.StderrConfig{
-    Level:  logging.LevelFromString(cfg.Log.Level),   // default "warn"
-    Format: logging.FormatText,                       // human-readable on stderr
-    Output: os.Stderr,
-})
+bridge, otelShutdown, _ := telemetry.Setup(ctx, telemetryCfg) // bridge is nil when telemetry is disabled
+defer otelShutdown(...)
 
-otelH := logging.NewOTELHandler(logging.OTELConfig{
-    Level: logging.LevelFromString(cfg.Log.OTELLevel), // default "info"
-})
-
-logger := slog.New(logging.NewFanoutHandler(stderrH, otelH))
+logger := logging.Setup(cfg.Log, bridge) // variadic — extra handlers compose into the fan-out
 slog.SetDefault(logger)
 ```
 
-The two handlers are level-gated independently: stderr follows `QUEST_LOG_LEVEL`, the OTEL bridge follows `QUEST_LOG_OTEL_LEVEL`. This mirrors OTEL.md §3.1.
+`logging.Setup` internally builds the stderr handler from `cfg.Log` (level, format, output) and composes it with any extra handlers into the fan-out. The two handlers are level-gated independently: stderr follows `QUEST_LOG_LEVEL`, the OTEL bridge follows `QUEST_LOG_OTEL_LEVEL`. `internal/logging/` never references the OTEL bridge by its concrete type — it sees only `slog.Handler`. This mirrors OTEL.md §3.1 and §7.1.
 
 ### Propagation
 
@@ -252,7 +245,7 @@ Examples:
 
 ### What does NOT get a log line
 
-- Every successful SQL query. Query cost is captured on the command span and on `quest.store.op` events (OTEL.md §4.2). Per-query slog lines would drown the bridge.
+- Every successful SQL query. Query cost is rolled up into the surrounding `quest.store.tx` span's duration (OTEL.md §4.2/§8.3 — no per-DML span events). Per-query slog lines would drown the bridge.
 - Stdout output. That is the command's result, not a log event.
 - Routine control flow (entering a function, returning from a helper). `debug` is for state, not narration.
 
@@ -297,7 +290,7 @@ Use these field names consistently in every slog call. Do not invent synonyms. T
 
 ### Per-Invocation Bookends
 
-Every command handler logs exactly once at entry and once at exit, at DEBUG level. These are bookends — not `info` — because the bookends exist for local development and tracing, not operator dashboards. The OTEL command span carries the same information at a higher signal-to-noise ratio.
+The dispatcher (wrapping every command handler in `internal/cli/`) logs exactly once at command entry and once at exit, at DEBUG level. Handlers MUST NOT emit their own boundary records — putting the calls in one place guarantees consistent keys and eliminates twelve handler-file copies. These are bookends — not `info` — because the bookends exist for local development and tracing, not operator dashboards. The OTEL command span carries the same information at a higher signal-to-noise ratio.
 
 ```
 level=DEBUG msg="quest command start" command=create agent.role=planner dept.task.id=proj-a1
@@ -319,7 +312,7 @@ On rollback:
 level=DEBUG msg="tx rolled back" tx_kind=accept outcome=rolled_back_precondition
 ```
 
-Do not log inside the transaction for every SQL statement. Per-statement cost is captured as span events per OTEL.md §4.2.
+Do not log inside the transaction for every SQL statement. Per-statement cost is not broken out in telemetry — the `quest.store.tx` span's duration is the primary signal (OTEL.md §4.2/§8.3).
 
 ### Decisions and Conflicts
 

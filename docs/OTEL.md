@@ -60,8 +60,8 @@ Without an explicit inventory the logs signal devolves into "whatever the develo
 
 | Category          | Event name (`slog.Info/Warn/Error` message)        | Severity | Required attributes                                                         | When                                                               |
 | ----------------- | -------------------------------------------------- | -------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| **lifecycle**     | `quest command start`                              | DEBUG    | `command`, `agent.role`, `dept.task.id`                                     | Root command span created                                          |
-| **lifecycle**     | `quest command complete`                           | DEBUG    | `command`, `exit_code`, `duration_ms`                                       | Command handler returns                                            |
+| **lifecycle**     | `quest command start`                              | DEBUG    | `command`, `agent.role`, `dept.task.id?`, `dept.session.id?`                | Root command span created. `dept.task.id` / `dept.session.id` included when the resolved value is non-empty. |
+| **lifecycle**     | `quest command complete`                           | DEBUG    | `command`, `exit_code`, `duration_ms`, `dept.task.id?`, `dept.session.id?`  | Command handler returns. Same optional-attr rule as start.         |
 | **decision**      | `role gate denied`                                 | INFO     | `command`, `agent.role`, `required=elevated`                                | Worker-role command denied                                         |
 | **decision**      | `batch mode fallthrough`                           | INFO     | `partial_ok`, `errors_total`, `created_total`                               | `quest batch --partial-ok` proceeded with partial errors           |
 | **validation**    | `batch validation error`                           | WARN     | `phase`, `line`, `code`, `field`, `ref?`                                    | Per-line batch error; also emitted as span event (§4.4)            |
@@ -84,12 +84,12 @@ Without an explicit inventory the logs signal devolves into "whatever the develo
 
 ### 4.1 Span hierarchy
 
-When quest is called from within a vigil agent session, the span tree looks like:
+**Dispatcher path (every command except `quest init`).** When quest is called from within a vigil agent session, the span tree looks like:
 
 ```
 vigil.session (root -- set by vigil, propagated via TRACEPARENT)
-  └── execute_tool quest.{command} (root span in the quest process)
-        ├── quest.db.migrate (only when schema_version lags; emitted at most once per invocation)
+  ├── quest.db.migrate (sibling of the command span; emitted only when schema_version lags)
+  └── execute_tool quest.{command} (command span in the quest process)
         ├── quest.role.gate (when an elevated command runs)
         ├── quest.validate (command-specific validation, e.g., batch or dependency)
         │     ├── quest.batch.parse
@@ -97,16 +97,22 @@ vigil.session (root -- set by vigil, propagated via TRACEPARENT)
         │     ├── quest.batch.graph
         │     └── quest.batch.semantic
         ├── quest.store.tx (structural transactions -- BEGIN IMMEDIATE)
-        │     └── quest.store.{operation} (SQL operations inside the transaction)
-        └── quest.store.{operation} (SQL operations outside a structural transaction)
+        └── quest.store.traverse / quest.store.rename_subgraph (graph and move ops)
 ```
 
-When quest is called outside a vigil session (human running `quest list` from a shell, no `TRACEPARENT`), the CLI creates a root trace:
+`quest.db.migrate` is a **sibling** of the command span on this path because the dispatcher starts the migrate span from the inbound `parentCtx` (the TRACEPARENT-derived context), not from the command-span-bearing context. The sibling relationship holds **structurally** in the trace tree regardless of timing — both spans share the same parent (vigil's session span). **Temporally**, the command span opens first in the dispatcher (Task 4.2 step 2) so that pre-handler errors (config-invalid, migration-failed) can be recorded on it via the three-step pattern; the migrate span then starts and ends *inside* that temporal window. Trace-view consumers see two overlapping time ranges but a correct parent/child tree. Dashboards that subtract "migrate duration" from "command duration" get a meaningful answer; dashboards that expect non-overlap should use the tree structure, not the timeline.
+
+**Init path (`quest init` only).** Init is the carve-out: migration runs from inside the init handler (the workspace is being created in the same invocation), so:
 
 ```
-execute_tool quest.{command} (root)
-  └── ... (same sub-span structure as above)
+vigil.session (root -- set by vigil, propagated via TRACEPARENT)
+  └── execute_tool quest.init (command span)
+        └── quest.db.migrate (child of init)
 ```
+
+When quest is called outside a vigil session (human running `quest list` from a shell, no `TRACEPARENT`), the same trees apply with the CLI's root span as the ancestor instead of `vigil.session`.
+
+**No per-DML child spans.** Individual SQL statements inside a transaction do not produce span events or child spans. The transaction-level `quest.store.tx` span, the traversal spans (`quest.store.traverse`, `quest.store.rename_subgraph`), and the named subsystem spans above are the complete store-side instrumentation surface. Per-DML visibility comes from SQLite's own slow-log or `EXPLAIN`, not from OTEL.
 
 ### 4.2 Span inventory
 
@@ -152,30 +158,18 @@ execute_tool quest.{command} (root)
 | `quest.store.traverse`       | INTERNAL  | Graph traversal over `tasks` + `dependencies` (`quest graph`, `quest deps`, `--ready` filter). Cost scales with graph size |
 | `quest.store.rename_subgraph`| INTERNAL  | ID rewrite over a subgraph (`quest move`). Non-uniform cost -- N row-rewrites × M dep-edge rewrites                            |
 
-**Store-level DML as span events, not spans.** Uniform single-row store operations (`insert_task`, `update_task`, `append_history`, `insert_dep`, `delete_dep`, `update_tags`, `select_task`, `list_tasks`, `export.write`) are recorded as events on the parent command span rather than their own child spans. Their cost is reliably a small fraction of the parent command span's duration; promoting each to a span produces noise without diagnostic signal, and the CLI is invoked at a rate where per-row spans compound into real volume pressure on the collector.
+**No per-DML span events.** Individual SQL statements inside a transaction do not emit span events or child spans. The transaction-level `quest.store.tx` span and the traversal spans (`quest.store.traverse`, `quest.store.rename_subgraph`) are the complete store-side instrumentation contract. Rationale: quest's handlers run a small, bounded set of DML per command (usually 1–3 statements in a transaction); per-statement visibility compounds into collector volume without diagnostic gain. Operators who want per-SQL timing use SQLite's slow-log or `EXPLAIN` rather than OTEL events. Errors inside the transaction are still recorded via the three-step pattern (§4.4) on the `quest.store.tx` span.
 
-Each event uses the static name `quest.store.op` with attributes:
+**Span name convention.** Span names are static. Dynamic values (task IDs, refs, query parameters, error messages) go in attributes, never in names. `{command}` in `execute_tool quest.{command}` is a bounded enum from the command inventory, not a user-supplied string.
 
-| Attribute       | Source                                                                                     |
-| --------------- | ------------------------------------------------------------------------------------------ |
-| `db.system`     | Static `"sqlite"`                                                                          |
-| `db.operation`  | `insert_task`, `update_task`, `append_history`, `insert_dep`, `delete_dep`, `update_tags`, `select_task`, `list_tasks`, `export.write` |
-| `db.target`     | Logical target: `tasks`, `history`, `dependencies`, `tags`, `export` (file)                |
-| `rows_affected` | Int -- rows changed (for writes) or returned (for reads); omitted for reads without a natural count |
-| `duration_ms`   | Float -- operation duration in milliseconds                                                |
-
-Errors from a collapsed operation are still recorded via the three-step pattern (§4.4) on the parent command span -- `span.RecordError` + `span.SetStatus` + metric counter -- with `db.operation` added to the error event. The `quest.store.tx`, `quest.store.traverse`, and `quest.store.rename_subgraph` spans retain their own error recording per §8.4.
-
-**Span name convention.** Span names are static. Dynamic values (task IDs, refs, query parameters, error messages) go in attributes or span events, never in names. `{command}` in `execute_tool quest.{command}` is a bounded enum from the command inventory, not a user-supplied string.
-
-**Child-span naming carve-out (intentional deviation from guide §3.2).** The guide prescribes `{operation} {target}` for all spans (e.g., `execute_tool quest.create`). Root command spans follow this. Child spans (`quest.store.tx`, `quest.batch.parse`, `quest.role.gate`, `quest.db.migrate`, etc.) do **not** follow `{operation} {target}` and do **not** carry `gen_ai.tool.name`. They are internal subsystem spans, not tool-level operations, and forcing them into the GenAI pattern would misrepresent them (they are not `execute_tool` calls). This carve-out is deliberate and consistent across the quest child-span inventory; do not mix naming styles. Root spans remain the canonical GenAI-convention touchpoint for cross-tool queries.
+**Child-span naming carve-out (intentional deviation from guide §3.2).** The guide prescribes `{operation} {target}` for all spans (e.g., `execute_tool quest.create`). Root command spans follow this. Child spans (`quest.store.tx`, `quest.batch.parse`, `quest.role.gate`, `quest.db.migrate`, etc.) do **not** follow `{operation} {target}` and do **not** carry any of the `gen_ai.*` attributes (`gen_ai.tool.name`, `gen_ai.operation.name`, `gen_ai.agent.name`). They are internal subsystem spans, not tool-level operations, and forcing them into the GenAI pattern would misrepresent them (they are not `execute_tool` calls). This carve-out is deliberate and consistent across the quest child-span inventory; do not mix naming styles. Root spans remain the canonical GenAI-convention touchpoint for cross-tool queries. `TestChildSpansOmitGenAIAttributes` (implementation-plan Task 13.1) iterates every non-root span the exporter captures and asserts the full `gen_ai.*` set is absent — the test is robust against new child span additions and new `gen_ai.*` attributes.
 
 **Depth vs. noise tradeoff.** Store-level spans are created only when the operation has independent diagnostic value -- a slow `quest create` is usually a slow `quest.store.tx`, not a slow argument parse. Pure in-memory work (argument parsing, `--format` rendering, JSONL serialization) is not instrumented with spans; its cost is rolled into the parent command span's duration.
 
 **Excluded from span instrumentation.**
 
 - Argument parsing and flag validation -- captured as latency on the command span; errors here surface via span status and the `dept.quest.errors` counter.
-- `quest version` -- **no span, no metric**. Pure-informational command with no DB access and no diagnostic value. Metric counters do not increment for `version`. Apply the same rule to any future `--help`-style informational flags handled before dispatch.
+- `quest version` -- **no span, no metric**. Pure-informational command with no DB access and no diagnostic value. Metric counters do not increment for `version`. Apply the same rule to any future `--help`-style informational flags handled before dispatch. **Trade-off:** when OTEL is enabled, `quest version` still pays the cost of `telemetry.Setup` and `Shutdown` (exporter construction, batch-processor goroutines, W3C propagator install) even though it emits nothing. This is intentional: special-casing version in `main.run()` before telemetry setup would violate the "`main.run()` is generic" invariant. Revisit only if a scripted consumer materially cares about version latency with OTEL enabled.
 - Pure in-memory JSON/text rendering -- not instrumented.
 - Workspace discovery (walking up from CWD looking for `.quest/`) -- not instrumented. Fast, hit-rate near 100%, no diagnostic value.
 
@@ -318,7 +312,7 @@ Errors are also counted in the `dept.quest.batch.errors` counter with a `phase` 
 
 ### 4.5 Content capture
 
-Gated on `OTEL_GENAI_CAPTURE_CONTENT=true`, checked once at initialization inside `setup.go` under `sync.Once` and stored as a package-level plain `bool`. No atomic is needed because the flag is written once before any command handler runs and is only read thereafter -- matches guide §14.2.
+Gated on `cfg.Telemetry.CaptureContent`, populated by `internal/config/` from `OTEL_GENAI_CAPTURE_CONTENT` (per Task 1.3 of the implementation plan) and passed into `telemetry.Setup` via `telemetry.Config.CaptureContent`. `setup.go` caches the resolved value in a package-level plain `bool` under `sync.Once` — it does **not** call `os.Getenv` itself; only `internal/config/` reads env vars (`STANDARDS.md` Part 1). No atomic is needed because the flag is written once before any command handler runs and is only read thereafter -- matches guide §14.2.
 
 When enabled, content goes in span events (not span attributes):
 
@@ -487,20 +481,31 @@ func main() {
 }
 
 func run() int {
-    // ... workspace discovery, arg parsing, slog setup ...
+    // Parse global flags (--format, --log-level) from os.Args[1:] and produce
+    // the stripped subcommand args + a config.Flags value. Done inside
+    // internal/cli/flags.go so telemetry / logging can be built with resolved
+    // values before cli.Execute runs. cli.Execute does not re-parse globals.
+    flags, remainingArgs := cli.ParseGlobals(os.Args[1:])
 
     // internal/config/ is the sole reader of env vars; it surfaces AGENT_ROLE,
-    // AGENT_TASK, AGENT_SESSION, TRACEPARENT, and TRACESTATE as typed fields on
-    // cfg.Agent. Telemetry never calls os.Getenv itself (see §6.2, §8.2).
-    cfg := config.Load()
+    // AGENT_TASK, AGENT_SESSION, TRACEPARENT, TRACESTATE, and
+    // OTEL_GENAI_CAPTURE_CONTENT as typed fields on cfg.Agent / cfg.Telemetry.
+    // Telemetry never calls os.Getenv itself (see §4.5, §6.2, §8.2).
+    cfg := config.Load(flags)
 
     ctx := context.Background()
-    otelShutdown, _ := telemetry.Setup(ctx, telemetry.Config{
+
+    // Pre-bridge logger so telemetry.Setup's internal slog.Warn calls have
+    // somewhere to go. This is re-installed below with the OTEL bridge added.
+    slog.SetDefault(logging.Setup(cfg.Log))
+
+    bridge, otelShutdown, _ := telemetry.Setup(ctx, telemetry.Config{
         ServiceName:    "quest-cli",
         ServiceVersion: buildinfo.Version,
         AgentRole:      cfg.Agent.Role,
         AgentTask:      cfg.Agent.Task,
         AgentSession:   cfg.Agent.Session,
+        CaptureContent: cfg.Telemetry.CaptureContent,
     })
     defer func() {
         if otelShutdown != nil {
@@ -510,13 +515,22 @@ func run() int {
         }
     }()
 
+    // Re-install the fan-out slog logger, now with the otelslog bridge as a
+    // second handler. The bridge is constructed inside internal/telemetry/ so
+    // internal/logging/ never imports OTEL (§10.1). The two-step install is
+    // intentional: the pre-bridge default in the line above is what
+    // telemetry.Setup's own slog.Warn calls flow through.
+    slog.SetDefault(logging.Setup(cfg.Log, bridge))
+
     ctx = telemetry.ExtractTraceFromConfig(ctx, cfg.Agent.TraceParent, cfg.Agent.TraceState)
 
-    return dispatch(ctx, cfg /* returns int exit code */)
+    return cli.Execute(ctx, cfg, remainingArgs, os.Stdin, os.Stdout, os.Stderr)
 }
 ```
 
-`telemetry.Config` carries both service metadata (`ServiceName`, `ServiceVersion`) and resolved agent identity (`AgentRole`, `AgentTask`, `AgentSession`). The latter three are what §8.2 caches; they arrive via parameters, not env reads. `ExtractTraceFromConfig` replaces the earlier `ExtractTraceFromEnv` for the same reason (see §6.2).
+`telemetry.Setup` returns **three** values: the otelslog bridge handler (as a `slog.Handler`; nil in the disabled path), the shutdown function, and an error. The bridge is returned from `telemetry.Setup` rather than installed by `internal/logging/` because only `internal/telemetry/` is allowed to import OTEL packages (§10.1); `main.run()` is the seam that hands the bridge from one to the other.
+
+`telemetry.Config` carries both service metadata (`ServiceName`, `ServiceVersion`) and resolved agent identity plus content-capture intent (`AgentRole`, `AgentTask`, `AgentSession`, `CaptureContent`). All four come from `internal/config/` as typed fields; they arrive via parameters, not env reads. `ExtractTraceFromConfig` replaces the earlier `ExtractTraceFromEnv` for the same reason (see §6.2). `cli.Execute` takes the resolved `cfg` and already-stripped `args` — no re-parse, no double `config.Load`.
 
 - **Service name:** `quest-cli`. Matches guide §8.2, preserves dashboard continuity when the deferred `questd` daemon (section 18) ships as `quest-daemon`. A single binary today is not a reason to diverge from the framework naming; renaming later breaks historical dashboards.
 - **Default exporter protocol:** HTTP (`http/protobuf`) -- works through more proxies, better for short-lived processes. If `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` is set, quest logs a single warning at startup (via slog) that gRPC is not linked into the CLI and falls back to HTTP. See §7.5.
@@ -672,17 +686,29 @@ The dispatcher calls this once per invocation, defers `span.End()`, and passes t
 
 **No manual no-op short-circuit.** An earlier draft had `CommandSpan` check `Enabled()` and return a non-recording span without calling `tracer.Start`. That has been removed -- it risked breaking trace propagation when a valid parent context was present and fragmented the "disabled" path into two logics. Rely on the no-op providers installed by §7.2: `tracer.Start` on a no-op provider is already near-zero cost (no exporter round-trip, no allocation beyond the returned interface), and it preserves the parent context correctly.
 
-**Dispatcher wrapper: `WrapCommand`.** `CommandSpan` is the primitive; `cli.Execute` pairs it with the §4.4 three-step error pattern at the single point where a handler's returned error becomes an exit code. To avoid duplicating that boilerplate at every handler entry, `internal/telemetry/command.go` exposes a middleware-style wrapper that `cli.Execute` uses to drive every command:
+**Dispatcher wrapper: `WrapCommand`.** `CommandSpan` is the primitive; `cli.Execute` calls it directly (opening the command span early so pre-handler errors -- config validation, migration failures -- charge against the same span and the `dept.quest.operations` counter via the §4.4 three-step pattern). `WrapCommand` is a no-start/no-end middleware that picks up the already-active span via `trace.SpanFromContext(ctx)` and applies the three-step error pattern to the handler's returned error:
 
 ```go
-// Runs fn inside a CommandSpan. On a non-nil returned error, records it via the
-// three-step pattern (RecordError + SetStatus + dept.quest.errors counter) using
-// errors.ExitCode(err) to classify. Always calls span.End().
+// Runs fn inside the already-open command span (from trace.SpanFromContext(ctx)).
+// On a non-nil returned error, records it via the three-step pattern
+// (RecordError + SetStatus + dept.quest.errors counter) using errors.ExitCode(err)
+// to classify. Does NOT start a span and does NOT call span.End() — the dispatcher
+// owns the span's lifetime via `defer span.End()` after CommandSpan.
 func WrapCommand(ctx context.Context, command string, elevated bool,
     fn func(ctx context.Context) error) error
 ```
 
-`cli.Execute` resolves the descriptor, optionally runs the role gate, then calls `telemetry.WrapCommand(ctx, descriptor.Name, descriptor.Elevated, descriptor.Handler)`. The wrapper owns the command span's lifetime and its error plumbing in both the no-op (§2.3) and real (§12) telemetry shells, so the handler-facing signature (`func(ctx, cfg, args, ...) error`) stays stable across phases. `CommandSpan` remains exported for internal telemetry code that needs finer-grained lifetime control (e.g., the dispatcher path that wants to set attributes between `Start` and the handler call); command-handler packages do not import it.
+The dispatcher shape is:
+
+```go
+ctx, span := telemetry.CommandSpan(parentCtx, descriptor.Name, descriptor.Elevated)
+defer span.End()
+// ... pre-handler steps (config.Validate, store.Open, Migrate, role gate) may
+// record errors on span directly ...
+err := telemetry.WrapCommand(ctx, descriptor.Name, descriptor.Elevated, descriptor.Handler)
+```
+
+`CommandSpan` owns the span's start and its `defer span.End()` sits in `cli.Execute`. `WrapCommand` exists so the three-step error pattern for the handler's returned error lives in one place across all commands; it neither starts nor ends a span. Command-handler packages do not import either primitive — both live inside `cli.Execute`.
 
 ### 8.3 Instrumented store decorator
 
@@ -704,82 +730,38 @@ func WrapStore(s Store) Store {
 
 **`enabled()` is internal-only.** The short-circuit above is the one legitimate use: skipping the decorator entirely when telemetry is disabled avoids paying even the interface-dispatch cost per store call, and a non-instrumented store preserves the surrounding context unmodified. Command handlers and other call sites **must not** gate their own work on `enabled()` -- the no-op providers installed by §7.2 make `tracer.Start`, `span.End`, `RecordX`, and metric recording cheap by design, and duplicate gating splits the code path into "enabled" and "disabled" variants that drift over time. The helper is unexported (`enabled`, not `Enabled`) to prevent accidental external use; if a future caller needs the signal, it should surface through a more specific API (e.g., a dedicated constructor option) rather than a general "is telemetry on" flag.
 
-The decorator's store methods fall into two emission shapes:
+The decorator emits spans at three and only three seams:
 
-1. **Spans** for operations with distinctive cost profiles -- `quest.store.tx` (§8.4), `quest.store.traverse`, and `quest.store.rename_subgraph`. These wrap the underlying call in `tracer.Start`/`span.End` and record the attributes listed in §4.3.
-2. **Span events** for uniform single-row DML -- `insert_task`, `update_task`, `append_history`, `insert_dep`, `delete_dep`, `update_tags`, `select_task`, `list_tasks`, and `export.write`. The decorator measures duration, then calls `span.AddEvent("quest.store.op", ...)` on the current span (typically the parent command span). No child span is created.
+1. `quest.store.tx` around structural transactions (§8.4). This is the primary store-side instrumentation — everything inside a transaction rolls up into the tx span's duration.
+2. `quest.store.traverse` around graph/list traversals (`quest graph`, `quest deps`, `quest list --ready`).
+3. `quest.store.rename_subgraph` around the `quest move` FK-cascade UPDATE path.
 
-A small helper centralizes the event path so every call site emits the same attribute set:
+**No per-DML span events.** Individual `tx.ExecContext` / `tx.QueryContext` / `tx.QueryRowContext` calls are **not** instrumented — they pass through to the inner `*sql.Tx` directly. The decorator does not emit `quest.store.op` span events; the `quest.store.tx` span's duration is the primary signal for "how long did this transaction take," and the named traversal spans cover the two other cost-bearing DB code paths. Per-SQL visibility (which statement was slow inside a transaction) comes from SQLite's slow-log or `EXPLAIN`, not from OTEL.
 
-```go
-func (s *InstrumentedStore) recordStoreEvent(ctx context.Context, op, target string, rows int64, start time.Time, err error) {
-    dur := float64(time.Since(start).Microseconds()) / 1000.0
-    span := trace.SpanFromContext(ctx)
-    attrs := []attribute.KeyValue{
-        attribute.String("db.system", "sqlite"),
-        attribute.String("db.operation", op),
-        attribute.String("db.target", target),
-        attribute.Float64("duration_ms", dur),
-    }
-    if rows >= 0 {
-        attrs = append(attrs, attribute.Int64("rows_affected", rows))
-    }
-    span.AddEvent("quest.store.op", trace.WithAttributes(attrs...))
-    if err != nil {
-        span.RecordError(err, trace.WithAttributes(attribute.String("db.operation", op)))
-        span.SetStatus(codes.Error, truncate(err.Error(), 256))
-    }
-}
-```
-
-Duration uses `float64(time.Since(start).Microseconds()) / 1000.0` (matches lore convention -- microseconds-to-ms at float64 precision gives useful sub-millisecond resolution).
-
-**Why events, not spans, for the uniform set.** Span volume compounds with CLI invocation rate. A single `quest create --parent --blocked-by foo,bar` can drive three or four store writes; each as its own span adds parent-child bookkeeping and collector bytes without giving the operator a diagnostic signal they would actually query on. The three retained spans (`tx`, `traverse`, `rename_subgraph`) are the ones where a duration handle is genuinely wanted. See also §15 on lock-contention observability -- the signal lives on `quest.store.tx`, not on the individual inserts inside it.
+**Rationale for no per-DML events.** Span-event volume compounds with CLI invocation rate and with the number of DML inside a transaction. A single `quest create --parent --blocked-by foo,bar` would drive three or four store-op events per invocation; at scale this produces collector volume without giving operators a signal they would actually query on. The cost-vs-diagnostic tradeoff landed on the three spans above as the complete store-side contract.
 
 `--no-track` is not a quest concept (see 9.2); the decorator does not carry a bypass flag.
 
 ### 8.4 Structural-transaction span
 
-`BEGIN IMMEDIATE` transactions get their own span -- they are the primary contention point and the signal for the daemon-upgrade decision:
+`BEGIN IMMEDIATE` transactions get their own span -- they are the primary contention point and the signal for the daemon-upgrade decision. The `InstrumentedStore` decorator owns this span; handlers never call a separate helper. The flow:
 
-```go
-func StoreTx(ctx context.Context, kind string) (context.Context, EndTxFunc) {
-    start := time.Now()
-    ctx, span := tracer.Start(ctx, "quest.store.tx",
-        trace.WithAttributes(
-            attribute.String("db.system", "sqlite"),
-            attribute.String("quest.tx.kind", kind),
-        ),
-    )
+1. Handler calls `s.BeginImmediate(ctx, store.TxAccept)` (or similar `TxKind`) on the decorator-wrapped store.
+2. The decorator's override calls `inner.BeginImmediate(ctx, kind)` on the bare store. The bare store captures `invokedAt = time.Now()` before `db.BeginTx` and `startedAt = time.Now()` after it returns; both timestamps live on `*store.Tx`.
+3. The decorator starts a `quest.store.tx` span with `trace.WithTimestamp(tx.invokedAt)` and attributes `{db.system=sqlite, quest.tx.kind=<kind>}`, then populates `tx.onCommit` and `tx.onRollback` hook fields.
+4. Handler runs `tx.ExecContext` / `tx.QueryContext` / etc. inside the transaction. These pass through directly to the inner `*sql.Tx` — the decorator does not wrap them (see §8.3).
+5. Handler calls `tx.Commit()` or `tx.Rollback()`. The `*store.Tx` method delegates to the inner `*sql.Tx` and then calls the hook. The hook closes the span, setting:
+   - `quest.tx.lock_wait_ms` = `tx.startedAt.Sub(tx.invokedAt).Milliseconds()` (read directly from `*store.Tx` — the decorator never re-derives timing from its own clock, so the recorded value excludes decorator overhead from the `tracer.Start` call and hook installation)
+   - `quest.tx.rows_affected` — sum of rows affected across DML inside the transaction (tracked by the hook via a handler-side accumulator on `*store.Tx`, or via the `sql.Result` chain from the handler's last Exec — see below)
+   - `quest.tx.outcome` ∈ {`committed`, `rolled_back_precondition`, `rolled_back_error`}
+   - Lock wait and tx duration histograms via `metric.WithAttributes(attribute.String("tx_kind", kind))`.
+6. If the underlying commit/rollback errored, the hook also applies the three-step pattern (`RecordError` + `SetStatus` + `errors` counter). Lock-timeout errors additionally increment `dept.quest.store.tx.lock_timeouts{tx_kind}`.
 
-    // inside: lock acquisition completes; record lock wait
-    lockAcquired := time.Now()
-    lockWaitMs := float64(lockAcquired.Sub(start).Microseconds()) / 1000.0
-    span.SetAttributes(attribute.Float64("quest.tx.lock_wait_ms", lockWaitMs))
-    lockWaitHist.Record(ctx, lockWaitMs, metric.WithAttributes(attribute.String("tx_kind", kind)))
+The `tx.MarkOutcome(outcome string)` call on `*store.Tx` lets handlers distinguish the two rollback modes: `rolled_back_precondition` (the happy-unhappy path — an expected precondition check failed, e.g., parent not in `open`) versus `rolled_back_error` (unexpected failure). Precondition rollbacks surface exit code 5 (conflict) but are not bugs; separating them keeps dashboards clean. If `MarkOutcome` is not called, the hook infers `committed` on successful commit and `rolled_back_error` on rollback.
 
-    return ctx, func(outcome TxOutcome, rowsAffected int64, err error) {
-        dur := float64(time.Since(start).Microseconds()) / 1000.0
-        span.SetAttributes(
-            attribute.Int64("quest.tx.rows_affected", rowsAffected),
-            attribute.String("quest.tx.outcome", outcome.String()), // "committed", "rolled_back_precondition", "rolled_back_error"
-        )
-        txDurHist.Record(ctx, dur, metric.WithAttributes(attribute.String("tx_kind", kind)))
-        if err != nil {
-            if isLockTimeout(err) {
-                lockTimeoutCtr.Add(ctx, 1, metric.WithAttributes(attribute.String("tx_kind", kind)))
-            }
-            span.RecordError(err)
-            span.SetStatus(codes.Error, truncate(err.Error(), 256))
-        }
-        span.End()
-    }
-}
-```
+**No `StoreTx` helper.** Earlier drafts used a `StoreTx(ctx, kind) (context.Context, EndTxFunc)` helper that handlers called directly. The decorator-owned design is cleaner: handlers never import `internal/telemetry/`, the span's lifecycle is bound to the transaction's lifecycle at the type level, and there is one code path regardless of whether telemetry is enabled.
 
-The `TxOutcome` enum distinguishes normal commit from the two rollback modes: `rolled_back_precondition` (a preconditional check inside the transaction failed, e.g., parent not in `open`) and `rolled_back_error` (an unexpected error). Precondition rollbacks are the "happy unhappy path" -- they surface exit code 5 (conflict) but are not bugs; separating them from `rolled_back_error` keeps dashboards clean.
-
-The store helper is the only place that distinguishes "lock wait" from "transaction body time" -- both are useful. Lock wait specifically drives the daemon-upgrade signal.
+The store decorator is the only place that distinguishes "lock wait" from "transaction body time" — both are useful. Lock wait specifically drives the daemon-upgrade signal (§15).
 
 ### 8.5 Batch validation spans
 
@@ -821,7 +803,7 @@ func RecordStatusTransition(ctx context.Context, taskID, from, to string) {
 }
 ```
 
-Similar recorders for `RecordLinkAdded`, `RecordLinkRemoved`, `RecordBatchOutcome`, `RecordMoveOutcome`, `RecordCancelOutcome`, `RecordQueryResult`, `RecordGraphResult`, `RecordMigration`, and content-capture helpers.
+Similar recorders for `RecordLinkAdded`, `RecordLinkRemoved`, `RecordBatchOutcome`, `RecordMoveOutcome`, `RecordCancelOutcome`, `RecordQueryResult`, `RecordGraphResult`, and content-capture helpers. Migration telemetry is handled inline by `MigrateSpan`'s `end(applied, err)` closure (§8.8) — span + metric emit from a single call site, so no separate `RecordMigration` helper exists.
 
 **`roleOrUnset(role)`** maps empty role to the literal string `"unset"`. The same helper is applied on **both** span attributes (`gen_ai.agent.name`) and metric dimensions (`role`, `agent.role`), so cross-signal correlation queries ("traces where `gen_ai.agent.name=coder` joined to metrics where `role=coder`") work without special-casing the no-role case. An earlier draft used raw `""` on spans and `"unset"` on metrics; that mismatch has been removed.
 
@@ -883,9 +865,9 @@ func MigrateSpan(ctx context.Context, from, to int) (context.Context, func(appli
 }
 ```
 
-Callers (the dispatcher; `quest init`'s handler) read `meta.schema_version` via `store.CurrentSchemaVersion(ctx, s)` and pass it as `from`; `to` is the binary's `store.SupportedSchemaVersion` constant. Both attributes are set at span start so the backend can index on them even if the span is cut short by a migration error.
+Callers (the dispatcher; `quest init`'s handler) read the stored schema version via `s.CurrentSchemaVersion(ctx)` (a method on the `Store` interface) and pass it as `from`; `to` is the binary's `store.SupportedSchemaVersion` constant. Both attributes are set at span start so the backend can index on them even if the span is cut short by a migration error.
 
-On success, `quest.schema.applied_count` is added. On failure (migration error), the span records the error and the binary exits with code 1; no command span is created.
+`MigrateSpan` returns an `end(applied int, err error)` closure. The closure sets `quest.schema.applied_count = applied` (the count of SQL files actually executed, returned by `store.Migrate(ctx, s) (int, error)`), applies the three-step error pattern on error, ends the span, and increments the `dept.quest.schema.migrations{from_version, to_version}` counter. One call site = one span + one metric; no separate `RecordMigration` helper is needed.
 
 Because migrations happen before the command span, the `quest.db.migrate` span is a sibling of the command span in the trace -- both children of the upstream `TRACEPARENT` context (if present) or both root spans in their own traces (if absent).
 
@@ -927,13 +909,15 @@ Under any flag combination:
 | Package                    | Imports OTEL API | Imports OTEL SDK   | Notes                                                         |
 | -------------------------- | ---------------- | ------------------ | ------------------------------------------------------------- |
 | `internal/telemetry/`      | Yes              | `setup.go` only    | Only `setup.go` imports SDK + exporters                       |
-| `internal/cli/`            | No               | No                 | Calls `telemetry.Setup` and `telemetry.ExtractTraceFromConfig`, passing values resolved by `internal/config/` |
-| `internal/command/` (handlers) | No           | No                 | Calls `telemetry.RecordX`; receives a context carrying the command span created by `cli.Execute` (see §8.2) |
+| `internal/logging/`        | No               | No                 | Fan-out slog handler; the otelslog bridge is constructed by `internal/telemetry/` and passed in as a `slog.Handler` (§7.1). Never imports OTEL. |
+| `cmd/quest/`               | No               | No                 | `main.run()` calls `telemetry.Setup` / `telemetry.ExtractTraceFromConfig`; no direct OTEL imports |
+| `internal/cli/`            | No               | No                 | Calls `telemetry.CommandSpan` / `WrapCommand` / `GateSpan`; no direct OTEL imports |
+| `internal/command/` (handlers) | No           | No                 | Calls `telemetry.RecordX` and `telemetry.SpanEvent(ctx, name, attrs...)` when a mid-body span event is needed. Never imports `go.opentelemetry.io/otel/trace` — `SpanEvent` is the wrapper that makes `trace.SpanFromContext` + `AddEvent` available without leaking the OTEL import. |
 | `internal/store/` (DB)     | No               | No                 | Instrumented via `InstrumentedStore` wrapper                   |
-| `internal/validate/`       | No               | No                 | Calls `telemetry.ValidationPhase` wrapper                     |
-| `cmd/quest/`               | No               | No                 | `cli.Execute` handles SDK setup                               |
 
 Package names are illustrative -- actual layout matches the quest repository structure.
+
+**Grep tripwire.** `grep -rn 'go.opentelemetry.io' internal/ cmd/` returns matches only under `internal/telemetry/`. This check runs as part of the Layer 1 test suite (Task 2.3 "Done when") so any future handler accidentally importing OTEL fails the build immediately. Handlers that want to emit a mid-body span event use `telemetry.SpanEvent` rather than importing `trace.SpanFromContext` directly — `SpanEvent` wraps it so the import stays inside `internal/telemetry/`.
 
 ### 10.2 Go module dependencies
 
@@ -1052,16 +1036,18 @@ errorsCtr.Add(ctx, 1, metric.WithAttributes(
 
 See the table in 4.4. `classifyExitCode` is a small helper in `internal/telemetry/recorder.go` that maps the integer exit code to the string class. Exit codes not in the table (should not occur; indicates a bug) map to `general_failure`.
 
-### 13.3 Attributes on error events for cross-row failures
+### 13.3 Attributes on error events for precondition failures
 
-Commands that fail with exit code 5 due to non-terminal children (`quest accept`, `quest complete` on a parent) record the blocking children as span event attributes:
+Commands that fail with exit code 5 on a precondition check record a `quest.precondition.failed` span event. The event's attributes include the precondition classification plus any relevant blocking context:
 
 ```
 event: quest.precondition.failed
-attrs: quest.blocked_by_count=3, quest.blocked_by_ids="proj-a1.1,proj-a1.2,proj-a1.3"
+attrs: quest.precondition=children_terminal, quest.blocked_by_count=3, quest.blocked_by_ids="proj-a1.1,proj-a1.2,proj-a1.3"
 ```
 
-The ID list is recorded on the event only -- it is high-cardinality for metrics but diagnostically valuable in the trace. Use `truncateIDList(ids []string, maxLen int) string` from `internal/telemetry/truncate.go`, which cuts at comma boundaries (never mid-ID) and appends a `,...(+N more)` suffix so the reader knows the list was truncated. Cap at 256 chars (the error-message limit). The comma-aware variant is required -- a mid-ID cut produces an invalid ID fragment that a trace reader could misinterpret as a real task.
+`quest.precondition` is a low-cardinality enum naming the specific failure mode (`children_terminal`, `parent_not_open`, `ownership`, `existence`, `type_transition`, etc.) and is present on every `quest.precondition.failed` event -- it tells the trace reader *which* precondition failed without requiring a cross-correlation to the log record that carries the same classification under the `precondition` field (§3.2). One concept, two surfaces: span event attribute for trace-first debugging, log record attribute for log-first debugging. Keep the enum set bounded -- use an existing value when a new precondition fits, and only add a new enum when the failure mode is semantically distinct.
+
+`quest.blocked_by_count` and `quest.blocked_by_ids` are present when the precondition involves specific blocking tasks (non-terminal children on parent `accept`/`complete`, cycle path on `link`, etc.). The ID list is recorded on the event only -- it is high-cardinality for metrics but diagnostically valuable in the trace. Use `truncateIDList(ids []string, maxLen int) string` from `internal/telemetry/truncate.go`, which cuts at comma boundaries (never mid-ID) and appends a `,...(+N more)` suffix so the reader knows the list was truncated. Cap at 256 chars (the error-message limit). The comma-aware variant is required -- a mid-ID cut produces an invalid ID fragment that a trace reader could misinterpret as a real task.
 
 ### 13.4 Cycle-detection failures
 
@@ -1158,18 +1144,18 @@ Operators use these to decide when SQLite's single-writer ceiling is saturated a
 Recommended order, each step independently testable:
 
 1. **`internal/telemetry/setup.go`** -- SDK init, conditional no-op, shutdown, fan-out slog handler. `truncate.go` -- truncation helper. `propagation.go` -- `TRACEPARENT` extraction. Wire into the CLI entrypoint. At this point, quest has OTEL initialized but emits nothing.
-2. **slog bridge** -- Install `otelslog` fan-out handler in `setup.go`. Migrate slog call sites to `*Context` variants so subsequent spans benefit from trace-correlated logs.
-3. **`CommandSpan` helper + wire into every command handler** -- Every command gets its root span with the required attributes. Verify spans appear in the collector.
-4. **Role-gating span** (`quest.role.gate`) -- Add around the gate check in the dispatcher.
-5. **`InstrumentedStore` decorator** -- Start with the most common operations (`GetTask`, `InsertTask`, `UpdateTask`, `AppendHistory`). Wire in at the point where the store is constructed. Verify child spans appear under the command span.
-6. **`StoreTx` helper** -- Instrument `BEGIN IMMEDIATE` transactions with `quest.store.tx` spans and lock-wait recording. Wire into every structural-transaction call site (accept-parent, create-child, complete-parent, move, cancel-recursive).
+2. **slog bridge** -- Construct the `otelslog` bridge handler inside `setup.go`; return it from `telemetry.Setup` so `main.run()` can pass it into `logging.Setup(cfg.Log, bridge)` (see §7.1). Migrate slog call sites to `*Context` variants so subsequent spans benefit from trace-correlated logs.
+3. **`CommandSpan` helper + wire into `cli.Execute`** -- The dispatcher gets the root span with the required attributes; handlers never call `CommandSpan` directly. Verify spans appear in the collector.
+4. **`telemetry.SpanEvent` wrapper** -- Thin wrapper over `trace.SpanFromContext` + `AddEvent` that handlers use for mid-body span events; keeps OTEL imports inside `internal/telemetry/`.
+5. **Role-gating span** (`quest.role.gate`) -- Add around the gate check in the dispatcher.
+6. **`InstrumentedStore` decorator** -- Wrap the store via `telemetry.WrapStore`. The decorator instruments `BeginImmediate` (starts `quest.store.tx` span, populates `onCommit`/`onRollback` hooks on `*store.Tx`) and the traversal/rename code paths. Verify child spans appear under the command span. No per-DML instrumentation.
 7. **Metrics** -- Add `dept.quest.operations`, `dept.quest.errors`, `dept.quest.operation.duration`, `dept.quest.store.tx.duration`, `dept.quest.store.tx.lock_wait`, `dept.quest.store.lock_timeouts`. Verify via backend queries.
 8. **Status-transition metric** -- Add `RecordStatusTransition` to every handler that changes status. Verifies the simplest retrospective query works end-to-end.
 9. **`quest batch` spans** -- Add `quest.validate` + per-phase spans, `dept.quest.batch.size`, `dept.quest.batch.errors`, and batch-specific recorders.
 10. **`quest graph`, `quest list`, `quest deps`** -- Add graph/query attributes and `dept.quest.query.result_count`, `dept.quest.graph.traversal_nodes`.
 11. **`quest move`, `quest cancel -r`** -- Add subgraph-size and rows-affected attributes and metrics.
 12. **Content capture** -- Add content events to command handlers for titles, descriptions, debrief, handoff, notes, reasons. Gate on `OTEL_GENAI_CAPTURE_CONTENT`.
-13. **Schema migration span** -- Add `quest.db.migrate` at startup, before dispatch.
+13. **Schema migration span + metric** -- Implement `telemetry.MigrateSpan(ctx, from, to int) (context.Context, func(applied int, err error))`. The span emits `quest.schema.from`, `quest.schema.to`, and the returned `end(applied, err)` closure sets `quest.schema.applied_count` and increments `dept.quest.schema.migrations{from_version, to_version}`. One call site = one span + one metric. Callers: the dispatcher (sibling of command span) and `quest init` (child of command span).
 14. **Test coverage** -- No-panic tests, span assertion tests, instrument-creation validation, exit-code-class coverage, benchmarks.
 
 ---
@@ -1238,14 +1224,13 @@ The CLI-side design in this document remains the right shape whether or not the 
 
 ### Span coverage
 
-- [ ] `quest.store.tx` span wraps every `BEGIN IMMEDIATE` transaction with `db.system=sqlite`, `quest.tx.lock_wait_ms`, `quest.tx.rows_affected`, and `quest.tx.outcome` attributes
+- [ ] `quest.store.tx` span wraps every `BEGIN IMMEDIATE` transaction with `db.system=sqlite`, `quest.tx.lock_wait_ms`, `quest.tx.rows_affected`, and `quest.tx.outcome` attributes; `lock_wait_ms` is derived from `*store.Tx`'s internal `invokedAt`/`startedAt` timestamps, not from decorator clocks
 - [ ] `quest.store.traverse` span emitted for graph traversals (`graph`, `deps`, `--ready`)
 - [ ] `quest.store.rename_subgraph` span emitted for `quest move`
-- [ ] Uniform single-row store ops (`insert_task`, `update_task`, `append_history`, `insert_dep`, `delete_dep`, `update_tags`, `select_task`, `list_tasks`, `export.write`) emit `quest.store.op` **events** on the parent command span -- no child spans (§4.2, §8.3)
-- [ ] Store events carry `db.system`, `db.operation`, `db.target`, `rows_affected` (when applicable), and `duration_ms`
+- [ ] No per-DML `quest.store.op` events; per-SQL visibility is outside the OTEL surface (§4.2, §8.3)
 - [ ] `quest.validate` span with per-phase children for `quest batch`
 - [ ] `quest.role.gate` span emitted for elevated commands
-- [ ] `quest.db.migrate` span emitted at startup when schema upgrade runs
+- [ ] `quest.db.migrate` span emitted when a schema upgrade runs (sibling of the command span for dispatcher commands, child of `execute_tool quest.init` for init)
 - [ ] `quest version` produces no span and no metric increment -- suppressed at dispatch (§4.2)
 
 ### SDK lifecycle
@@ -1268,6 +1253,7 @@ The CLI-side design in this document remains the right shape whether or not the 
 - [ ] Internal packages import only OTEL API, never SDK (§10.1)
 - [ ] `InstrumentedStore` decorator keeps business logic clean
 - [ ] `CommandSpan` relies on no-op providers for the disabled path -- no manual short-circuit around `tracer.Start` (§8.2)
+- [ ] `WrapCommand` does not start or end a span -- it picks up the active span via `trace.SpanFromContext` and applies the three-step error pattern to the handler's returned error; `cli.Execute` owns `CommandSpan` + `defer span.End()` (§8.2)
 - [ ] `AGENT_ROLE`, `AGENT_TASK`, `AGENT_SESSION` read once under `sync.Once`, not per call
 - [ ] Recording functions follow `telemetry.RecordX()` pattern (no OTEL imports outside `internal/telemetry`)
 - [ ] HTTP exporter only -- no gRPC dependency for the CLI
@@ -1298,7 +1284,7 @@ The CLI-side design in this document remains the right shape whether or not the 
 - [ ] Tests assert span names, attributes, and parent-child relationships
 - [ ] Exit-code-to-class table covered by tests
 - [ ] Tests save/restore OTel global providers via `t.Cleanup`
-- [ ] `quest init` produces only a command span (no store operations until after init succeeds)
+- [ ] `quest init` on a fresh workspace produces a command span (`execute_tool quest.init`) plus a child `quest.db.migrate` span; for every other command, `quest.db.migrate` is a sibling of the command span when migrations run (§8.8)
 
 ### Forward compatibility
 

@@ -47,6 +47,7 @@ type Config struct {
     Agent     AgentConfig
     Log       LogConfig
     Telemetry TelemetryConfig
+    Output    OutputConfig
 }
 
 type WorkspaceConfig struct {
@@ -113,6 +114,16 @@ type TelemetryConfig struct {
 
     // Standard OTEL_* variables are read by the OTEL SDK directly; quest does
     // not re-expose them as Config fields. See OTEL.md §7 for the full list.
+}
+
+type OutputConfig struct {
+    // Format controls stdout rendering for command results.
+    // Default: "json"
+    // Env: (none)
+    // Flag: --format
+    // Valid values: "json" | "text". Text mode is a human-friendly rendering,
+    // not a contract; agents always read json.
+    Format string
 }
 ```
 
@@ -204,6 +215,9 @@ func Load(flags Flags) Config {
         },
         Telemetry: TelemetryConfig{
             CaptureContent: envBool("OTEL_GENAI_CAPTURE_CONTENT"),
+        },
+        Output: OutputConfig{
+            Format: firstNonEmpty(flags.Format, "json"),
         },
     }
 
