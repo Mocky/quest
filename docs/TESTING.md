@@ -345,8 +345,9 @@ Concurrency tests MUST use `-race` (enforced in CI). Use `sync.WaitGroup` to coo
 //go:build integration
 
 func TestConcurrentAcceptLeavesOnlyOneWinner(t *testing.T) {
-    s := NewStore(t)
-    SeedTask(t, s, store.Task{ID: "tst-01", Status: "open"})
+    s := testutil.NewStore(t)
+    cfg := testutil.NewConfig(t)
+    testutil.SeedTask(t, s, store.Task{ID: "tst-01", Status: "open"})
 
     var wg sync.WaitGroup
     results := make(chan error, 10)
@@ -354,7 +355,10 @@ func TestConcurrentAcceptLeavesOnlyOneWinner(t *testing.T) {
         wg.Add(1)
         go func(i int) {
             defer wg.Done()
-            results <- s.Accept(context.Background(), "tst-01", fmt.Sprintf("sess-%d", i))
+            // testutil.CallAccept invokes the accept handler directly. quest's Store
+            // interface does not expose a coarse Accept method (handler-owns-SQL model);
+            // each goroutine drives a fresh handler invocation with its own session ID.
+            results <- testutil.CallAccept(t, s, cfg, "tst-01", fmt.Sprintf("sess-%d", i))
         }(i)
     }
     wg.Wait()
@@ -365,7 +369,7 @@ func TestConcurrentAcceptLeavesOnlyOneWinner(t *testing.T) {
         switch {
         case err == nil:
             wins++
-        case errors.Is(err, store.ErrConflict):
+        case errors.Is(err, errors.ErrConflict):
             conflicts++
         default:
             t.Errorf("unexpected error: %v", err)
@@ -379,6 +383,12 @@ func TestConcurrentAcceptLeavesOnlyOneWinner(t *testing.T) {
     }
 }
 ```
+
+Notes on the helpers used above:
+
+- `testutil.CallAccept(t, s, cfg, taskID, sessionID)` invokes the accept handler with a freshly-constructed config carrying `AGENT_SESSION=sessionID`. quest's `Store` interface deliberately does **not** expose write methods like `Accept`/`UpdateFields` — write logic lives in handlers, not the store (handler-owns-SQL model). The helper is the test-time analogue of dispatching the command end-to-end without going through `os/exec`.
+- Sentinel errors live in `internal/errors/` (`errors.ErrConflict`, `errors.ErrNotFound`, etc.), **not** `internal/store/`. The store maps `SQLITE_BUSY` and constraint violations to the same `errors.Err*` sentinels at the boundary.
+- See the implementation plan's Task 3.3 (Store interface) and Task 2.2 (sentinel errors) for the design rationale.
 
 ### Testing Env Var Resolution
 
