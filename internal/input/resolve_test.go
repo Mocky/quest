@@ -48,6 +48,12 @@ func TestResolveSecondStdinRejected(t *testing.T) {
 	if !strings.Contains(err.Error(), "stdin already consumed by --debrief") {
 		t.Errorf("err = %q, want mentions first consumer", err.Error())
 	}
+	// Spec §Input Conventions pins the wording verbatim with the first
+	// consumer's flag in lead position; the current flag must not be
+	// prepended (would break agents doing prefix-anchor substring match).
+	if !strings.HasPrefix(err.Error(), "stdin already consumed by --debrief") {
+		t.Errorf("err = %q, want spec-pinned prefix %q", err.Error(), "stdin already consumed by --debrief")
+	}
 }
 
 func TestResolveFileHappyPath(t *testing.T) {

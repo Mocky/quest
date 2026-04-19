@@ -38,7 +38,10 @@ func NewResolver(stdin io.Reader) *Resolver {
 // reads the file (path resolved against the caller's CWD), anything
 // else passes through unchanged. flag is the user-facing flag name
 // (e.g., "--debrief"); it is the first token in every error message so
-// agents can route programmatically.
+// agents can route programmatically. Sole carve-out: the second-@-
+// rejection message in resolveStdin omits the flag prefix because
+// spec §Input Conventions pins its wording verbatim with the first
+// consumer's flag name in lead position.
 func (r *Resolver) Resolve(flag, val string) (string, error) {
 	if !strings.HasPrefix(val, "@") {
 		return val, nil
@@ -52,12 +55,14 @@ func (r *Resolver) Resolve(flag, val string) (string, error) {
 
 // resolveStdin reads up to MaxBytes+1 from r.stdin — the extra byte
 // lets us detect oversized inputs without buffering the whole stream.
-// Second @- on the same invocation rejects with a message naming the
-// flag that consumed stdin first.
+// Second @- on the same invocation rejects with the spec-pinned
+// wording (§Input Conventions): the message leads with the first
+// consumer's flag, not the current flag, so prefix-anchor substring
+// matching against the spec example works verbatim.
 func (r *Resolver) resolveStdin(flag string) (string, error) {
 	if r.stdinBy != "" {
-		return "", fmt.Errorf("%s: stdin already consumed by %s; at most one @- per invocation: %w",
-			flag, r.stdinBy, errors.ErrUsage)
+		return "", fmt.Errorf("stdin already consumed by %s; at most one @- per invocation: %w",
+			r.stdinBy, errors.ErrUsage)
 	}
 	r.stdinBy = flag
 	b, err := io.ReadAll(io.LimitReader(r.stdin, MaxBytes+1))
