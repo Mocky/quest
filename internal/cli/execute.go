@@ -7,20 +7,22 @@ import (
 
 	"github.com/mocky/quest/internal/command"
 	"github.com/mocky/quest/internal/config"
+	"github.com/mocky/quest/internal/errors"
 )
 
 func Execute(ctx context.Context, cfg config.Config, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "quest: usage_error: command required")
-		fmt.Fprintln(stderr, "quest: exit 2 (usage_error)")
-		return 2
+		return emit(stderr, fmt.Errorf("command required: %w", errors.ErrUsage))
 	}
 	switch args[0] {
 	case "version":
 		return command.Version(ctx, cfg, args[1:], stdin, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "quest: usage_error: unknown command %q\n", args[0])
-		fmt.Fprintln(stderr, "quest: exit 2 (usage_error)")
-		return 2
+		return emit(stderr, fmt.Errorf("unknown command %q: %w", args[0], errors.ErrUsage))
 	}
+}
+
+func emit(w io.Writer, err error) int {
+	errors.EmitStderr(err, w)
+	return errors.ExitCode(err)
 }
