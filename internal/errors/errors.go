@@ -119,3 +119,13 @@ func lookup(err error) (classInfo, bool) {
 	}
 	return classInfo{}, false
 }
+
+// NewSchemaTooNew produces the spec-pinned error returned when the
+// stored schema version exceeds the one this binary supports. Wording
+// is verbatim from quest-spec.md §Storage so the dispatcher
+// (Task 4.2 step 5) and quest init handler emit identical stderr text;
+// exposing the constructor here keeps the single source of truth for
+// an error string that agents may switch on.
+func NewSchemaTooNew(stored, supported int) error {
+	return fmt.Errorf("%w: database schema version %d is newer than this binary supports -- upgrade quest (binary supports %d)", ErrGeneral, stored, supported)
+}

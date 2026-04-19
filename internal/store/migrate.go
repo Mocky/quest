@@ -1,0 +1,133 @@
+package store
+
+import (
+	"context"
+	"embed"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/mocky/quest/internal/errors"
+)
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
+
+// SupportedSchemaVersion is the highest schema version this binary
+// can operate against. Bumped by every migration that lands.
+// Task 3.2's TestMigrationSequenceContiguous asserts the highest
+// numeric migration prefix equals this constant.
+const SupportedSchemaVersion = 1
+
+// Migrate applies every pending SQL migration in a single transaction
+// and returns the count of migration files actually executed. Callers
+// (the dispatcher's Task 4.2 step 5, quest init's handler) invoke
+// Migrate after Open — Open itself is cheap and span-free so the
+// migrate span stays a sibling of the command span per OTEL.md §8.8.
+//
+// If the stored version exceeds SupportedSchemaVersion, Migrate
+// returns the NewSchemaTooNew error and leaves the DB untouched.
+// On any migration-SQL failure the transaction rolls back and the DB
+// remains at the prior version — spec §Storage pins this
+// "forward-only, never partial" behavior.
+func Migrate(ctx context.Context, s Store) (int, error) {
+	impl, ok := s.(*sqliteStore)
+	if !ok {
+		return 0, fmt.Errorf("%w: store.Migrate called with non-sqlite store", errors.ErrGeneral)
+	}
+	files, err := loadMigrations()
+	if err != nil {
+		return 0, err
+	}
+	stored, err := impl.CurrentSchemaVersion(ctx)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case stored > SupportedSchemaVersion:
+		return 0, errors.NewSchemaTooNew(stored, SupportedSchemaVersion)
+	case stored == SupportedSchemaVersion:
+		return 0, nil
+	}
+
+	// BeginTx with nil options issues BEGIN IMMEDIATE due to the
+	// DSN's _txlock=immediate; migrations therefore already hold the
+	// write lock without going through BeginImmediate (which would
+	// otherwise tag this as quest.store.tx{tx_kind=...} — see Task
+	// 3.2's rationale for excluding migrations from that histogram).
+	tx, err := impl.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, classifyDriverErr(err)
+	}
+	applied := 0
+	for _, m := range files {
+		if m.version <= stored {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, m.sql); err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("%w: migration %03d %s: %s", errors.ErrGeneral, m.version, m.label, err.Error())
+		}
+		applied++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, classifyDriverErr(err)
+	}
+	slog.InfoContext(ctx, "schema migration applied",
+		"schema.from", stored,
+		"schema.to", SupportedSchemaVersion,
+		"applied_count", applied,
+	)
+	return applied, nil
+}
+
+type migration struct {
+	version int
+	label   string
+	sql     string
+}
+
+func loadMigrations() ([]migration, error) {
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("%w: read migrations: %s", errors.ErrGeneral, err.Error())
+	}
+	out := make([]migration, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".sql")
+		prefix, label, ok := strings.Cut(name, "_")
+		if !ok {
+			return nil, fmt.Errorf("%w: migration %q missing NNN_ prefix", errors.ErrGeneral, e.Name())
+		}
+		v, err := strconv.Atoi(prefix)
+		if err != nil {
+			return nil, fmt.Errorf("%w: migration %q has non-integer prefix %q", errors.ErrGeneral, e.Name(), prefix)
+		}
+		body, err := fs.ReadFile(migrationsFS, "migrations/"+e.Name())
+		if err != nil {
+			return nil, fmt.Errorf("%w: read migration %q: %s", errors.ErrGeneral, e.Name(), err.Error())
+		}
+		out = append(out, migration{version: v, label: label, sql: string(body)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
+	// Gap + head invariants: versions must start at 1, be contiguous,
+	// and top out at SupportedSchemaVersion.
+	for i, m := range out {
+		if m.version != i+1 {
+			return nil, fmt.Errorf("%w: migration gap — expected version %d at index %d, got %d", errors.ErrGeneral, i+1, i, m.version)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: no migrations embedded", errors.ErrGeneral)
+	}
+	if top := out[len(out)-1].version; top != SupportedSchemaVersion {
+		return nil, fmt.Errorf("%w: highest migration version %d does not match SupportedSchemaVersion %d", errors.ErrGeneral, top, SupportedSchemaVersion)
+	}
+	return out, nil
+}
