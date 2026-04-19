@@ -128,3 +128,50 @@ func TestResolveStdinBelowCapAccepted(t *testing.T) {
 		t.Errorf("got len=%d, want %d", len(got), input.MaxBytes)
 	}
 }
+
+// TestResolveFileExactCapAccepted pins the byte-exact 1 MiB boundary on
+// the file path: a file with size == MaxBytes must pass through. Pairs
+// with TestResolveOversizedFileRejected (MaxBytes+1 → exit 2). The
+// measurement is byte-exact — content is not normalized before counting,
+// so a 1 MiB file of any encoding is allowed.
+func TestResolveFileExactCapAccepted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "exact.md")
+	body := strings.Repeat("c", input.MaxBytes)
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	r := input.NewResolver(strings.NewReader(""))
+	got, err := r.Resolve("--description", "@"+path)
+	if err != nil {
+		t.Fatalf("resolve at exact cap: %v", err)
+	}
+	if len(got) != input.MaxBytes {
+		t.Errorf("got len=%d, want %d", len(got), input.MaxBytes)
+	}
+}
+
+// TestResolveBinaryFilePassesThrough confirms the resolver does not
+// reject non-UTF-8 content. The contract is a byte-count check, not a
+// charset check — agents that pass binary attachments via @file get a
+// usable string back. The handler that consumes it owns any further
+// validation.
+func TestResolveBinaryFilePassesThrough(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "binary.bin")
+	body := []byte{0x00, 0xff, 0xfe, 0x80, 0x7f, 0x01, 0x02, 0x03}
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	r := input.NewResolver(strings.NewReader(""))
+	got, err := r.Resolve("--description", "@"+path)
+	if err != nil {
+		t.Fatalf("resolve binary: %v", err)
+	}
+	if len(got) != len(body) {
+		t.Errorf("got len=%d, want %d", len(got), len(body))
+	}
+	if got != string(body) {
+		t.Errorf("binary content corrupted: got %x, want %x", got, body)
+	}
+}

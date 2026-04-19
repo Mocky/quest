@@ -4,11 +4,14 @@
 //     as a JSON object and fails t if any required key is absent.
 //     Used by Phase 6+ contract tests that assert every spec-pinned
 //     JSON field is present (even as null / [] / {}).
+//   - AssertJSONKeyOrder(t, got []byte, want []string) — decodes got
+//     and asserts the top-level keys appear in want's relative order.
+//     Catches regressions that swap an ordered output struct for a
+//     plain map (which serializes alphabetically).
+//   - NewCapturingTracer / NewCapturingMeter / NewCapturingLogger —
+//     install in-memory OTEL providers and restore globals on
+//     t.Cleanup. Used by Phase 12+ telemetry contract tests.
 //
-// Planned surface (per Task 0.1): NewWorkspace, NewStore, NewFakeStore
-// (in-memory Store fake), SeedTask, AssertExitCode, AssertErrorClass,
-// AssertJSONKeyOrder, capturing tracer / meter / logger for Phase 13
-// observability tests. Test-only — never imported by production code.
-// Files here may carry `//go:build integration` when they build the
-// CLI binary (TESTING.md).
+// Test-only — never imported by production code. Files here may carry
+// `//go:build integration` when they build the CLI binary (TESTING.md).
 package testutil
