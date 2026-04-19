@@ -145,11 +145,18 @@ func closeTask(ctx context.Context, cfg config.Config, s store.Store, args []str
 	}
 	telemetry.RecordTaskContext(ctx, id, tier.String, typeV.String)
 
+	// Ownership applies only after acceptance (spec §accept). Pre-
+	// acceptance the leaf_direct_close carve-out must take precedence
+	// over permission_denied for non-elevated callers on open leaves;
+	// terminal/cancelled tasks fall through to the state ladder so
+	// vigil receives the coordination body instead of exit 4.
 	isElevated := config.IsElevated(cfg.Agent.Role, cfg.Workspace.ElevatedRoles)
-	if err := store.CheckOwnership(owner.String, cfg.Agent.Session, isElevated); err != nil {
-		telemetry.RecordPreconditionFailed(ctx, "ownership", nil)
-		tx.MarkOutcome(store.TxRolledBackPrecondition)
-		return err
+	if status == "accepted" && !isElevated {
+		if err := store.CheckOwnership(owner.String, cfg.Agent.Session, isElevated); err != nil {
+			telemetry.RecordPreconditionFailed(ctx, "ownership", nil)
+			tx.MarkOutcome(store.TxRolledBackPrecondition)
+			return err
+		}
 	}
 
 	// Cancelled is a distinct rejection path — emits the coordination

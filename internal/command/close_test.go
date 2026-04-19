@@ -464,3 +464,71 @@ func TestCompleteDebriefViaStdinResolves(t *testing.T) {
 		t.Errorf("debrief = %q, want stdin body", debrief.String)
 	}
 }
+
+// TestCompleteOpenLeafByNonElevatedWorkerReturnsLeafDirectClose pins
+// that ownership is scoped to post-acceptance: a non-elevated worker
+// calling `complete` on an open leaf must hit the leaf_direct_close
+// carve-out (exit 5), not the ownership check (exit 4). Spec §accept
+// says ownership applies "after acceptance"; a leaf with no owner
+// cannot fail the ownership gate.
+func TestCompleteOpenLeafByNonElevatedWorkerReturnsLeafDirectClose(t *testing.T) {
+	s, _ := testStore(t)
+	seedTaskFull(t, s, "proj-a1", "Alpha", "open", "")
+
+	err, _, _ := runComplete(t, s, workerCfg("sess-w1"), "",
+		[]string{"proj-a1", "--debrief", "x"})
+	if err == nil {
+		t.Fatalf("got nil, want ErrConflict")
+	}
+	if stderrors.Is(err, errors.ErrPermission) {
+		t.Fatalf("err = %v, want ErrConflict (leaf_direct_close must beat ownership)", err)
+	}
+	if !stderrors.Is(err, errors.ErrConflict) {
+		t.Fatalf("err = %v, want wraps ErrConflict", err)
+	}
+	if !strings.Contains(err.Error(), "leaf") {
+		t.Errorf("err = %q, want mentions leaf", err.Error())
+	}
+}
+
+// TestFailOpenLeafByNonElevatedWorkerReturnsFromStatus pins the fail
+// counterpart: `fail` does not accept `open`, so a non-elevated
+// worker calling fail on an open leaf must see the from_status
+// rejection (exit 5, "accept first") rather than ownership (exit 4).
+func TestFailOpenLeafByNonElevatedWorkerReturnsFromStatus(t *testing.T) {
+	s, _ := testStore(t)
+	seedTaskFull(t, s, "proj-a1", "Alpha", "open", "")
+
+	err, _, _ := runFail(t, s, workerCfg("sess-w1"), "",
+		[]string{"proj-a1", "--debrief", "x"})
+	if err == nil {
+		t.Fatalf("got nil, want ErrConflict")
+	}
+	if stderrors.Is(err, errors.ErrPermission) {
+		t.Fatalf("err = %v, want ErrConflict (from_status must beat ownership)", err)
+	}
+	if !stderrors.Is(err, errors.ErrConflict) {
+		t.Fatalf("err = %v, want wraps ErrConflict", err)
+	}
+	if !strings.Contains(err.Error(), "accept first") {
+		t.Errorf("err = %q, want 'accept first'", err.Error())
+	}
+}
+
+// TestCompleteAcceptedLeafByNonOwningWorkerStillGated confirms the
+// carve-out does not weaken the gate on accepted tasks: a non-owning
+// worker closing a task owned by another session still gets exit 4.
+// Pairs with the open-leaf test above as the contrastive case.
+func TestCompleteAcceptedLeafByNonOwningWorkerStillGated(t *testing.T) {
+	s, _ := testStore(t)
+	seedTaskFull(t, s, "proj-a1", "Alpha", "accepted", "sess-owner")
+
+	err, _, _ := runComplete(t, s, workerCfg("sess-stranger"), "",
+		[]string{"proj-a1", "--debrief", "x"})
+	if err == nil {
+		t.Fatalf("got nil, want ErrPermission")
+	}
+	if !stderrors.Is(err, errors.ErrPermission) {
+		t.Fatalf("err = %v, want wraps ErrPermission", err)
+	}
+}
