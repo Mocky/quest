@@ -1031,12 +1031,12 @@ Add a typed dependency link to TASK referencing TARGET. The link is stored on TA
 
 | Flag                       | Description                         |
 | -------------------------- | ----------------------------------- |
-| `--blocked-by TARGET`      | TASK is blocked by TARGET (default) |
+| `--blocked-by TARGET`      | TASK is blocked by TARGET           |
 | `--caused-by TARGET`       | TASK was caused by TARGET           |
 | `--discovered-from TARGET` | TASK was discovered from TARGET     |
 | `--retry-of TARGET`        | TASK is a retry of TARGET           |
 
-If no relationship flag is provided, `--blocked-by` is assumed.
+Exactly one relationship flag is required. A bare second positional (`quest link TASK TARGET`) is rejected with exit code 2; agents follow the spec literally and a silent default would hide the link type in history and exports.
 
 ```
 quest unlink TASK --blocked-by|--caused-by|--discovered-from|--retry-of TARGET
@@ -1046,12 +1046,12 @@ Remove a typed dependency link between TASK and TARGET. The removal is recorded 
 
 | Flag                       | Description                      |
 | -------------------------- | -------------------------------- |
-| `--blocked-by TARGET`      | Remove blocked-by link (default) |
+| `--blocked-by TARGET`      | Remove blocked-by link           |
 | `--caused-by TARGET`       | Remove caused-by link            |
 | `--discovered-from TARGET` | Remove discovered-from link      |
 | `--retry-of TARGET`        | Remove retry-of link             |
 
-If no relationship flag is provided, `--blocked-by` is assumed, mirroring `quest link`. This symmetry makes the command pair learnable (`link --caused-by` to add, `unlink --caused-by` to remove) and prevents accidental removal of links the caller didn't know existed -- consistent with the principle that quest does not make implicit decisions on the agent's behalf.
+Exactly one relationship flag is required, mirroring `quest link`. This symmetry makes the command pair learnable (`link --caused-by` to add, `unlink --caused-by` to remove) and prevents accidental removal of links the caller didn't know existed -- consistent with the principle that quest does not make implicit decisions on the agent's behalf.
 
 ---
 

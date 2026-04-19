@@ -250,10 +250,10 @@ func TestIdempotencyGuarantees(t *testing.T) {
 		cfg := setupWorkspace(t, "proj", "planner")
 		seedOpenTask(t, cfg)
 		seedOpenTask(t, cfg)
-		if exit, _, errb := runExecute([]string{"link", "proj-01", "proj-02"}, cfg); exit != 0 {
+		if exit, _, errb := runExecute([]string{"link", "proj-01", "--blocked-by", "proj-02"}, cfg); exit != 0 {
 			t.Fatalf("first link exit = %d; stderr=%s", exit, errb)
 		}
-		if exit, _, errb := runExecute([]string{"link", "proj-01", "proj-02"}, cfg); exit != 0 {
+		if exit, _, errb := runExecute([]string{"link", "proj-01", "--blocked-by", "proj-02"}, cfg); exit != 0 {
 			t.Fatalf("idempotent link exit = %d; stderr=%s", exit, errb)
 		}
 	})
@@ -479,7 +479,7 @@ func TestHandlerRecorderWiring(t *testing.T) {
 			setup: func(t *testing.T, cfg *config.Config) []string {
 				seedOpenTask(t, *cfg)
 				seedOpenTask(t, *cfg)
-				return []string{"link", "proj-01", "proj-02"}
+				return []string{"link", "proj-01", "--blocked-by", "proj-02"}
 			},
 			wantAttr: []string{"quest.task.id"},
 		},
@@ -488,10 +488,10 @@ func TestHandlerRecorderWiring(t *testing.T) {
 			setup: func(t *testing.T, cfg *config.Config) []string {
 				seedOpenTask(t, *cfg)
 				seedOpenTask(t, *cfg)
-				if exit, _, _ := runExecute([]string{"link", "proj-01", "proj-02"}, *cfg); exit != 0 {
+				if exit, _, _ := runExecute([]string{"link", "proj-01", "--blocked-by", "proj-02"}, *cfg); exit != 0 {
 					t.Fatalf("seed link")
 				}
-				return []string{"unlink", "proj-01", "proj-02"}
+				return []string{"unlink", "proj-01", "--blocked-by", "proj-02"}
 			},
 			wantAttr: []string{"quest.task.id"},
 		},

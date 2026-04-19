@@ -20,7 +20,7 @@ import (
 // skip the history append + telemetry recorder when no row was removed.
 func Unlink(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
-	taskID, bareTarget, rest, err := resolveLinkPositional("unlink", args)
+	taskID, rest, err := resolveLinkPositional("unlink", args)
 	if err != nil {
 		return err
 	}
@@ -31,7 +31,7 @@ func Unlink(ctx context.Context, cfg config.Config, s store.Store, args []string
 	if len(trailing) > 0 {
 		return fmt.Errorf("unlink: unexpected positional arguments: %w", errors.ErrUsage)
 	}
-	edge, err := validateLinkArgs("unlink", parsed, bareTarget)
+	edge, err := validateLinkArgs("unlink", parsed)
 	if err != nil {
 		return err
 	}

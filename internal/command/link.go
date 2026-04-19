@@ -64,40 +64,27 @@ func parseLinkArgs(stderr io.Writer, name string, args []string) (linkArgs, []st
 }
 
 // resolveLinkPositional unifies the leading positional parsing for
-// `link` and `unlink`. Returns (taskID, bareTarget, error). bareTarget
-// is the optional positional that callers may use as the
-// `quest link TASK TARGET` shortcut for the default `--blocked-by`
-// relationship; an empty string means none was provided.
-func resolveLinkPositional(name string, args []string) (string, string, []string, error) {
+// `link` and `unlink`. Returns (taskID, rest, error); any further
+// positionals stay in rest and are surfaced as "unexpected positional
+// arguments" once flag parsing runs.
+func resolveLinkPositional(name string, args []string) (string, []string, error) {
 	leading, rest := splitLeadingPositional(args)
 	if len(leading) == 0 {
-		return "", "", nil, fmt.Errorf("%s: task ID required: %w", name, errors.ErrUsage)
+		return "", nil, fmt.Errorf("%s: task ID required: %w", name, errors.ErrUsage)
 	}
 	taskID := leading[0]
 	if taskID == "" {
-		return "", "", nil, fmt.Errorf("%s: task ID required: %w", name, errors.ErrUsage)
+		return "", nil, fmt.Errorf("%s: task ID required: %w", name, errors.ErrUsage)
 	}
-	if len(rest) > 0 && rest[0] != "" && rest[0][0] != '-' {
-		bare := rest[0]
-		return taskID, bare, rest[1:], nil
-	}
-	return taskID, "", rest, nil
+	return taskID, rest, nil
 }
 
-// validateLinkArgs picks the single edge from parsed flags + optional
-// bare positional and rejects ambiguous invocations (both a flag and a
-// bare target, or two relationship flags).
-func validateLinkArgs(name string, parsed linkArgs, bareTarget string) (batch.Edge, error) {
+// validateLinkArgs picks the single edge from parsed flags and rejects
+// ambiguous invocations (two relationship flags, missing target).
+func validateLinkArgs(name string, parsed linkArgs) (batch.Edge, error) {
 	if len(parsed.edges) > 1 {
 		return batch.Edge{}, fmt.Errorf(
 			"%s: at most one relationship flag may be passed: %w", name, errors.ErrUsage)
-	}
-	if bareTarget != "" && len(parsed.edges) > 0 {
-		return batch.Edge{}, fmt.Errorf(
-			"%s: provide TARGET via positional or relationship flag, not both: %w", name, errors.ErrUsage)
-	}
-	if bareTarget != "" {
-		return batch.Edge{Target: bareTarget, LinkType: batch.LinkBlockedBy}, nil
 	}
 	if len(parsed.edges) == 1 {
 		e := parsed.edges[0]
@@ -116,7 +103,7 @@ func validateLinkArgs(name string, parsed linkArgs, bareTarget string) (batch.Ed
 // the edge was already present.
 func Link(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
-	taskID, bareTarget, rest, err := resolveLinkPositional("link", args)
+	taskID, rest, err := resolveLinkPositional("link", args)
 	if err != nil {
 		return err
 	}
@@ -127,7 +114,7 @@ func Link(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	if len(trailing) > 0 {
 		return fmt.Errorf("link: unexpected positional arguments: %w", errors.ErrUsage)
 	}
-	edge, err := validateLinkArgs("link", parsed, bareTarget)
+	edge, err := validateLinkArgs("link", parsed)
 	if err != nil {
 		return err
 	}

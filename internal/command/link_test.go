@@ -375,24 +375,31 @@ func TestUnlinkUnknownTask(t *testing.T) {
 	}
 }
 
-// TestLinkBareTargetDefaultsToBlockedBy: `quest link TASK TARGET` with
-// no flag defaults to --blocked-by per phase plan note.
-func TestLinkBareTargetDefaultsToBlockedBy(t *testing.T) {
-	s, dbPath := testStore(t)
+// TestLinkRejectsBareTargetPositional pins the spec §Linking surface:
+// `quest link TASK TARGET` (no relationship flag) is exit 2. Previously
+// the code accepted the second bare positional as a --blocked-by
+// shorthand; the spec synopsis requires an explicit flag.
+func TestLinkRejectsBareTargetPositional(t *testing.T) {
+	s, _ := testStore(t)
 	seedTaskWithStatus(t, s, "proj-a1", "A", "", "open")
 	seedTaskWithStatus(t, s, "proj-a2", "B", "", "open")
 
-	err, stdout, _ := runLink(t, s, plannerCfg(), []string{"proj-a1", "proj-a2"})
-	if err != nil {
-		t.Fatalf("Link: %v", err)
+	err, _, _ := runLink(t, s, plannerCfg(), []string{"proj-a1", "proj-a2"})
+	if !stderrors.Is(err, errors.ErrUsage) {
+		t.Fatalf("err = %v, want wraps ErrUsage", err)
 	}
-	if !strings.Contains(stdout, `"type":"blocked-by"`) {
-		t.Errorf("stdout = %q", stdout)
-	}
-	var n int
-	queryOne(t, dbPath, "SELECT COUNT(*) FROM dependencies WHERE task_id='proj-a1' AND target_id='proj-a2' AND link_type='blocked-by'").Scan(&n)
-	if n != 1 {
-		t.Errorf("dep row = %d, want 1", n)
+}
+
+// TestUnlinkRejectsBareTargetPositional mirrors the link case: unlink
+// also requires an explicit relationship flag.
+func TestUnlinkRejectsBareTargetPositional(t *testing.T) {
+	s, _ := testStore(t)
+	seedTaskWithStatus(t, s, "proj-a1", "A", "", "open")
+	seedTaskWithStatus(t, s, "proj-a2", "B", "", "open")
+
+	err, _, _ := runUnlink(t, s, plannerCfg(), []string{"proj-a1", "proj-a2"})
+	if !stderrors.Is(err, errors.ErrUsage) {
+		t.Fatalf("err = %v, want wraps ErrUsage", err)
 	}
 }
 
