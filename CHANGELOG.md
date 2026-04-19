@@ -28,10 +28,10 @@ Initial release. Implements the v4 behavioral contract in [`docs/quest-spec.md`]
 - Serialized writes via `BEGIN IMMEDIATE` with a 5 s busy timeout; exit code 7 on contention (no internal retry — caller decides).
 - Slog diagnostic logging on stderr with canonical event messages and attribute sets per `docs/OBSERVABILITY.md`.
 - OpenTelemetry instrumentation (spans, metrics, slog bridge). Activates when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; zero-cost no-op when unset. `OTEL_GENAI_CAPTURE_CONTENT` opts into content attributes.
-- `quest export` writes a snapshot of per-task JSON, markdown debriefs, and JSONL history to `.quest/export/` (or `--dir`).
+- `quest export` writes a snapshot of per-task JSON, markdown debriefs, and JSONL history to `<workspace>/quest-export/` (sibling of `.quest/`, or `--dir`).
 - Test suite: stdlib-only table-driven tests, Layer 2 contract tests (output shapes, history, precondition events), Layer 3/4 integration tests, Layer 5 race/concurrency tests.
 - GitHub Actions CI running `make ci` (race + integration tags + coverage) on every push.
 
 ### Schema
 
-- Initial schema (`schema_version = 1`) with `tasks`, `history`, `links`, `tags`, `notes`, `prs`, `meta` tables. Migrations are forward-only; a newer-than-supported schema version causes the binary to refuse to run (exit 1).
+- Initial schema (`schema_version = 1`) with `tasks`, `history`, `dependencies`, `tags`, `notes`, `prs`, `meta` tables. Migrations are forward-only; a newer-than-supported schema version causes the binary to refuse to run (exit 1).
