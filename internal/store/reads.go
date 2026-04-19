@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"strings"
 
 	"github.com/mocky/quest/internal/errors"
 )
@@ -121,12 +122,83 @@ func (s *sqliteStore) GetTaskWithDeps(ctx context.Context, id string) (Task, err
 	return t, nil
 }
 
-// ListTasks is a Phase 10 deliverable; leave the not-implemented stub
-// until Task 10.2 lands the builder.
+// ListTasks returns tasks matching filter in ID-ascending order. Enum
+// filters (Statuses/Parents/Roles/Types/Tiers) compose with OR within
+// each flag and AND across flags. Tags compose with AND (a task tagged
+// `go` AND `auth`) via one correlated subquery per tag. The handler
+// defaults Statuses to the non-cancelled set before calling; an empty
+// slice here means "no status filter" so direct callers (and tests)
+// can opt out. Ready further filters to tasks whose `blocked-by`
+// targets are all `complete` AND (no children OR all children
+// terminal) — see spec §`quest list`. The projection returns every
+// scalar column on tasks; side tables (tags, blocked-by, children) are
+// fetched by the caller per the requested --columns set.
 func (s *sqliteStore) ListTasks(ctx context.Context, filter Filter) ([]Task, error) {
-	_ = ctx
-	_ = filter
-	return nil, notImplemented("ListTasks")
+	var (
+		conds []string
+		argv  []any
+	)
+	addIn := func(col string, vals []string) {
+		if len(vals) == 0 {
+			return
+		}
+		placeholders := make([]string, len(vals))
+		for i, v := range vals {
+			placeholders[i] = "?"
+			argv = append(argv, v)
+		}
+		conds = append(conds, col+" IN ("+strings.Join(placeholders, ",")+")")
+	}
+	addIn("t.status", filter.Statuses)
+	addIn("t.parent", filter.Parents)
+	addIn("t.role", filter.Roles)
+	addIn("t.type", filter.Types)
+	addIn("t.tier", filter.Tiers)
+	for _, tag := range filter.Tags {
+		conds = append(conds,
+			"t.id IN (SELECT task_id FROM tags WHERE tag = ?)")
+		argv = append(argv, tag)
+	}
+	if filter.Ready {
+		conds = append(conds, "t.status = 'open'")
+		conds = append(conds, `NOT EXISTS (
+			SELECT 1 FROM dependencies d
+			JOIN tasks dt ON dt.id = d.target_id
+			WHERE d.task_id = t.id AND d.link_type = 'blocked-by'
+			  AND dt.status != 'complete'
+		)`)
+		conds = append(conds, `NOT EXISTS (
+			SELECT 1 FROM tasks c
+			WHERE c.parent = t.id
+			  AND c.status NOT IN ('complete','failed','cancelled')
+		)`)
+	}
+	q := `SELECT ` + selectTaskColumns + ` FROM tasks t`
+	if len(conds) > 0 {
+		q += " WHERE " + strings.Join(conds, " AND ")
+	}
+	q += " ORDER BY t.id"
+	rows, err := s.db.QueryContext(ctx, q, argv...)
+	if err != nil {
+		return nil, classifyDriverErr(err)
+	}
+	defer rows.Close()
+	out := []Task{}
+	for rows.Next() {
+		t, scanErr := scanTask(rows)
+		if scanErr != nil {
+			return nil, classifyDriverErr(scanErr)
+		}
+		t.Tags = []string{}
+		t.Dependencies = []Dependency{}
+		t.PRs = []PR{}
+		t.Notes = []Note{}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, classifyDriverErr(err)
+	}
+	return out, nil
 }
 
 // GetHistory returns the full mutation log for a task in insertion
@@ -167,13 +239,35 @@ func (s *sqliteStore) GetHistory(ctx context.Context, id string) ([]History, err
 	return out, nil
 }
 
-// GetChildren is used by cancel --recursive and the parent precondition
-// checks; wait to implement until Phase 8 so test coverage lands with
-// the consuming handler.
+// GetChildren returns the direct children of parentID (one level deep)
+// in ID-ascending order. Used by Phase 10's `quest list --columns
+// children` to populate the children array and as a building block for
+// cascade operations in later phases. Scan reuses the shared scanner
+// so the returned Tasks carry the same null-handling semantics as
+// GetTask.
 func (s *sqliteStore) GetChildren(ctx context.Context, parentID string) ([]Task, error) {
-	_ = ctx
-	_ = parentID
-	return nil, notImplemented("GetChildren")
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+selectTaskColumns+` FROM tasks WHERE parent = ? ORDER BY id`, parentID)
+	if err != nil {
+		return nil, classifyDriverErr(err)
+	}
+	defer rows.Close()
+	out := []Task{}
+	for rows.Next() {
+		t, scanErr := scanTask(rows)
+		if scanErr != nil {
+			return nil, classifyDriverErr(scanErr)
+		}
+		t.Tags = []string{}
+		t.Dependencies = []Dependency{}
+		t.PRs = []PR{}
+		t.Notes = []Note{}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, classifyDriverErr(err)
+	}
+	return out, nil
 }
 
 // GetDependencies returns outgoing edges for id (task_id is the source)
