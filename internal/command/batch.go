@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"context"
 	stderrors "errors"
 	"flag"
@@ -93,10 +94,12 @@ func Batch(ctx context.Context, cfg config.Config, s store.Store, args []string,
 	lines, phase1Errs := batch.PhaseParse(body)
 	emitBatchPhaseTelemetry(parseCtx, "parse", phase1Errs)
 	parseEnd()
+	linesTotal, linesBlank := countLines(body, len(lines))
 	if len(lines) == 0 {
 		// Either empty_file or every line is malformed JSON. Emit
 		// whatever phase 1 found and return exit 2.
 		emitBatchErrors(stderr, phase1Errs)
+		telemetry.RecordBatchOutcome(ctx, linesTotal, linesBlank, parsed.PartialOK, 0, len(phase1Errs))
 		return fmt.Errorf("batch: %d validation error(s): %w", len(phase1Errs), errors.ErrUsage)
 	}
 
@@ -146,7 +149,7 @@ func Batch(ctx context.Context, cfg config.Config, s store.Store, args []string,
 	case !parsed.PartialOK && len(allErrs) > 0:
 		// Atomic mode: any error → no creation, exit 2.
 		tx.MarkOutcome(store.TxRolledBackPrecondition)
-		telemetry.RecordBatchOutcome(ctx, 0, len(allErrs), "rejected")
+		telemetry.RecordBatchOutcome(ctx, linesTotal, linesBlank, parsed.PartialOK, 0, len(allErrs))
 		return fmt.Errorf("batch: %d validation error(s): %w", len(allErrs), errors.ErrUsage)
 	case parsed.PartialOK && len(allErrs) > 0:
 		slog.InfoContext(ctx, "batch mode fallthrough",
@@ -191,11 +194,7 @@ func Batch(ctx context.Context, cfg config.Config, s store.Store, args []string,
 		}
 	}
 
-	outcome := "ok"
-	if len(allErrs) > 0 {
-		outcome = "partial"
-	}
-	telemetry.RecordBatchOutcome(ctx, len(pairs), len(allErrs), outcome)
+	telemetry.RecordBatchOutcome(ctx, linesTotal, linesBlank, parsed.PartialOK, len(pairs), len(allErrs))
 
 	if len(allErrs) > 0 {
 		return fmt.Errorf("batch: %d validation error(s): %w", len(allErrs), errors.ErrUsage)
@@ -262,4 +261,24 @@ func emitBatchPhaseTelemetry(ctx context.Context, phase string, errs []batch.Bat
 	for _, e := range errs {
 		telemetry.RecordBatchError(ctx, phase, e.Code, e.Field, e.Ref, e.Line)
 	}
+}
+
+// countLines returns the (non-blank, blank) line counts per OTEL.md
+// §4.3 — quest.batch.lines_total counts non-blank lines parsed,
+// quest.batch.lines_blank counts skipped blanks. parsedNonBlank is
+// the count phase 1 actually returned (post empty-trim filter); we
+// derive blanks from the file's total line count minus that.
+func countLines(body []byte, parsedNonBlank int) (total, blank int) {
+	if len(body) == 0 {
+		return 0, 0
+	}
+	totalLines := bytes.Count(body, []byte{'\n'})
+	if len(body) > 0 && body[len(body)-1] != '\n' {
+		totalLines++
+	}
+	blank = totalLines - parsedNonBlank
+	if blank < 0 {
+		blank = 0
+	}
+	return parsedNonBlank, blank
 }

@@ -401,21 +401,36 @@ func RecordLinkRemoved(ctx context.Context, taskID, targetID, linkType string) {
 	))
 }
 
-// RecordBatchOutcome records batch.size + outcome (ok/partial/rejected)
-// + the §4.3 batch span attributes. Phase-2 signature preserved
-// (created, errors, outcome) — Task 12.11 swaps in the derived-outcome
-// variant that takes lines_total / lines_blank / partial_ok.
-func RecordBatchOutcome(ctx context.Context, created, errCount int, outcome string) {
+// RecordBatchOutcome derives the outcome (ok/partial/rejected) from
+// the input counts and stamps the §4.3 batch attribute set on the
+// command span plus dept.quest.batch.size{outcome} (OTEL.md §5.1,
+// §8.6, plan Task 12.11). Single source of truth for outcome
+// classification — the batch handler does not duplicate the math.
+//
+//   - rejected: createdCount == 0 && errorsCount > 0
+//   - partial:  createdCount > 0  && errorsCount > 0 && partialOK
+//   - ok:       createdCount > 0  && errorsCount == 0
+func RecordBatchOutcome(ctx context.Context, linesTotal, linesBlank int, partialOK bool, createdCount, errorsCount int) {
+	outcome := "ok"
+	switch {
+	case createdCount == 0 && errorsCount > 0:
+		outcome = "rejected"
+	case createdCount > 0 && errorsCount > 0 && partialOK:
+		outcome = "partial"
+	}
 	span := trace.SpanFromContext(ctx)
 	if !nonRecording(span) {
 		span.SetAttributes(
-			attribute.Int("quest.batch.created", created),
-			attribute.Int("quest.batch.errors", errCount),
+			attribute.Int("quest.batch.lines_total", linesTotal),
+			attribute.Int("quest.batch.lines_blank", linesBlank),
+			attribute.Bool("quest.batch.partial_ok", partialOK),
+			attribute.Int("quest.batch.created", createdCount),
+			attribute.Int("quest.batch.errors", errorsCount),
 			attribute.String("quest.batch.outcome", outcome),
 		)
 	}
 	if batchSizeHis != nil {
-		batchSizeHis.Record(ctx, int64(created), metric.WithAttributes(
+		batchSizeHis.Record(ctx, int64(createdCount), metric.WithAttributes(
 			attribute.String("outcome", outcome),
 		))
 	}

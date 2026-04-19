@@ -82,7 +82,7 @@ func TestStubsDoNotPanic(t *testing.T) {
 	telemetry.RecordStatusTransition(ctx, "proj-1", "open", "accepted")
 	telemetry.RecordLinkAdded(ctx, "a", "b", "blocked-by")
 	telemetry.RecordLinkRemoved(ctx, "a", "b", "blocked-by")
-	telemetry.RecordBatchOutcome(ctx, 3, 0, "ok")
+	telemetry.RecordBatchOutcome(ctx, 3, 0, false, 3, 0)
 	telemetry.RecordBatchError(ctx, "parse", "missing_field", "title", "ref1", 5)
 	telemetry.RecordMoveOutcome(ctx, "proj-a1.3", "proj-b2.1", 4, 5)
 	telemetry.RecordCancelOutcome(ctx, "proj-1", true, 3, 1)
