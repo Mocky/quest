@@ -300,5 +300,10 @@ func closeTask(ctx context.Context, cfg config.Config, s store.Store, args []str
 	}
 	telemetry.RecordStatusTransition(ctx, id, status, action.newStatus)
 	telemetry.RecordTerminalState(ctx, id, tier.String, cfg.Agent.Role, action.newStatus)
+	if telemetry.CaptureContentEnabled() {
+		if parsed.Debrief != nil && *parsed.Debrief != "" {
+			telemetry.RecordContentDebrief(ctx, *parsed.Debrief)
+		}
+	}
 	return output.Emit(stdout, cfg.Output.Format, closeAck{ID: id, Status: action.newStatus})
 }

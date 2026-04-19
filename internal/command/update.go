@@ -214,6 +214,26 @@ func Update(ctx context.Context, cfg config.Config, s store.Store, args []string
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	if telemetry.CaptureContentEnabled() {
+		if parsed.Title != nil && *parsed.Title != "" {
+			telemetry.RecordContentTitle(ctx, *parsed.Title)
+		}
+		if parsed.Description != nil && *parsed.Description != "" {
+			telemetry.RecordContentDescription(ctx, *parsed.Description)
+		}
+		if parsed.Context != nil && *parsed.Context != "" {
+			telemetry.RecordContentContext(ctx, *parsed.Context)
+		}
+		if parsed.AcceptanceCriteria != nil && *parsed.AcceptanceCriteria != "" {
+			telemetry.RecordContentAcceptanceCriteria(ctx, *parsed.AcceptanceCriteria)
+		}
+		if parsed.Note != nil && *parsed.Note != "" {
+			telemetry.RecordContentNote(ctx, *parsed.Note)
+		}
+		if parsed.Handoff != nil && *parsed.Handoff != "" {
+			telemetry.RecordContentHandoff(ctx, *parsed.Handoff)
+		}
+	}
 	return output.Emit(stdout, cfg.Output.Format, updateAck{ID: id})
 }
 

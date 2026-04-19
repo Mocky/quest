@@ -388,6 +388,20 @@ func Create(ctx context.Context, cfg config.Config, s store.Store, args []string
 		role = *parsed.Role
 	}
 	telemetry.RecordTaskCreated(ctx, newID, tier, role, taskType)
+	if telemetry.CaptureContentEnabled() {
+		if parsed.Title != nil && *parsed.Title != "" {
+			telemetry.RecordContentTitle(ctx, *parsed.Title)
+		}
+		if parsed.Description != nil && *parsed.Description != "" {
+			telemetry.RecordContentDescription(ctx, *parsed.Description)
+		}
+		if parsed.Context != nil && *parsed.Context != "" {
+			telemetry.RecordContentContext(ctx, *parsed.Context)
+		}
+		if parsed.AcceptanceCriteria != nil && *parsed.AcceptanceCriteria != "" {
+			telemetry.RecordContentAcceptanceCriteria(ctx, *parsed.AcceptanceCriteria)
+		}
+	}
 	return output.Emit(stdout, cfg.Output.Format, createAck{ID: newID})
 }
 

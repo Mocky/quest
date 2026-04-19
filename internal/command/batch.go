@@ -171,6 +171,26 @@ func Batch(ctx context.Context, cfg config.Config, s store.Store, args []string,
 		return err
 	}
 
+	if telemetry.CaptureContentEnabled() {
+		for _, line := range lines {
+			if !valid[line.LineNo] {
+				continue
+			}
+			if line.Title != "" {
+				telemetry.RecordContentTitle(ctx, line.Title)
+			}
+			if line.Description != "" {
+				telemetry.RecordContentDescription(ctx, line.Description)
+			}
+			if line.Context != "" {
+				telemetry.RecordContentContext(ctx, line.Context)
+			}
+			if line.AcceptanceCriteria != "" {
+				telemetry.RecordContentAcceptanceCriteria(ctx, line.AcceptanceCriteria)
+			}
+		}
+	}
+
 	outcome := "ok"
 	if len(allErrs) > 0 {
 		outcome = "partial"

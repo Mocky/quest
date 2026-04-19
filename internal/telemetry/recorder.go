@@ -469,13 +469,8 @@ func RecordCancelOutcome(ctx context.Context, taskID string, recursive bool, can
 	_ = skippedCount
 }
 
-// RecordContentReason emits a `quest.content.reason` span event when
-// the OTEL_GENAI_CAPTURE_CONTENT toggle is on. Callers gate on
-// CaptureContentEnabled() before invoking. Body fills in at Task 12.7.
-func RecordContentReason(ctx context.Context, reason string) {
-	_ = ctx
-	_ = reason
-}
+// RecordContentReason and the rest of the content recorders live in
+// content.go (Task 12.7).
 
 // RecordQueryResult records dept.quest.query.result_count{command}.
 // Body fills in fully at Task 12.9.
