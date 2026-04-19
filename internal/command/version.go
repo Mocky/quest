@@ -14,7 +14,7 @@ func Version(ctx context.Context, cfg config.Config, args []string, stdin io.Rea
 	_ = ctx
 	_ = args
 	_ = stdin
-	if cfg.Format == "text" {
+	if cfg.Output.Format == "text" {
 		fmt.Fprintln(stdout, buildinfo.Version)
 		return 0
 	}
