@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,49 @@ func runExecute(args []string, cfg config.Config) (int, string, string) {
 	var out, errb bytes.Buffer
 	exit := cli.Execute(context.Background(), cfg, args, strings.NewReader(""), &out, &errb)
 	return exit, out.String(), errb.String()
+}
+
+// TestExecuteExportDefaultDirWorkspaceRelative pins phase-11-export.md:
+// "A planner running `quest export` from `<workspace>/src/` writes the
+// archive to `<workspace>/quest-export/`, not `<workspace>/src/
+// quest-export/`." Verified end-to-end via cli.Execute so the CWD ≠
+// workspace-root path runs the real dispatch + handler wiring.
+func TestExecuteExportDefaultDirWorkspaceRelative(t *testing.T) {
+	cfg := setupWorkspace(t, "proj", "planner")
+	sub := filepath.Join(cfg.Workspace.Root, "src")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	if err := os.Chdir(sub); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	exit, stdout, stderr := runExecute([]string{"export"}, cfg)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	var ack struct {
+		Dir string `json:"dir"`
+	}
+	if jerr := json.Unmarshal([]byte(stdout), &ack); jerr != nil {
+		t.Fatalf("stdout: %v; raw=%q", jerr, stdout)
+	}
+	wantDir := filepath.Join(cfg.Workspace.Root, "quest-export")
+	if ack.Dir != wantDir {
+		t.Errorf("ack.Dir = %q, want %q (workspace-root-relative, not CWD-relative)", ack.Dir, wantDir)
+	}
+	if _, err := os.Stat(wantDir); err != nil {
+		t.Errorf("expected archive at %s: %v", wantDir, err)
+	}
+	stale := filepath.Join(sub, "quest-export")
+	if _, err := os.Stat(stale); err == nil {
+		t.Errorf("unexpected archive in CWD at %s", stale)
+	}
 }
 
 // Happy-path dispatch: the store opens, migrations run, and the show

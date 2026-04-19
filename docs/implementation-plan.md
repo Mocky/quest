@@ -62,7 +62,7 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
 | 8 | [phase-8-task-management.md](impl/phase-8-task-management.md) | `cancel`, `reset`, `move` | complete |
 | 9 | [phase-9-links-tags.md](impl/phase-9-links-tags.md) | `link`/`unlink`, `tag`/`untag` | complete |
 | 10 | [phase-10-queries.md](impl/phase-10-queries.md) | `deps`, `list`, `graph` | complete |
-| 11 | [phase-11-export.md](impl/phase-11-export.md) | `export` | not started |
+| 11 | [phase-11-export.md](impl/phase-11-export.md) | `export` | complete |
 | 12 | [phase-12-telemetry.md](impl/phase-12-telemetry.md) | OTEL wiring (real Setup, spans, metrics, content) | not started |
 | 13 | [phase-13-tests-ci.md](impl/phase-13-tests-ci.md) | Contract, concurrency, CLI, CI | not started |
 | 14 | [phase-14-ship.md](impl/phase-14-ship.md) | Docs pass + changelog + tag v0.1 | not started |

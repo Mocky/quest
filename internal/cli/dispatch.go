@@ -58,7 +58,7 @@ var descriptors = []commandDescriptor{
 	{Name: "deps", Handler: command.Deps, Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "list", Handler: command.List, Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "graph", Handler: command.Graph, Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
-	{Name: "export", Handler: notImplemented("export"), Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
+	{Name: "export", Handler: command.Export, Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
 }
 
 var descriptorIndex = func() map[string]commandDescriptor {
