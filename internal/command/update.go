@@ -74,9 +74,6 @@ func (a updateArgs) hasElevated() bool {
 // exactly what is blocked.
 func (a updateArgs) blockedOnTerminalState() []string {
 	var blocked []string
-	if a.Handoff != nil {
-		blocked = append(blocked, "--handoff")
-	}
 	if a.Title != nil {
 		blocked = append(blocked, "--title")
 	}
@@ -97,6 +94,9 @@ func (a updateArgs) blockedOnTerminalState() []string {
 	}
 	if a.AcceptanceCriteria != nil {
 		blocked = append(blocked, "--acceptance-criteria")
+	}
+	if a.Handoff != nil {
+		blocked = append(blocked, "--handoff")
 	}
 	return blocked
 }
