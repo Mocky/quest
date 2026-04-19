@@ -50,7 +50,7 @@ var descriptors = []commandDescriptor{
 	{Name: "batch", Handler: command.Batch, Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "cancel", Handler: command.Cancel, Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "reset", Handler: command.Reset, Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
-	{Name: "move", Handler: notImplemented("move"), Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
+	{Name: "move", Handler: command.Move, Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "link", Handler: notImplemented("link"), Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "unlink", Handler: notImplemented("unlink"), Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "tag", Handler: notImplemented("tag"), Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
