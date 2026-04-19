@@ -3,9 +3,39 @@ package telemetry
 import (
 	"context"
 	"io"
+	stdlog "log/slog"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/mocky/quest/internal/errors"
 )
+
+// schemaMigrationsCtr is the only instrument Task 12.1 wires up — it
+// is owned by MigrateSpan's closure (one call site = one span + one
+// metric, OTEL.md §8.8). Every other instrument lands in Task 12.5
+// alongside the recorder bodies that increment them; the nil-checks in
+// the recorder stubs below skip the metric when it has not been
+// registered yet.
+var schemaMigrationsCtr metric.Int64Counter
+
+// initSchemaMigrationsInstrument is invoked by Setup once the meter
+// provider is installed. Held separate from a future initInstruments
+// helper so Task 12.1 can land the migration span/metric without
+// depending on the rest of Task 12.5's instrument table.
+func initSchemaMigrationsInstrument() {
+	c, err := meter.Int64Counter("dept.quest.schema.migrations",
+		metric.WithDescription("Schema migrations applied."),
+		metric.WithUnit("{event}"),
+	)
+	if err != nil {
+		stdlog.Warn("instrument", "name", "dept.quest.schema.migrations", "err", err)
+		return
+	}
+	schemaMigrationsCtr = c
+}
 
 // StoreSpan opens a child span under the active command span for
 // store-level operations (`quest.store.traverse`,
@@ -16,16 +46,6 @@ import (
 func StoreSpan(ctx context.Context, name string) (context.Context, func(err error)) {
 	_ = name
 	return ctx, func(err error) { _ = err }
-}
-
-// TraceIDsFromContext returns the active span's trace and span IDs when
-// one is attached to ctx. The stderr slog handler uses it to enrich
-// records per OBSERVABILITY.md §Correlation Identifiers. Phase 2
-// returns ok=false so stderr records simply omit the trace fields;
-// Task 12.1 swaps in trace.SpanContextFromContext.
-func TraceIDsFromContext(ctx context.Context) (traceID, spanID string, ok bool) {
-	_ = ctx
-	return "", "", false
 }
 
 // RecordTaskContext sets the §4.3 task-affecting attributes
@@ -44,7 +64,7 @@ func RecordTaskContext(ctx context.Context, id, tier, taskType string) {
 // sets quest.error.class, quest.error.retryable, quest.exit_code from
 // the err's class/exit-code mapping. Increments
 // dept.quest.errors{error_class}. Called from WrapCommand and via
-// RecordDispatchError.
+// RecordDispatchError. Body fills in at Task 12.5.
 func RecordHandlerError(ctx context.Context, err error) {
 	_ = ctx
 	_ = err
@@ -57,9 +77,8 @@ func RecordHandlerError(ctx context.Context, err error) {
 // errors; optional origin="dispatch" attribute distinguishes them),
 // writes the stderr two-liner via errors.EmitStderr, and returns
 // errors.ExitCode(err). Lives here so internal/cli/ never imports OTEL
-// (§10.1). The Phase 4 body emits stderr + returns the mapped exit
-// code so the dispatcher's every early-return sequence works today;
-// Task 12.5 adds the span/counter/slog wiring behind this call.
+// (§10.1). Task 12.5 wires the span/counter/slog enrichments behind
+// this call; the Phase-4 stub just emits stderr + maps the exit code.
 func RecordDispatchError(ctx context.Context, err error, stderr io.Writer) int {
 	_ = ctx
 	if err == nil {
@@ -137,7 +156,9 @@ func RecordLinkRemoved(ctx context.Context, taskID, targetID, linkType string) {
 }
 
 // RecordBatchOutcome records batch.size + outcome (ok/partial/rejected)
-// and increments dept.quest.batch.size. OTEL.md §5.1.
+// and increments dept.quest.batch.size. OTEL.md §5.1. Phase-2 signature
+// preserved (created, errors, outcome) until Task 12.11 swaps in the
+// derived-outcome variant.
 func RecordBatchOutcome(ctx context.Context, created, errors int, outcome string) {
 	_ = ctx
 	_ = created
@@ -189,7 +210,8 @@ func RecordCancelOutcome(ctx context.Context, taskID string, recursive bool, can
 // RecordContentReason emits a `quest.content.reason` span event when
 // the OTEL_GENAI_CAPTURE_CONTENT toggle is on. Callers gate on
 // CaptureContentEnabled() before invoking so the no-op path never pays
-// allocation cost for the truncation helper.
+// allocation cost for the truncation helper. Task 12.7 fills in the
+// span event body.
 func RecordContentReason(ctx context.Context, reason string) {
 	_ = ctx
 	_ = reason
@@ -210,3 +232,13 @@ func RecordGraphResult(ctx context.Context, nodesReturned, nodesVisited int) {
 	_ = nodesReturned
 	_ = nodesVisited
 }
+
+// Suppress unused-import warnings while Task 12.5 / 12.6 / 12.7 / 12.9
+// fill in the bodies. These are all standard OTEL types the recorder
+// bodies will consume; importing them now keeps subsequent task
+// commits focused on body changes rather than imports.
+var (
+	_ = attribute.String
+	_ = codes.Error
+	_ trace.Span
+)

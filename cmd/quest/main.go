@@ -20,6 +20,11 @@ import (
 	"github.com/mocky/quest/internal/telemetry"
 )
 
+func otelLevel(s string) slog.Level {
+	lvl, _ := logging.LevelFromString(s)
+	return lvl
+}
+
 func main() {
 	os.Exit(run())
 }
@@ -39,6 +44,7 @@ func run() int {
 		AgentTask:      cfg.Agent.Task,
 		AgentSession:   cfg.Agent.Session,
 		CaptureContent: cfg.Telemetry.CaptureContent,
+		OTELLevel:      otelLevel(cfg.Log.OTELLevel),
 	})
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
