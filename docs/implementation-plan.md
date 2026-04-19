@@ -51,7 +51,7 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
 
 | Phase | File | Summary | Status |
 | ----- | ---- | ------- | ------ |
-| 0 | [phase-0-bootstrap.md](impl/phase-0-bootstrap.md) | Repo scaffolding + `quest version` end-to-end | not started |
+| 0 | [phase-0-bootstrap.md](impl/phase-0-bootstrap.md) | Repo scaffolding + `quest version` end-to-end | in progress |
 | 1 | [phase-1-configuration.md](impl/phase-1-configuration.md) | `internal/config/`: workspace discovery, parse, Load/Validate | not started |
 | 2 | [phase-2-logging-errors.md](impl/phase-2-logging-errors.md) | slog setup, error sentinels, telemetry no-op shell | not started |
 | 3 | [phase-3-storage-foundation.md](impl/phase-3-storage-foundation.md) | SQLite open + WAL + migrations + schema v1 | not started |

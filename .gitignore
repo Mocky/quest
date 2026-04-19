@@ -1,0 +1,4 @@
+/quest
+/quest-export/
+/.quest/quest.db*
+/coverage.out
