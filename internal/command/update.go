@@ -105,10 +105,18 @@ func (a updateArgs) blockedOnTerminalState() []string {
 // invocations that mix worker-accessible flags (`--note`, `--pr`,
 // `--handoff`) with elevated-only flags (`--title`, `--tier`, ...) are
 // dispatched at worker level but re-check the role gate inside the
-// handler — the only command in the suite that does. The precondition
-// ladder follows spec §Error precedence: existence (3) → role gate on
-// elevated flags (6) → ownership (4) → terminal-state / cancelled (5)
-// → `--type` transition (5) → flag-shape usage (2).
+// handler — the only command in the suite that does.
+//
+// The precondition ladder is the spec §Error precedence *Mixed-flag
+// carve-out*: existence (3) precedes the role gate (6) here, inverting
+// the ladder used by every pure-elevated command (see cancel.go,
+// move.go, etc., where role-gate-first is the norm). This is
+// deliberate, not a bug — the dispatch-time role gate already passed
+// because `update` is worker-accessible, so the inner re-check fires
+// only on elevated flags present in the mix. Full ladder: existence
+// (3) → role gate on elevated flags (6) → ownership (4) →
+// terminal-state / cancelled (5) → `--type` transition (5) →
+// flag-shape usage (2).
 func Update(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	positional, flagArgs := splitLeadingPositional(args)
 	parsed, trailing, err := parseUpdateArgs(cfg, stdin, stderr, flagArgs)
