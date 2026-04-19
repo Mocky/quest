@@ -487,6 +487,36 @@ func TestUpdateTypeTransitionCheckBeforeUsageCheck(t *testing.T) {
 	}
 }
 
+// TestUpdateInvalidTypeRejected: --type outside the spec enum (task,
+// bug) exits 2 (usage) before any mutation. Mirrors the create-side
+// enum check so one helper covers both commands.
+func TestUpdateInvalidTypeRejected(t *testing.T) {
+	s, _ := testStore(t)
+	seedTaskFull(t, s, "proj-a1", "Root", "open", "")
+
+	err, _, _ := runUpdate(t, s, plannerCfg(), "", []string{"proj-a1", "--type", "epic"})
+	if err == nil {
+		t.Fatalf("got nil, want ErrUsage")
+	}
+	if !stderrors.Is(err, errors.ErrUsage) {
+		t.Fatalf("err = %v, want wraps ErrUsage", err)
+	}
+}
+
+// TestUpdateInvalidTierRejected: --tier outside T0..T6 exits 2.
+func TestUpdateInvalidTierRejected(t *testing.T) {
+	s, _ := testStore(t)
+	seedTaskFull(t, s, "proj-a1", "Root", "open", "")
+
+	err, _, _ := runUpdate(t, s, plannerCfg(), "", []string{"proj-a1", "--tier", "T9"})
+	if err == nil {
+		t.Fatalf("got nil, want ErrUsage")
+	}
+	if !stderrors.Is(err, errors.ErrUsage) {
+		t.Fatalf("err = %v, want wraps ErrUsage", err)
+	}
+}
+
 // TestUpdateElevatedFieldHistoryCaptured pins the history payload
 // shape: changing --title emits one field_updated row with
 // fields.title = {from, to}.

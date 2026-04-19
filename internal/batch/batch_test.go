@@ -279,6 +279,36 @@ func TestPhaseSemanticInvalidLinkType(t *testing.T) {
 	}
 }
 
+// TestPhaseSemanticInvalidType: an out-of-enum `type` on a line →
+// invalid_type carrying field=type and the offending value.
+func TestPhaseSemanticInvalidType(t *testing.T) {
+	s := testStore(t)
+	body := `{"ref":"a","title":"A","type":"epic"}` + "\n"
+	_, errs := runPhases(t, s, body)
+	typeErrs := withCode(errs, batch.BatchCodeInvalidType)
+	if len(typeErrs) != 1 {
+		t.Fatalf("errs = %+v, want 1 invalid_type", typeErrs)
+	}
+	if typeErrs[0].Field != "type" || typeErrs[0].Value != "epic" {
+		t.Errorf("err = %+v, want field=type, value=epic", typeErrs[0])
+	}
+}
+
+// TestPhaseSemanticInvalidTier: an out-of-enum `tier` on a line →
+// invalid_tier carrying field=tier and the offending value.
+func TestPhaseSemanticInvalidTier(t *testing.T) {
+	s := testStore(t)
+	body := `{"ref":"a","title":"A","tier":"T9"}` + "\n"
+	_, errs := runPhases(t, s, body)
+	tierErrs := withCode(errs, batch.BatchCodeInvalidTier)
+	if len(tierErrs) != 1 {
+		t.Fatalf("errs = %+v, want 1 invalid_tier", tierErrs)
+	}
+	if tierErrs[0].Field != "tier" || tierErrs[0].Value != "T9" {
+		t.Errorf("err = %+v, want field=tier, value=T9", tierErrs[0])
+	}
+}
+
 // TestPhaseSemanticBlockedByCancelled: dep target is an existing
 // cancelled task → blocked_by_cancelled.
 func TestPhaseSemanticBlockedByCancelled(t *testing.T) {
@@ -521,6 +551,16 @@ func TestBatchStderrShape(t *testing.T) {
 		{
 			name: "invalid_link_type",
 			err:  batch.BatchError{Line: 1, Phase: "semantic", Code: "invalid_link_type", Field: "dependencies[0].type", Value: "bogus", Message: "m"},
+			keys: []string{"line", "phase", "code", "field", "value", "message"},
+		},
+		{
+			name: "invalid_type",
+			err:  batch.BatchError{Line: 1, Phase: "semantic", Code: "invalid_type", Field: "type", Value: "epic", Message: "m"},
+			keys: []string{"line", "phase", "code", "field", "value", "message"},
+		},
+		{
+			name: "invalid_tier",
+			err:  batch.BatchError{Line: 1, Phase: "semantic", Code: "invalid_tier", Field: "tier", Value: "T9", Message: "m"},
 			keys: []string{"line", "phase", "code", "field", "value", "message"},
 		},
 		{

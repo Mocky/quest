@@ -132,6 +132,18 @@ func TestCreateInvalidType(t *testing.T) {
 	}
 }
 
+// TestCreateInvalidTier: --tier must be one of T0..T6. Prior to the
+// shared ValidateTier helper the CLI accepted any string and deferred
+// detection to an agent noticing the bogus value in `quest show`.
+func TestCreateInvalidTier(t *testing.T) {
+	s, _ := testStore(t)
+	err, _, _ := runCreate(t, s, createCfg(),
+		[]string{"--title", "Bad", "--tier", "T9"})
+	if err == nil || !stderrors.Is(err, errors.ErrUsage) {
+		t.Fatalf("err = %v, want ErrUsage", err)
+	}
+}
+
 // TestCreateRejectsRepeatedSingleDepFlag: --caused-by, --discovered-from,
 // --retry-of are single-value; a second pass rejects as usage error.
 func TestCreateRejectsRepeatedSingleDepFlag(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mocky/quest/internal/batch"
 	"github.com/mocky/quest/internal/config"
 	"github.com/mocky/quest/internal/errors"
 	"github.com/mocky/quest/internal/input"
@@ -365,6 +366,16 @@ func validateUpdateUsage(a updateArgs) error {
 	}
 	if err := check("--acceptance-criteria", a.AcceptanceCriteria); err != nil {
 		return err
+	}
+	if a.Type != nil {
+		if err := batch.ValidateType(*a.Type); err != nil {
+			return fmt.Errorf("update: --type: %w", err)
+		}
+	}
+	if a.Tier != nil {
+		if err := batch.ValidateTier(*a.Tier); err != nil {
+			return fmt.Errorf("update: --tier: %w", err)
+		}
 	}
 	for _, kv := range a.Meta {
 		key, value, ok := strings.Cut(kv, "=")

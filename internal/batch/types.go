@@ -101,6 +101,8 @@ const (
 	BatchCodeSourceTypeRequired = "source_type_required"
 	BatchCodeInvalidTag         = "invalid_tag"
 	BatchCodeInvalidLinkType    = "invalid_link_type"
+	BatchCodeInvalidType        = "invalid_type"
+	BatchCodeInvalidTier        = "invalid_tier"
 	BatchCodeParentNotOpen      = "parent_not_open"
 )
 

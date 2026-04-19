@@ -167,8 +167,15 @@ func validateCreateArgs(a createArgs) error {
 	if err := checkNonEmpty("--acceptance-criteria", a.AcceptanceCriteria); err != nil {
 		return err
 	}
-	if a.Type != nil && *a.Type != "task" && *a.Type != "bug" {
-		return fmt.Errorf("create: --type: unknown type %q (want task or bug): %w", *a.Type, errors.ErrUsage)
+	if a.Type != nil {
+		if err := batch.ValidateType(*a.Type); err != nil {
+			return fmt.Errorf("create: --type: %w", err)
+		}
+	}
+	if a.Tier != nil {
+		if err := batch.ValidateTier(*a.Tier); err != nil {
+			return fmt.Errorf("create: --tier: %w", err)
+		}
 	}
 	// Per-dep-flag non-empty checks. Repeatable --blocked-by
 	// validates every entry; single-value dep flags check the one

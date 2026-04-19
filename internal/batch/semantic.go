@@ -23,6 +23,8 @@ var validLinkTypes = map[string]bool{
 // clearest single error:
 //   - tag pattern (invalid_tag, field `tags[n]`)
 //   - link-type enum (invalid_link_type, field `dependencies[n].type`)
+//   - type enum (invalid_type, field `type`) against spec §Core fields
+//   - tier enum (invalid_tier, field `tier`) against spec §Model tiers
 //   - external-ID parent status (parent_not_open, field `parent.id`)
 //     mirroring `quest create --parent` / `quest move --parent`
 //     enforcement — a batch-internal ref parent is always `open` at
@@ -45,10 +47,49 @@ func PhaseSemantic(ctx context.Context, s store.Store, lines []BatchLine, valid 
 		}
 		errs = append(errs, tagErrors(line)...)
 		errs = append(errs, linkTypeErrors(line)...)
+		errs = append(errs, typeEnumErrors(line)...)
+		errs = append(errs, tierEnumErrors(line)...)
 		errs = append(errs, parentNotOpenErrors(ctx, s, line, parentStatusCache)...)
 		errs = append(errs, semanticDepErrors(ctx, s, line)...)
 	}
 	return errs
+}
+
+// typeEnumErrors checks line.Type against the spec §Core fields enum.
+// An empty Type is treated as the default `task` and passes; an
+// unrecognized non-empty string emits invalid_type carrying field
+// `type` and the offending value. Mirrors the invalid_tag / invalid_
+// link_type pattern so agents handle all phase-4 enum rejections the
+// same way.
+func typeEnumErrors(line BatchLine) []BatchError {
+	if err := ValidateType(line.Type); err != nil {
+		return []BatchError{{
+			Line:    line.LineNo,
+			Phase:   PhaseNameSemantic,
+			Code:    BatchCodeInvalidType,
+			Field:   "type",
+			Value:   line.Type,
+			Message: err.Error(),
+		}}
+	}
+	return nil
+}
+
+// tierEnumErrors mirrors typeEnumErrors for the §Model tiers enum.
+// Empty tier is permitted (the spec tier column is nullable); any
+// non-empty string outside T0..T6 emits invalid_tier.
+func tierEnumErrors(line BatchLine) []BatchError {
+	if err := ValidateTier(line.Tier); err != nil {
+		return []BatchError{{
+			Line:    line.LineNo,
+			Phase:   PhaseNameSemantic,
+			Code:    BatchCodeInvalidTier,
+			Field:   "tier",
+			Value:   line.Tier,
+			Message: err.Error(),
+		}}
+	}
+	return nil
 }
 
 // tagErrors iterates line.Tags and emits one invalid_tag per
