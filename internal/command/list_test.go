@@ -483,6 +483,29 @@ func TestListTextFormat(t *testing.T) {
 	}
 }
 
+// TestListTextFormatTruncation: per spec §Text-mode formatting, cells
+// that exceed the fixed column width are cut to width-3 and suffixed
+// with "...". The title column width is 40, so a 60-char title lands
+// at 37 chars + "...".
+func TestListTextFormatTruncation(t *testing.T) {
+	s, _ := testStore(t)
+	longTitle := strings.Repeat("x", 60)
+	seedListTask(t, s, "proj-t1", longTitle, "", "open", "", "", "")
+	cfg := plannerCfg()
+	cfg.Output.Format = "text"
+	err, stdout, _ := runList(t, s, cfg, nil)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := strings.Repeat("x", 37) + "..."
+	if !strings.Contains(stdout, want) {
+		t.Errorf("truncated title missing: want substring %q; got %q", want, stdout)
+	}
+	if strings.Contains(stdout, strings.Repeat("x", 38)) {
+		t.Errorf("untruncated title leaked: %q", stdout)
+	}
+}
+
 // updateStatus rewrites a task status via direct SQL so tests can
 // re-configure the graph between calls without dragging in the full
 // handler wiring.

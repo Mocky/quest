@@ -402,12 +402,26 @@ func emitListText(w io.Writer, columns []string, rows []listRow) error {
 			if i > 0 {
 				buf.WriteString("  ")
 			}
-			buf.WriteString(padRight(formatTextCell(row.cells[c]), widthList[i]))
+			buf.WriteString(padRight(truncCell(formatTextCell(row.cells[c]), widthList[i]), widthList[i]))
 		}
 		buf.WriteByte('\n')
 	}
 	_, err := w.Write(buf.Bytes())
 	return err
+}
+
+// truncCell enforces the fixed column width from spec §Text-mode
+// formatting: cells longer than w are cut to w-3 and suffixed with
+// "...". Widths in emitListText are always >= 6, so the w < 3 branch
+// is a defensive tail for future width changes.
+func truncCell(s string, w int) string {
+	if len(s) <= w {
+		return s
+	}
+	if w < 3 {
+		return s[:w]
+	}
+	return s[:w-3] + "..."
 }
 
 func formatTextCell(v any) string {
