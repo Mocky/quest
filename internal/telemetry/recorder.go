@@ -13,13 +13,15 @@ import (
 	"github.com/mocky/quest/internal/errors"
 )
 
-// schemaMigrationsCtr is the only instrument Task 12.1 wires up — it
-// is owned by MigrateSpan's closure (one call site = one span + one
-// metric, OTEL.md §8.8). Every other instrument lands in Task 12.5
-// alongside the recorder bodies that increment them; the nil-checks in
-// the recorder stubs below skip the metric when it has not been
-// registered yet.
-var schemaMigrationsCtr metric.Int64Counter
+// Instrument package-level handles. Most land in Task 12.5;
+// schemaMigrationsCtr arrives with Task 12.1's MigrateSpan, and
+// operationsCtr lands with Task 12.2's WrapCommand. nil checks keep
+// the calling sites safe even when an instrument has not been
+// registered yet (e.g., disabled-OTEL path or mid-phase build).
+var (
+	schemaMigrationsCtr metric.Int64Counter
+	operationsCtr       metric.Int64Counter
+)
 
 // initSchemaMigrationsInstrument is invoked by Setup once the meter
 // provider is installed. Held separate from a future initInstruments
@@ -35,6 +37,24 @@ func initSchemaMigrationsInstrument() {
 		return
 	}
 	schemaMigrationsCtr = c
+
+	op, err := meter.Int64Counter("dept.quest.operations",
+		metric.WithDescription("Total CLI invocations by command and outcome."),
+		metric.WithUnit("{operation}"),
+	)
+	if err != nil {
+		stdlog.Warn("instrument", "name", "dept.quest.operations", "err", err)
+		return
+	}
+	operationsCtr = op
+}
+
+// statusAttrs caches the {status} attribute set for
+// dept.quest.operations to avoid building the slice on every call.
+// Task 12.5 may convert these to package-level attribute.KeyValue
+// constants.
+func statusAttrs(status string) metric.MeasurementOption {
+	return metric.WithAttributes(attribute.String("status", status))
 }
 
 // StoreSpan opens a child span under the active command span for

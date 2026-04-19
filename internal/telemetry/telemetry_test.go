@@ -31,10 +31,10 @@ func TestStubsDoNotPanic(t *testing.T) {
 		t.Errorf("ExtractTraceFromConfig did not return ctx unchanged")
 	}
 
-	ctx2, span := telemetry.CommandSpan(ctx, "version", false)
-	if ctx2 != ctx {
-		t.Errorf("CommandSpan did not return ctx unchanged")
-	}
+	// Phase 12 made CommandSpan a real tracer.Start call; the no-op
+	// global tracer still returns a non-recording span and a context
+	// derived from the parent so this exercises the disabled path.
+	_, span := telemetry.CommandSpan(ctx, "version", false)
 	span.End()
 
 	if err := telemetry.WrapCommand(ctx, "version", func(context.Context) error { return nil }); err != nil {
