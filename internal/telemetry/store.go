@@ -100,6 +100,14 @@ func (d *InstrumentedStore) CurrentSchemaVersion(ctx context.Context) (int, erro
 	return d.inner.CurrentSchemaVersion(ctx)
 }
 
+// Unwrap exposes the inner store so store.Migrate can drill through
+// the decorator and reach the *sqliteStore for its embedded.SQL
+// migration runner. Migration runs from the bare store directly so
+// the migration transaction does not also produce a quest.store.tx
+// span — schema migrations get their own quest.db.migrate span via
+// telemetry.MigrateSpan instead (OTEL.md §8.8).
+func (d *InstrumentedStore) Unwrap() store.Store { return d.inner }
+
 // BeginImmediate is the structural-transaction seam: opens the
 // underlying *store.Tx, then wraps it in a quest.store.tx span whose
 // lifetime is bound to the transaction's. Hooks installed via

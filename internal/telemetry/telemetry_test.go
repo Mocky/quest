@@ -116,12 +116,13 @@ func TestTruncatePreservesUTF8Boundary(t *testing.T) {
 
 // TestNoOTELImportsOutsideTelemetry is the Task 2.3 grep tripwire:
 // a handler that accidentally imports `go.opentelemetry.io` fails the
-// build. Walks every non-test .go file under internal/ and cmd/ and
-// rejects any match outside internal/telemetry/. internal/testutil/ is
-// also exempt — its capturing-tracer / capturing-meter helpers must
-// import OTEL to assert on emitted signals (Phase 12 plan §Shared
-// `tracetest` helper); the package is test-only per its doc.go and is
-// never linked into production code paths.
+// build. Walks every production .go file under internal/ and cmd/ and
+// rejects any match outside internal/telemetry/. Skips _test.go files
+// — tests legitimately need OTEL types to assert on emitted spans /
+// metrics (Phase 12 contract tests, Phase 13 cross-package tests).
+// internal/testutil/ is also exempt — its capturing-tracer /
+// capturing-meter helpers are test-only by convention (doc.go) and
+// must import OTEL to provide the helpers.
 func TestNoOTELImportsOutsideTelemetry(t *testing.T) {
 	root := findRepoRoot(t)
 	allowedPrefixes := []string{
@@ -132,6 +133,9 @@ func TestNoOTELImportsOutsideTelemetry(t *testing.T) {
 	for _, dir := range []string{"internal", "cmd"} {
 		_ = filepath.Walk(filepath.Join(root, dir), func(p string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() || !strings.HasSuffix(p, ".go") {
+				return nil
+			}
+			if strings.HasSuffix(p, "_test.go") {
 				return nil
 			}
 			for _, allowed := range allowedPrefixes {

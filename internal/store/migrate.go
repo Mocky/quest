@@ -33,7 +33,19 @@ const SupportedSchemaVersion = 1
 // On any migration-SQL failure the transaction rolls back and the DB
 // remains at the prior version — spec §Storage pins this
 // "forward-only, never partial" behavior.
+// unwrapper lets a decorator surface the inner Store so Migrate's
+// type assertion still works after telemetry.WrapStore. Decorators
+// implement Unwrap() Store; the bare store does not need to.
+type unwrapper interface{ Unwrap() Store }
+
 func Migrate(ctx context.Context, s Store) (int, error) {
+	for {
+		if u, ok := s.(unwrapper); ok {
+			s = u.Unwrap()
+			continue
+		}
+		break
+	}
 	impl, ok := s.(*sqliteStore)
 	if !ok {
 		return 0, fmt.Errorf("%w: store.Migrate called with non-sqlite store", errors.ErrGeneral)
