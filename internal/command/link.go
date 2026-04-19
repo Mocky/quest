@@ -131,11 +131,6 @@ func Link(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	if err != nil {
 		return err
 	}
-	if taskID == edge.Target && edge.LinkType == batch.LinkBlockedBy {
-		telemetry.RecordCycleDetected(ctx, []string{taskID, edge.Target})
-		telemetry.RecordPreconditionFailed(ctx, "cycle", []string{taskID})
-		return fmt.Errorf("link: task cannot be blocked-by itself: %w", errors.ErrConflict)
-	}
 
 	tx, err := s.BeginImmediate(ctx, store.TxLink)
 	if err != nil {
@@ -156,6 +151,20 @@ func Link(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 		return fmt.Errorf("%w: link: %s", errors.ErrGeneral, err.Error())
 	}
 	telemetry.RecordTaskContext(ctx, taskID, tier.String, taskType.String)
+
+	// Self-reference cycle check runs inside the tx *after* source
+	// existence so a `quest link ghost --blocked-by ghost` against a
+	// missing task returns exit 3 (not_found) rather than exit 5, per
+	// spec §Error precedence (existence beats cycle). The dedicated
+	// block preserves the RecordCycleDetected event shape
+	// ([taskID, taskID]) that the generic ValidateSemantic cycle path
+	// would not emit identically.
+	if taskID == edge.Target && edge.LinkType == batch.LinkBlockedBy {
+		telemetry.RecordCycleDetected(ctx, []string{taskID, edge.Target})
+		telemetry.RecordPreconditionFailed(ctx, "cycle", []string{taskID})
+		tx.MarkOutcome(store.TxRolledBackPrecondition)
+		return fmt.Errorf("link: task cannot be blocked-by itself: %w", errors.ErrConflict)
+	}
 
 	// Dependency validation (existence of target, semantic constraints,
 	// cycle detection on blocked-by). The validator reads against the

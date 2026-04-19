@@ -206,6 +206,19 @@ func TestLinkSelfBlockedByRejected(t *testing.T) {
 	}
 }
 
+// TestLinkSelfBlockedByMissingReturnsNotFound pins spec §Error
+// precedence: existence (exit 3) must beat cycle (exit 5). Before the
+// fix, the self-reference short-circuit fired before the source
+// existence SELECT, so `quest link ghost --blocked-by ghost` returned
+// ErrConflict on a missing task.
+func TestLinkSelfBlockedByMissingReturnsNotFound(t *testing.T) {
+	s, _ := testStore(t)
+	err, _, _ := runLink(t, s, plannerCfg(), []string{"ghost", "--blocked-by", "ghost"})
+	if err == nil || !stderrors.Is(err, errors.ErrNotFound) {
+		t.Fatalf("err = %v, want wraps ErrNotFound", err)
+	}
+}
+
 // TestLinkDuplicateNoOp: duplicate (task, target, type) emits ack but
 // writes no second history row.
 func TestLinkDuplicateNoOp(t *testing.T) {
