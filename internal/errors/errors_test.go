@@ -109,3 +109,21 @@ func TestEmitStderrNilIsNoOp(t *testing.T) {
 		t.Errorf("EmitStderr(nil) wrote %q", buf.String())
 	}
 }
+
+// TestTransientFailureStderrPinning pins quest-spec.md §Storage: the
+// exit-7 stderr line must lead with the verbatim phrase
+// "write lock unavailable after 5s -- transient failure, safe to retry"
+// so agents can switch on it. Driver detail is appended in parens for
+// operator-side debugging. Failures here are a wire-contract regression.
+func TestTransientFailureStderrPinning(t *testing.T) {
+	var buf bytes.Buffer
+	err := qerrors.NewTransient("SQLITE_BUSY: database is locked")
+	qerrors.EmitStderr(err, &buf)
+	want := "quest: transient_failure: write lock unavailable after 5s -- transient failure, safe to retry (SQLITE_BUSY: database is locked)\nquest: exit 7 (transient_failure)\n"
+	if got := buf.String(); got != want {
+		t.Errorf("EmitStderr output mismatch\n got: %q\nwant: %q", got, want)
+	}
+	if !stderrors.Is(err, qerrors.ErrTransient) {
+		t.Error("NewTransient must wrap ErrTransient so Retryable and ExitCode see it")
+	}
+}

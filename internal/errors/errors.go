@@ -129,3 +129,13 @@ func lookup(err error) (classInfo, bool) {
 func NewSchemaTooNew(stored, supported int) error {
 	return fmt.Errorf("%w: database schema version %d is newer than this binary supports -- upgrade quest (binary supports %d)", ErrGeneral, stored, supported)
 }
+
+// NewTransient produces the spec-pinned error returned when the write
+// lock cannot be acquired within PRAGMA busy_timeout. Wording of the
+// leading phrase is verbatim from quest-spec.md §Storage so agents
+// switching on the stderr line see the same string across releases;
+// driverMsg is the underlying sqlite error text, appended in parens
+// for operator-side debugging without polluting the pinned prefix.
+func NewTransient(driverMsg string) error {
+	return fmt.Errorf("write lock unavailable after 5s -- transient failure, safe to retry (%s): %w", driverMsg, ErrTransient)
+}

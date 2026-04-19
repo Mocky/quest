@@ -26,7 +26,7 @@ func classifyDriverErr(err error) error {
 		// Extended SQLITE_BUSY codes (BUSY_RECOVERY, BUSY_SNAPSHOT,
 		// BUSY_TIMEOUT) all share the primary code in the low byte.
 		if primary := se.Code() & 0xFF; primary == sqlite3.SQLITE_BUSY {
-			return fmt.Errorf("%w: %s", errors.ErrTransient, se.Error())
+			return errors.NewTransient(se.Error())
 		}
 	}
 	return fmt.Errorf("%w: %s", errors.ErrGeneral, err.Error())
