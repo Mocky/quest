@@ -243,7 +243,7 @@ func Cancel(ctx context.Context, cfg config.Config, s store.Store, args []string
 		telemetry.RecordStatusTransition(ctx, t.id, t.fromStat, "cancelled")
 		telemetry.RecordTerminalState(ctx, t.id, t.tier, t.role, "cancelled")
 	}
-	if parsed.Reason != nil && telemetry.CaptureContentEnabled() {
+	if parsed.Reason != nil && *parsed.Reason != "" && telemetry.CaptureContentEnabled() {
 		telemetry.RecordContentReason(ctx, reason)
 	}
 

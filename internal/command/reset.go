@@ -129,7 +129,7 @@ func Reset(ctx context.Context, cfg config.Config, s store.Store, args []string,
 	}
 
 	telemetry.RecordStatusTransition(ctx, id, "accepted", "open")
-	if parsed.Reason != nil && telemetry.CaptureContentEnabled() {
+	if parsed.Reason != nil && *parsed.Reason != "" && telemetry.CaptureContentEnabled() {
 		telemetry.RecordContentReason(ctx, reason)
 	}
 	return emitResetAck(stdout, cfg.Output.Format, resetAck{ID: id, Status: "open"})
