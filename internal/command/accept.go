@@ -7,6 +7,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/mocky/quest/internal/config"
@@ -58,7 +59,11 @@ var terminalStatuses = map[string]bool{
 // fail, not accept.
 func Accept(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
-	id, err := resolveWorkerTaskID("accept", cfg, args)
+	positional, rest := splitLeadingPositional(args)
+	if len(rest) > 0 {
+		return fmt.Errorf("accept: unexpected arguments: %w", errors.ErrUsage)
+	}
+	id, err := resolveWorkerTaskID("accept", cfg, positional)
 	if err != nil {
 		return err
 	}
@@ -203,4 +208,18 @@ func resolveWorkerTaskID(command string, cfg config.Config, args []string) (stri
 		return cfg.Agent.Task, nil
 	}
 	return "", fmt.Errorf("%s: no task ID provided and AGENT_TASK is unset: %w", command, errors.ErrUsage)
+}
+
+// splitLeadingPositional separates a leading positional argument (the
+// task ID, per the `quest <cmd> [ID] [flags]` convention) from the
+// remaining flag args. Go's stdlib flag package stops at the first
+// non-flag token, so the conventional "ID first, then flags" CLI
+// order requires this manual split before flag.Parse sees the flags.
+// Returns positional (zero or one element) and the rest to pass to
+// flag.Parse.
+func splitLeadingPositional(args []string) (positional []string, rest []string) {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return []string{args[0]}, args[1:]
+	}
+	return nil, args
 }

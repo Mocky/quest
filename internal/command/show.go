@@ -140,27 +140,23 @@ func writeJSONKV(buf *bytes.Buffer, key string, value any, leadingComma bool) er
 func Show(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
 
+	positional, flagArgs := splitLeadingPositional(args)
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	historyFlag := fs.Bool("history", false, "include the full mutation history")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(flagArgs); err != nil {
 		if stderrors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return fmt.Errorf("show: %s: %w", err.Error(), errors.ErrUsage)
 	}
-
-	var id string
-	switch fs.NArg() {
-	case 0:
-		id = cfg.Agent.Task
-		if id == "" {
-			return fmt.Errorf("show: no task ID provided and AGENT_TASK is unset: %w", errors.ErrUsage)
-		}
-	case 1:
-		id = fs.Arg(0)
-	default:
-		return fmt.Errorf("show: unexpected positional arguments: %w", errors.ErrUsage)
+	// Support ID before or after flags: trailing positionals (after
+	// flag.Parse stopped at them) are merged with any leading ID. At
+	// most one positional total.
+	positional = append(positional, fs.Args()...)
+	id, err := resolveWorkerTaskID("show", cfg, positional)
+	if err != nil {
+		return err
 	}
 
 	task, err := s.GetTaskWithDeps(ctx, id)

@@ -43,7 +43,7 @@ var descriptors = []commandDescriptor{
 	{Name: "init", Handler: command.Init, Elevated: false, RequiresWorkspace: false, SuppressTelemetry: false},
 	{Name: "show", Handler: command.Show, Elevated: false, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "accept", Handler: command.Accept, Elevated: false, RequiresWorkspace: true, SuppressTelemetry: false},
-	{Name: "update", Handler: notImplemented("update"), Elevated: false, RequiresWorkspace: true, SuppressTelemetry: false},
+	{Name: "update", Handler: command.Update, Elevated: false, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "complete", Handler: notImplemented("complete"), Elevated: false, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "fail", Handler: notImplemented("fail"), Elevated: false, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "create", Handler: notImplemented("create"), Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
