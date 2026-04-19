@@ -297,6 +297,7 @@ Every write command emits a small JSON object on stdout on success. Shapes are t
 | `cancel`           | `{"cancelled": [...], "skipped": [...]}` -- spec'd above                                   |
 | `move`             | `{"id": "...", "renames": [...]}` -- spec'd above                                          |
 | `batch`            | JSONL ref→id mapping, one `{"ref": "...", "id": "..."}` object per created task -- spec'd above |
+| `export`           | `{"dir": "...", "tasks": N, "debriefs": N, "history_entries": N}` -- spec'd below           |
 
 Rules common to the action-ack shapes (`accept`/`complete`/`fail`/`reset`/`create`/`update`):
 
@@ -1307,6 +1308,21 @@ quest-export/
 Each task JSON file contains the complete task entity (same schema as `quest show --history` output). Debriefs are extracted as standalone markdown files for easy reading. The history JSONL file provides a chronological event stream across all tasks.
 
 The export is the archival and review format; the database is the operational format. Exports are idempotent -- re-running overwrites the output directory.
+
+In `--format json` (default), output is a single JSON object with the resolved output directory and archive counts:
+
+```json
+{"dir": "/abs/path/to/quest-export", "tasks": 42, "debriefs": 8, "history_entries": 173}
+```
+
+| Field             | Type    | Description                                                                                 |
+| ----------------- | ------- | ------------------------------------------------------------------------------------------- |
+| `dir`             | string  | Absolute path to the export directory that was written                                      |
+| `tasks`           | integer | Number of per-task JSON files written to `tasks/`                                           |
+| `debriefs`        | integer | Number of debrief markdown files written to `debriefs/` (tasks with a non-empty debrief)    |
+| `history_entries` | integer | Number of rows written to `history.jsonl` (total events across all tasks, chronological)    |
+
+All four fields are always present. The counts let agents sanity-check that the archive contains what was expected before treating it as a durable backup. In `--format text`, the output is the bare absolute `dir` path followed by a single newline -- matching the `quest init` convention so scripts parsing text mode can read the line directly.
 
 ---
 
