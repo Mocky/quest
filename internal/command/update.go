@@ -159,6 +159,8 @@ func Update(ctx context.Context, cfg config.Config, s store.Store, args []string
 	// spec §Error precedence (permission before state).
 	if cur.status != "open" && !isElevated {
 		if cur.ownerSession != cfg.Agent.Session {
+			telemetry.RecordPreconditionFailed(ctx, "ownership", nil)
+			tx.MarkOutcome(store.TxRolledBackPrecondition)
 			return fmt.Errorf("task is owned by another session: %w", errors.ErrPermission)
 		}
 	}
