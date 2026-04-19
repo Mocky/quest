@@ -103,9 +103,12 @@ func parseCloseArgs(action closeAction, cfg config.Config, stdin io.Reader, stde
 // closeTask is the shared body for `quest complete` and `quest fail`.
 // The precondition ladder follows spec §Error precedence: existence
 // (3) → ownership (4) → from-status (5) → leaf-direct-close carve-out
-// (5, complete-only) → children-terminal (5, parents) → empty-debrief
-// usage (2). State checks always precede usage checks so the caller's
-// retry logic can switch on exit codes deterministically.
+// (5, complete-only) → children-terminal (5, parents) → missing-or-
+// empty-debrief usage (2). State checks always precede usage checks so
+// the caller's retry logic can switch on exit codes deterministically —
+// this is what lets vigil distinguish a cancelled-task termination
+// (exit 5 + cancelledConflictBody) from a worker that forgot to pass
+// --debrief (exit 2).
 func closeTask(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer, action closeAction) error {
 	positional, flagArgs := splitLeadingPositional(args)
 	parsed, trailing, err := parseCloseArgs(action, cfg, stdin, stderr, flagArgs)
@@ -116,9 +119,6 @@ func closeTask(ctx context.Context, cfg config.Config, s store.Store, args []str
 	id, err := resolveWorkerTaskID(action.name, cfg, positional)
 	if err != nil {
 		return err
-	}
-	if parsed.Debrief == nil {
-		return fmt.Errorf("%s: --debrief is required: %w", action.name, errors.ErrUsage)
 	}
 
 	tx, err := s.BeginImmediate(ctx, action.txKind)
@@ -247,8 +247,13 @@ func closeTask(ctx context.Context, cfg config.Config, s store.Store, args []str
 		return fmt.Errorf("%s: parent has non-terminal children: %w", action.name, errors.ErrConflict)
 	}
 
-	// Usage: literal empty debrief is rejected. Whitespace-only
-	// passes per M10 spec decision (plan §Deliberate deviations).
+	// Usage: --debrief is required and cannot be empty. Whitespace-only
+	// passes per M10 spec decision (plan §Deliberate deviations). Runs
+	// after the state ladder so cancelled/not-found/wrong-status cases
+	// win over the usage error.
+	if parsed.Debrief == nil {
+		return fmt.Errorf("%s: --debrief is required: %w", action.name, errors.ErrUsage)
+	}
 	if *parsed.Debrief == "" {
 		return fmt.Errorf("%s: --debrief: empty value rejected: %w", action.name, errors.ErrUsage)
 	}

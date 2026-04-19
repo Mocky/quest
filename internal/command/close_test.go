@@ -378,6 +378,54 @@ func TestPrecondenceOrderingOwnershipBeforeEmptyDebrief(t *testing.T) {
 	}
 }
 
+// TestPrecondenceOrderingNotFoundBeforeMissingDebrief: `complete
+// nonexistent` (no --debrief flag at all) must exit 3, not 2 —
+// existence fires before usage even when --debrief is entirely
+// absent (was: the nil check ran pre-tx and beat existence).
+func TestPrecondenceOrderingNotFoundBeforeMissingDebrief(t *testing.T) {
+	s, _ := testStore(t)
+
+	err, _, _ := runComplete(t, s, workerCfg("sess-x"), "",
+		[]string{"proj-nope"})
+	if err == nil {
+		t.Fatalf("got nil, want ErrNotFound")
+	}
+	if !stderrors.Is(err, errors.ErrNotFound) {
+		t.Fatalf("err = %v, want wraps ErrNotFound (state before usage)", err)
+	}
+}
+
+// TestPrecondenceOrderingCancelledBeforeMissingDebrief: a worker
+// calling `complete` on a cancelled task without --debrief must see
+// exit 5 with the cancelledConflictBody (so vigil can terminate the
+// worker), not exit 2. Regression for the pre-tx nil check that beat
+// the state ladder.
+func TestPrecondenceOrderingCancelledBeforeMissingDebrief(t *testing.T) {
+	s, _ := testStore(t)
+	seedTaskFull(t, s, "proj-a1", "Alpha", "cancelled", "sess-owner")
+
+	err, stdout, _ := runComplete(t, s, workerCfg("sess-owner"), "",
+		[]string{"proj-a1"})
+	if err == nil {
+		t.Fatalf("got nil, want ErrConflict")
+	}
+	if !stderrors.Is(err, errors.ErrConflict) {
+		t.Fatalf("err = %v, want wraps ErrConflict (state before usage)", err)
+	}
+	var body struct {
+		Error   string `json:"error"`
+		Task    string `json:"task"`
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	if jerr := json.Unmarshal([]byte(stdout), &body); jerr != nil {
+		t.Fatalf("stdout: %v; raw=%q", jerr, stdout)
+	}
+	if body.Status != "cancelled" || body.Message != "task was cancelled" {
+		t.Errorf("body = %+v, want cancelled coordination", body)
+	}
+}
+
 // TestCompletePRAppendsAndHistory: complete with --pr appends the PR
 // row and emits a pr_added history entry alongside the lifecycle row.
 func TestCompletePRAppendsAndHistory(t *testing.T) {
