@@ -14,7 +14,14 @@ import (
 // populated only from the file — environment, flags, and defaults are
 // layered on top in Load.
 type FileConfig struct {
-	IDPrefix      string   `toml:"id_prefix"`
+	IDPrefix string `toml:"id_prefix"`
+	// ElevatedRoles lists AGENT_ROLE values that unlock elevated
+	// commands. Default when omitted from .quest/config.toml: [] (empty),
+	// per spec §Role Gating — workers see only worker commands and no
+	// role can reach elevated commands. Distinct from the init template:
+	// `quest init` writes elevated_roles = ["planner"] into new configs
+	// (spec §quest init), so a freshly-initialized project has "planner"
+	// elevated, but a config that drops the line falls back to [].
 	ElevatedRoles []string `toml:"elevated_roles"`
 }
 
