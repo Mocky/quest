@@ -101,6 +101,7 @@ const (
 	BatchCodeSourceTypeRequired = "source_type_required"
 	BatchCodeInvalidTag         = "invalid_tag"
 	BatchCodeInvalidLinkType    = "invalid_link_type"
+	BatchCodeParentNotOpen      = "parent_not_open"
 )
 
 // RefIDPair is the stdout JSONL record emitted for each created

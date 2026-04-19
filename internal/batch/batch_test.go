@@ -323,6 +323,55 @@ func TestPhaseSemanticSourceTypeRequired(t *testing.T) {
 	}
 }
 
+// TestPhaseSemanticParentNotOpen: an external-ID parent in a non-
+// open status trips parent_not_open at phase 4. Mirrors `quest
+// create --parent` / `quest move --parent` enforcement (spec §Parent
+// Tasks rule 3). The error carries id, actual_status, and
+// field=parent.id.
+func TestPhaseSemanticParentNotOpen(t *testing.T) {
+	for _, st := range []string{"accepted", "complete", "failed", "cancelled"} {
+		t.Run(st, func(t *testing.T) {
+			s := testStore(t)
+			seedTask(t, s, "proj-p", st, "task")
+			body := `{"ref":"a","title":"A","parent":{"id":"proj-p"}}` + "\n"
+			_, errs := runPhases(t, s, body)
+			pErrs := withCode(errs, batch.BatchCodeParentNotOpen)
+			if len(pErrs) != 1 {
+				t.Fatalf("errs = %+v, want 1 parent_not_open", errs)
+			}
+			e := pErrs[0]
+			if e.ID != "proj-p" || e.ActualStatus != st || e.Field != "parent.id" {
+				t.Errorf("err = %+v, want {id=proj-p, actual_status=%s, field=parent.id}", e, st)
+			}
+		})
+	}
+}
+
+// TestPhaseSemanticParentOpenOK: an external-ID parent in open status
+// is accepted — no parent_not_open error is emitted.
+func TestPhaseSemanticParentOpenOK(t *testing.T) {
+	s := testStore(t)
+	seedTask(t, s, "proj-p", "open", "task")
+	body := `{"ref":"a","title":"A","parent":{"id":"proj-p"}}` + "\n"
+	_, errs := runPhases(t, s, body)
+	if hasErr(errs, func(e batch.BatchError) bool { return e.Code == batch.BatchCodeParentNotOpen }) {
+		t.Errorf("unexpected parent_not_open for open parent: %+v", errs)
+	}
+}
+
+// TestPhaseSemanticParentNotOpenSkipsRef: a batch-internal ref parent
+// is exempt — the referenced task is inserted open by this batch, so
+// no parent_not_open check applies.
+func TestPhaseSemanticParentNotOpenSkipsRef(t *testing.T) {
+	s := testStore(t)
+	body := `{"ref":"epic","title":"Epic"}` + "\n" +
+		`{"ref":"a","title":"A","parent":"epic"}` + "\n"
+	_, errs := runPhases(t, s, body)
+	if hasErr(errs, func(e batch.BatchError) bool { return e.Code == batch.BatchCodeParentNotOpen }) {
+		t.Errorf("ref parent should not trip parent_not_open: %+v", errs)
+	}
+}
+
 // TestApplyHappyPath builds a small graph through the creation
 // step and asserts ref→id mapping plus DB-side task count.
 func TestApplyHappyPath(t *testing.T) {
@@ -473,6 +522,11 @@ func TestBatchStderrShape(t *testing.T) {
 			name: "invalid_link_type",
 			err:  batch.BatchError{Line: 1, Phase: "semantic", Code: "invalid_link_type", Field: "dependencies[0].type", Value: "bogus", Message: "m"},
 			keys: []string{"line", "phase", "code", "field", "value", "message"},
+		},
+		{
+			name: "parent_not_open carries id + actual_status",
+			err:  batch.BatchError{Line: 1, Phase: "semantic", Code: "parent_not_open", Field: "parent.id", ID: "proj-x", ActualStatus: "accepted", Message: "m"},
+			keys: []string{"line", "phase", "code", "field", "id", "actual_status", "message"},
 		},
 	}
 	for _, tc := range cases {

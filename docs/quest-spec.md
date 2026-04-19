@@ -859,6 +859,7 @@ Additional fields depend on `code`:
 | `source_type_required` | semantic  | `link_type`, `required_type`                               |
 | `invalid_tag`          | semantic  | `field` (e.g., `tags[2]`), `value` (offending tag)         |
 | `invalid_link_type`    | semantic  | `field` (e.g., `dependencies[0].type`), `value` (offending string) |
+| `parent_not_open`      | semantic  | `field` (`parent.id`), `id` (parent id), `actual_status`   |
 
 For cross-line errors (`duplicate_ref`, `cycle`), `line` points to the later line of the pair (or the edge that closed the cycle); the extra fields locate the other party without requiring a second pass.
 

@@ -2,8 +2,10 @@ package batch
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 
+	"github.com/mocky/quest/internal/errors"
 	"github.com/mocky/quest/internal/store"
 )
 
@@ -16,11 +18,15 @@ var validLinkTypes = map[string]bool{
 	LinkRetryOf:        true,
 }
 
-// PhaseSemantic is phase 4 of the validator. It runs four checks
-// per (valid) line, in the following order so a single malformed
-// edge produces the clearest single error:
+// PhaseSemantic is phase 4 of the validator. It runs the following
+// checks per (valid) line so a single malformed edge produces the
+// clearest single error:
 //   - tag pattern (invalid_tag, field `tags[n]`)
 //   - link-type enum (invalid_link_type, field `dependencies[n].type`)
+//   - external-ID parent status (parent_not_open, field `parent.id`)
+//     mirroring `quest create --parent` / `quest move --parent`
+//     enforcement — a batch-internal ref parent is always `open` at
+//     insert time and is therefore exempt.
 //   - per-line ValidateSemantic against the committed store +
 //     same-line edges (blocked_by_cancelled, retry_target_status,
 //     source_type_required).
@@ -32,12 +38,14 @@ var validLinkTypes = map[string]bool{
 // the "derived error" cascade the plan rules out.
 func PhaseSemantic(ctx context.Context, s store.Store, lines []BatchLine, valid map[int]bool) []BatchError {
 	var errs []BatchError
+	parentStatusCache := map[string]string{}
 	for _, line := range lines {
 		if !valid[line.LineNo] {
 			continue
 		}
 		errs = append(errs, tagErrors(line)...)
 		errs = append(errs, linkTypeErrors(line)...)
+		errs = append(errs, parentNotOpenErrors(ctx, s, line, parentStatusCache)...)
 		errs = append(errs, semanticDepErrors(ctx, s, line)...)
 	}
 	return errs
@@ -85,6 +93,46 @@ func linkTypeErrors(line BatchLine) []BatchError {
 		})
 	}
 	return errs
+}
+
+// parentNotOpenErrors enforces spec §Parent Tasks rule 3 (parent must
+// be `open` to accept new children) for lines whose `parent` is an
+// external id. Batch-internal ref parents are skipped — a ref points
+// at a task this batch is about to create, which is `open` at insert
+// time. Phase 2 already confirmed the external id exists, so a
+// not-found result here indicates a transient lookup failure; we
+// treat it as suppress-and-let-runtime-surface-it, matching the
+// phase-2 convention on store errors. The cache shared across lines
+// avoids re-fetching when many lines share one parent.
+func parentNotOpenErrors(ctx context.Context, s store.Store, line BatchLine, cache map[string]string) []BatchError {
+	if line.Parent == nil || line.Parent.ID == "" {
+		return nil
+	}
+	pid := line.Parent.ID
+	status, ok := cache[pid]
+	if !ok {
+		task, err := s.GetTask(ctx, pid)
+		if err != nil {
+			if stderrors.Is(err, errors.ErrNotFound) {
+				cache[pid] = ""
+			}
+			return nil
+		}
+		status = task.Status
+		cache[pid] = status
+	}
+	if status == "" || status == "open" {
+		return nil
+	}
+	return []BatchError{{
+		Line:         line.LineNo,
+		Phase:        PhaseNameSemantic,
+		Code:         BatchCodeParentNotOpen,
+		Field:        "parent.id",
+		ID:           pid,
+		ActualStatus: status,
+		Message:      fmt.Sprintf("parent %q is not in open status (current: %s)", pid, status),
+	}}
 }
 
 // semanticDepErrors invokes ValidateSemantic on the subset of
