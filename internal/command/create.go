@@ -346,6 +346,7 @@ func Create(ctx context.Context, cfg config.Config, s store.Store, args []string
 		return err
 	}
 	if dErr := ids.ValidateDepth(newID); dErr != nil {
+		telemetry.RecordPreconditionFailed(ctx, "depth_exceeded", nil)
 		tx.MarkOutcome(store.TxRolledBackPrecondition)
 		return dErr
 	}
