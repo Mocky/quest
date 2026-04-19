@@ -3,6 +3,8 @@ package telemetry
 import (
 	"context"
 	"io"
+
+	"github.com/mocky/quest/internal/errors"
 )
 
 // StoreSpan opens a child span under the active command span for
@@ -55,13 +57,16 @@ func RecordHandlerError(ctx context.Context, err error) {
 // errors; optional origin="dispatch" attribute distinguishes them),
 // writes the stderr two-liner via errors.EmitStderr, and returns
 // errors.ExitCode(err). Lives here so internal/cli/ never imports OTEL
-// (§10.1). Phase 2 stub returns 0 without writing anything; Task 12.1
-// wires the real implementation.
+// (§10.1). The Phase 4 body emits stderr + returns the mapped exit
+// code so the dispatcher's every early-return sequence works today;
+// Task 12.5 adds the span/counter/slog wiring behind this call.
 func RecordDispatchError(ctx context.Context, err error, stderr io.Writer) int {
 	_ = ctx
-	_ = err
-	_ = stderr
-	return 0
+	if err == nil {
+		return 0
+	}
+	errors.EmitStderr(err, stderr)
+	return errors.ExitCode(err)
 }
 
 // RecordPreconditionFailed emits the §13.3 quest.precondition.failed

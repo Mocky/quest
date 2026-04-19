@@ -65,8 +65,15 @@ func TestStubsDoNotPanic(t *testing.T) {
 
 	telemetry.RecordTaskContext(ctx, "proj-1", "T2", "task")
 	telemetry.RecordHandlerError(ctx, io.EOF)
-	if code := telemetry.RecordDispatchError(ctx, io.EOF, io.Discard); code != 0 {
-		t.Errorf("Phase 2 RecordDispatchError = %d; want 0", code)
+	// RecordDispatchError in Phase 4 emits stderr + returns the mapped
+	// exit code so cli.Execute's early-return paths work today; the OTEL
+	// span/counter wiring is deferred to Task 12.5. io.EOF does not wrap
+	// a quest sentinel, so it maps to general_failure (exit 1).
+	if code := telemetry.RecordDispatchError(ctx, io.EOF, io.Discard); code != 1 {
+		t.Errorf("RecordDispatchError(io.EOF) = %d; want 1 (general_failure)", code)
+	}
+	if code := telemetry.RecordDispatchError(ctx, nil, io.Discard); code != 0 {
+		t.Errorf("RecordDispatchError(nil) = %d; want 0", code)
 	}
 	telemetry.RecordPreconditionFailed(ctx, "children_terminal", []string{"a", "b"})
 	telemetry.RecordCycleDetected(ctx, []string{"a", "b", "a"})
