@@ -2,7 +2,6 @@ package command
 
 import (
 	"context"
-	"encoding/json"
 	stderrors "errors"
 	"flag"
 	"fmt"
@@ -59,9 +58,7 @@ func Deps(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	if cfg.Output.Format == "text" {
 		return emitDepsText(stdout, deps)
 	}
-	enc := json.NewEncoder(stdout)
-	enc.SetIndent("", "")
-	return enc.Encode(deps)
+	return output.Emit(stdout, cfg.Output.Format, deps)
 }
 
 // emitDepsText writes a fixed-width table with the dependency list.
