@@ -73,7 +73,7 @@ func (h *Handler) handleAccept(ctx context.Context, cfg config.Config, taskID st
 
 // ACCEPTABLE — for packages without direct context access
 slog.Warn("sqlite busy_timeout exceeded, returning transient failure",
-    "wait_ms", waitMS)
+    "lock_wait_ms", lockWaitMS)
 
 // WRONG — stdlib log, unstructured, goes to stderr without slog's handler chain
 func handleAccept(...) {
