@@ -81,9 +81,18 @@ func Batch(ctx context.Context, cfg config.Config, s store.Store, args []string,
 		return fmt.Errorf("batch: failed to read %s: %s: %w", parsed.File, rerr.Error(), errors.ErrUsage)
 	}
 
+	// quest.validate parent span wraps every phase so the trace
+	// view shows one validate scope with per-phase children
+	// (OTEL.md §4.1).
+	validateCtx, validateEnd := telemetry.ValidateSpan(ctx)
+	defer validateEnd()
+
 	// Phase 1 runs outside the tx — JSON parsing is CPU-only and
 	// holding the write lock for it would block other writers.
+	parseCtx, parseEnd := telemetry.BatchPhaseSpan(validateCtx, "parse")
 	lines, phase1Errs := batch.PhaseParse(body)
+	emitBatchPhaseTelemetry(parseCtx, "parse", phase1Errs)
+	parseEnd()
 	if len(lines) == 0 {
 		// Either empty_file or every line is malformed JSON. Emit
 		// whatever phase 1 found and return exit 2.
@@ -98,11 +107,25 @@ func Batch(ctx context.Context, cfg config.Config, s store.Store, args []string,
 	defer tx.Rollback()
 
 	valid := batch.ValidLines(lines, phase1Errs)
+	refCtx, refEnd := telemetry.BatchPhaseSpan(validateCtx, "reference")
 	phase2Errs := batch.PhaseReference(ctx, s, lines, valid)
+	emitBatchPhaseTelemetry(refCtx, "reference", phase2Errs)
+	refEnd()
 	valid = batch.ValidLines(lines, phase1Errs, phase2Errs)
+	graphCtx, graphEnd := telemetry.BatchPhaseSpan(validateCtx, "graph")
 	phase3Errs := batch.PhaseGraph(ctx, s, lines, valid)
+	emitBatchPhaseTelemetry(graphCtx, "graph", phase3Errs)
+	for _, e := range phase3Errs {
+		if e.Code == batch.BatchCodeCycle && len(e.Cycle) > 0 {
+			telemetry.RecordCycleDetected(graphCtx, e.Cycle)
+		}
+	}
+	graphEnd()
 	valid = batch.ValidLines(lines, phase1Errs, phase2Errs, phase3Errs)
+	semCtx, semEnd := telemetry.BatchPhaseSpan(validateCtx, "semantic")
 	phase4Errs := batch.PhaseSemantic(ctx, s, lines, valid)
+	emitBatchPhaseTelemetry(semCtx, "semantic", phase4Errs)
+	semEnd()
 	valid = batch.ValidLines(lines, phase1Errs, phase2Errs, phase3Errs, phase4Errs)
 
 	allErrs := append(append(append(phase1Errs, phase2Errs...), phase3Errs...), phase4Errs...)
@@ -208,4 +231,15 @@ func countValid(valid map[int]bool) int {
 		}
 	}
 	return n
+}
+
+// emitBatchPhaseTelemetry routes each phase's errors through
+// telemetry.RecordBatchError so the active phase span receives a
+// quest.batch.error event per failure and dept.quest.batch.errors
+// increments by one per failure with phase + code dimensions
+// (OTEL.md §8.5).
+func emitBatchPhaseTelemetry(ctx context.Context, phase string, errs []batch.BatchError) {
+	for _, e := range errs {
+		telemetry.RecordBatchError(ctx, phase, e.Code, e.Field, e.Ref, e.Line)
+	}
 }
