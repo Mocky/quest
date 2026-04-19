@@ -64,7 +64,7 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
 | 10 | [phase-10-queries.md](impl/phase-10-queries.md) | `deps`, `list`, `graph` | complete |
 | 11 | [phase-11-export.md](impl/phase-11-export.md) | `export` | complete |
 | 12 | [phase-12-telemetry.md](impl/phase-12-telemetry.md) | OTEL wiring (real Setup, spans, metrics, content) | complete |
-| 13 | [phase-13-tests-ci.md](impl/phase-13-tests-ci.md) | Contract, concurrency, CLI, CI | in progress |
+| 13 | [phase-13-tests-ci.md](impl/phase-13-tests-ci.md) | Contract, concurrency, CLI, CI | complete |
 | 14 | [phase-14-ship.md](impl/phase-14-ship.md) | Docs pass + changelog + tag v0.1 | not started |
 
 **Completion tracking.** Update the Status column here when a phase moves from `not started` → `in progress` → `complete`. Per-task status lives in the individual task's **Done when** checklist inside each phase file; flip the checklist items as the work lands.
