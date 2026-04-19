@@ -1,10 +1,13 @@
-// Package logging builds the slog default handler for the quest CLI.
-// main.run() calls Setup twice — once before telemetry.Setup (pre-bridge)
-// and once after, passing the OTEL bridge handler in so OTEL logs
-// receive a copy of every slog record (OTEL.md §7.1). Setup is the only
-// exported function. Handlers themselves never import OTEL; the bridge
-// handler is constructed inside internal/telemetry/ and handed in as an
-// opaque slog.Handler. Phase 2 fills in the fan-out handler and adds
-// sanitization per OBSERVABILITY.md; Phase 0 wires the minimum default
-// handler. See OBSERVABILITY.md and OTEL.md §10.1.
+// Package logging builds the slog logger for the quest CLI. main.run()
+// calls Setup twice — once before telemetry.Setup returns the OTEL
+// bridge (pre-bridge, stderr only) and once after (with the bridge as
+// an extra) so OTEL receives every slog record. Setup composes a
+// fan-out handler: each child is level-gated independently so stderr
+// and the OTEL bridge can run at different thresholds per
+// OBSERVABILITY.md §Correlation Identifiers and OTEL.md §3.2. The
+// stderr path wraps slog.NewTextHandler with a trace-enrichment layer
+// that adds trace_id/span_id via telemetry.TraceIDsFromContext —
+// internal/logging/ never imports OTEL directly (OTEL.md §10.1).
+// LevelFromString is the single source of level-string parsing;
+// config.Validate can use it to reject malformed log-level values.
 package logging
