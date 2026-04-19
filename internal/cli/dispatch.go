@@ -55,7 +55,7 @@ var descriptors = []commandDescriptor{
 	{Name: "unlink", Handler: command.Unlink, Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "tag", Handler: command.Tag, Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "untag", Handler: command.Untag, Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
-	{Name: "deps", Handler: notImplemented("deps"), Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
+	{Name: "deps", Handler: command.Deps, Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "list", Handler: notImplemented("list"), Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "graph", Handler: notImplemented("graph"), Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "export", Handler: notImplemented("export"), Elevated: true, RequiresWorkspace: true, SuppressTelemetry: false},
