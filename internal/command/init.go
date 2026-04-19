@@ -72,6 +72,19 @@ func Init(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	if err := os.Mkdir(questDir, 0o755); err != nil {
 		return fmt.Errorf("init: %s: %w", err.Error(), errors.ErrGeneral)
 	}
+	// Any post-mkdir failure would leave a partial .quest on disk,
+	// causing the next `init` retry to fail with exit 5 (conflict) via
+	// DiscoverRoot. Mkdir succeeded only because .quest did not exist,
+	// so the directory is ours to remove. The defer registers before
+	// opened.Close() below so LIFO order closes the DB handle first,
+	// then wipes the directory.
+	success := false
+	defer func() {
+		if !success {
+			_ = os.RemoveAll(questDir)
+		}
+	}()
+
 	cfgPath := filepath.Join(questDir, "config.toml")
 	cfgBody := fmt.Sprintf(initConfigTemplate, *prefix)
 	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o644); err != nil {
@@ -103,6 +116,7 @@ func Init(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 
 	if cfg.Output.Format == "text" {
 		fmt.Fprintln(stdout, absQuestDir)
+		success = true
 		return nil
 	}
 	payload := struct {
@@ -112,5 +126,6 @@ func Init(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	if err := json.NewEncoder(stdout).Encode(payload); err != nil {
 		return fmt.Errorf("init: encode json: %s: %w", err.Error(), errors.ErrGeneral)
 	}
+	success = true
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	stderrors "errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -628,4 +629,34 @@ func TestInitOutputShape(t *testing.T) {
 			t.Errorf("text output should be bare path; got %q", s)
 		}
 	})
+}
+
+// failingWriter errors on every Write — used to force init past mkdir
+// + migrate and into the JSON-encode failure branch.
+type failingWriter struct{}
+
+func (failingWriter) Write(p []byte) (int, error) {
+	return 0, stderrors.New("synthetic write failure")
+}
+
+// TestInitCleansUpOnFailure pins the post-mkdir cleanup contract: any
+// error after the .quest directory is created must remove it so the
+// next `init` retry does not trip DiscoverRoot and return exit 5
+// (conflict) on a half-initialized workspace. The failing stdout
+// writer drives init past migrations into the json-encode branch.
+func TestInitCleansUpOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	cwd := mustChdir(t, dir)
+	t.Cleanup(cwd)
+
+	var errb bytes.Buffer
+	err := command.Init(context.Background(), baseCfg(), nil,
+		[]string{"--prefix", "proj"}, strings.NewReader(""),
+		failingWriter{}, &errb)
+	if err == nil {
+		t.Fatalf("Init: expected error, got nil")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".quest")); !os.IsNotExist(statErr) {
+		t.Errorf(".quest should be removed after failure; stat err=%v", statErr)
+	}
 }
