@@ -146,10 +146,7 @@ func (d *InstrumentedStore) BeginImmediate(ctx context.Context, kind store.TxKin
 			)
 		}
 		if isLockTimeout {
-			span.SetAttributes(
-				attribute.Int("quest.lock.wait_limit_ms", 5000),
-				attribute.Int64("quest.lock.wait_actual_ms", tx.LockWait().Milliseconds()),
-			)
+			setLockTimeoutAttrs(span, tx.LockWait())
 		}
 		span.End()
 		recordTxMetrics(ctx, tx, elapsed, isLockTimeout)
@@ -195,6 +192,19 @@ func recordTxMetrics(ctx context.Context, tx *store.Tx, total time.Duration, loc
 // regardless of how short the transaction was.
 func durationMS(micros int64) float64 {
 	return float64(micros) / 1000.0
+}
+
+// setLockTimeoutAttrs stamps quest.lock.wait_limit_ms and
+// quest.lock.wait_actual_ms on the rolled-back span when the inner
+// Commit returned ErrTransient. wait_actual_ms is a Float64 routed
+// through durationMS so a sub-millisecond commit-time SQLITE_BUSY
+// (the LockWait captured at BeginImmediate) does not truncate to 0
+// and break the daemon-upgrade retrospective signal in OTEL.md §15.
+func setLockTimeoutAttrs(span trace.Span, lockWait time.Duration) {
+	span.SetAttributes(
+		attribute.Int("quest.lock.wait_limit_ms", 5000),
+		attribute.Float64("quest.lock.wait_actual_ms", durationMS(lockWait.Microseconds())),
+	)
 }
 
 // StoreSpan opens a child span under the active command span for

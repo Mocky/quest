@@ -6,6 +6,9 @@ import (
 	stderrors "errors"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/mocky/quest/internal/errors"
 	"github.com/mocky/quest/internal/store"
@@ -223,6 +226,72 @@ func TestStoreSpanSuccess(t *testing.T) {
 	}
 	if spans[0].Status.Code.String() != "Unset" {
 		t.Errorf("status = %s; want Unset", spans[0].Status.Code)
+	}
+}
+
+// TestLockTimeoutAttrsPrecision pins cross-cutting.md §Duration
+// calculation for the lock-timeout rollback path: quest.lock.wait_actual_ms
+// is a Float64 produced by durationMS(LockWait.Microseconds()) so a
+// sub-millisecond LockWait (the typical case for a commit-time
+// SQLITE_BUSY where BEGIN IMMEDIATE itself was uncontested) does not
+// truncate to 0 and erase the daemon-upgrade retrospective signal in
+// OTEL.md §15. Drives setLockTimeoutAttrs directly because the
+// commit-time SQLITE_BUSY path is not deterministically reproducible
+// in a unit test (TestLockTimeoutSpanShape covers the
+// BeginImmediate-time path, which never reaches the rollback hook).
+func TestLockTimeoutAttrsPrecision(t *testing.T) {
+	cases := []struct {
+		name     string
+		lockWait time.Duration
+		want     float64
+	}{
+		{"500us preserves precision", 500 * time.Microsecond, 0.5},
+		{"50us preserves precision", 50 * time.Microsecond, 0.05},
+		{"1ms exact", time.Millisecond, 1.0},
+		{"5s busy-timeout ceiling", 5 * time.Second, 5000.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exp := installInMemoryTracer(t)
+			_, span := tracer.Start(context.Background(), "quest.store.tx")
+			setLockTimeoutAttrs(span, tc.lockWait)
+			span.End()
+
+			spans := exp.GetSpans()
+			if len(spans) != 1 {
+				t.Fatalf("got %d spans; want 1", len(spans))
+			}
+			var (
+				gotLimit       int64
+				foundLimit     bool
+				gotActual      float64
+				foundActual    bool
+				actualKeyValue attribute.Value
+			)
+			for _, kv := range spans[0].Attributes {
+				switch kv.Key {
+				case "quest.lock.wait_limit_ms":
+					gotLimit = kv.Value.AsInt64()
+					foundLimit = true
+				case "quest.lock.wait_actual_ms":
+					gotActual = kv.Value.AsFloat64()
+					foundActual = true
+					actualKeyValue = kv.Value
+				}
+			}
+			if !foundLimit || gotLimit != 5000 {
+				t.Errorf("wait_limit_ms = %d (found=%v); want 5000", gotLimit, foundLimit)
+			}
+			if !foundActual {
+				t.Fatalf("quest.lock.wait_actual_ms attribute missing")
+			}
+			if actualKeyValue.Type() != attribute.FLOAT64 {
+				t.Errorf("wait_actual_ms type = %v; want FLOAT64 (Int truncates sub-ms waits to 0)", actualKeyValue.Type())
+			}
+			if gotActual != tc.want {
+				t.Errorf("wait_actual_ms = %v; want %v", gotActual, tc.want)
+			}
+		})
 	}
 }
 
