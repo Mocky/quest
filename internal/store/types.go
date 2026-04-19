@@ -90,8 +90,8 @@ const (
 type Dependency struct {
 	ID     string `json:"id"`
 	Type   string `json:"type"`
-	Title  string `json:"title,omitempty"`
-	Status string `json:"status,omitempty"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
 }
 
 // Note is one row of the notes table. Timestamps are RFC3339 UTC per
