@@ -158,21 +158,41 @@ func RecordBatchError(ctx context.Context, phase, code, field, ref string, line 
 	_ = line
 }
 
-// RecordMoveOutcome records quest.move.subgraph_size and rows-affected
-// on the command span. OTEL.md §8.6.
-func RecordMoveOutcome(ctx context.Context, subgraphSize, rowsAffected int) {
+// RecordMoveOutcome records quest.move.subgraph_size and the dependency
+// rows rewritten by the FK cascade on the command span. OTEL.md §8.6.
+// oldID / newID are the moved task's IDs before and after the rename;
+// subgraphSize is the count of tasks renamed; depUpdates is the count
+// of dependencies rows the ON UPDATE CASCADE rewrote (computed via a
+// pre-rename COUNT since sql.Result.RowsAffected does not see cascade
+// side-effects).
+func RecordMoveOutcome(ctx context.Context, oldID, newID string, subgraphSize, depUpdates int) {
 	_ = ctx
+	_ = oldID
+	_ = newID
 	_ = subgraphSize
-	_ = rowsAffected
+	_ = depUpdates
 }
 
-// RecordCancelOutcome records cancel_recursive span attributes when
-// -r is used. OTEL.md §8.6.
-func RecordCancelOutcome(ctx context.Context, taskID string, descendants int, recursive bool) {
+// RecordCancelOutcome records cancel / cancel_recursive span attributes
+// on the command span. cancelledCount is the number of tasks
+// transitioned to cancelled by this call (including the root);
+// skippedCount is the number of already-terminal descendants skipped.
+// OTEL.md §8.6.
+func RecordCancelOutcome(ctx context.Context, taskID string, recursive bool, cancelledCount, skippedCount int) {
 	_ = ctx
 	_ = taskID
-	_ = descendants
 	_ = recursive
+	_ = cancelledCount
+	_ = skippedCount
+}
+
+// RecordContentReason emits a `quest.content.reason` span event when
+// the OTEL_GENAI_CAPTURE_CONTENT toggle is on. Callers gate on
+// CaptureContentEnabled() before invoking so the no-op path never pays
+// allocation cost for the truncation helper.
+func RecordContentReason(ctx context.Context, reason string) {
+	_ = ctx
+	_ = reason
 }
 
 // RecordQueryResult records dept.quest.query.result_count{command} for
