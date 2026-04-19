@@ -45,22 +45,19 @@ func runExecute(args []string, cfg config.Config) (int, string, string) {
 	return exit, out.String(), errb.String()
 }
 
-// Happy-path dispatch: the store opens, migrations run, and the
-// placeholder handler for `show` reaches the handler body (where it
-// returns a not-implemented error, exit 1). Proves steps 3-7 of the
-// dispatch sequence execute in order against a real SQLite workspace.
+// Happy-path dispatch: the store opens, migrations run, and the show
+// handler reaches its store lookup. With no task seeded, the handler
+// returns ErrNotFound (exit 3). Proves steps 3-7 of the dispatch
+// sequence execute in order against a real SQLite workspace.
 func TestExecuteDispatchReachesHandler(t *testing.T) {
 	cfg := setupWorkspace(t, "proj", "worker")
 
 	exit, _, stderr := runExecute([]string{"show", "proj-01"}, cfg)
-	if exit != 1 {
-		t.Fatalf("exit = %d, want 1 (placeholder handler)", exit)
+	if exit != 3 {
+		t.Fatalf("exit = %d, want 3 (not_found)", exit)
 	}
-	if !strings.Contains(stderr, "quest: general_failure:") {
-		t.Fatalf("stderr missing general_failure prefix: %q", stderr)
-	}
-	if !strings.Contains(stderr, `command "show" is not implemented`) {
-		t.Fatalf("stderr missing not-implemented message: %q", stderr)
+	if !strings.Contains(stderr, "quest: not_found:") {
+		t.Fatalf("stderr missing not_found prefix: %q", stderr)
 	}
 
 	// Migration must have landed — meta.schema_version is populated.
@@ -113,17 +110,18 @@ func TestExecuteRejectsNewerSchema(t *testing.T) {
 func TestExecuteSecondInvocationSkipsMigration(t *testing.T) {
 	cfg := setupWorkspace(t, "proj", "worker")
 
-	// First invocation primes the DB (placeholder handler).
-	if exit, _, _ := runExecute([]string{"show", "proj-01"}, cfg); exit != 1 {
-		t.Fatalf("first exit = %d, want 1", exit)
+	// First invocation primes the DB; the show handler exits 3 because
+	// no task row exists yet.
+	if exit, _, _ := runExecute([]string{"show", "proj-01"}, cfg); exit != 3 {
+		t.Fatalf("first exit = %d, want 3 (not_found)", exit)
 	}
 
 	// Second invocation — schema_version is already at SupportedSchemaVersion.
 	exit, _, stderr := runExecute([]string{"show", "proj-01"}, cfg)
-	if exit != 1 {
-		t.Fatalf("second exit = %d, want 1 (placeholder)", exit)
+	if exit != 3 {
+		t.Fatalf("second exit = %d, want 3 (not_found)", exit)
 	}
-	if !strings.Contains(stderr, "not implemented") {
-		t.Errorf("expected placeholder message, got: %q", stderr)
+	if !strings.Contains(stderr, "quest: not_found:") {
+		t.Errorf("expected not_found prefix, got: %q", stderr)
 	}
 }
