@@ -87,8 +87,8 @@ func TestStubsDoNotPanic(t *testing.T) {
 	telemetry.RecordMoveOutcome(ctx, "proj-a1.3", "proj-b2.1", 4, 5)
 	telemetry.RecordCancelOutcome(ctx, "proj-1", true, 3, 1)
 	telemetry.RecordContentReason(ctx, "superseded by proj-b2")
-	telemetry.RecordQueryResult(ctx, "list", 12)
-	telemetry.RecordGraphResult(ctx, 10, 50)
+	telemetry.RecordQueryResult(ctx, "list", 12, telemetry.QueryFilter{Status: []string{"open"}})
+	telemetry.RecordGraphResult(ctx, "proj-1", 10, 5, 2, 50)
 }
 
 func TestTruncatePreservesUTF8Boundary(t *testing.T) {

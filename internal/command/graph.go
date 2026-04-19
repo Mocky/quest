@@ -161,7 +161,7 @@ func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string,
 	}
 
 	resp := graphResponse{Nodes: nodes, Edges: edges}
-	telemetry.RecordGraphResult(ctx, len(nodes), len(subtree))
+	telemetry.RecordGraphResult(ctx, rootID, len(nodes), len(edges), len(externals), len(subtree))
 
 	if cfg.Output.Format == "text" {
 		return emitGraphText(stdout, rootID, subtree, childrenByParent, edges)

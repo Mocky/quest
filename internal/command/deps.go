@@ -51,7 +51,7 @@ func Deps(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	if err != nil {
 		return err
 	}
-	telemetry.RecordQueryResult(ctx, "deps", len(deps))
+	telemetry.RecordQueryResult(ctx, "deps", len(deps), telemetry.QueryFilter{})
 
 	if deps == nil {
 		deps = []store.Dependency{}

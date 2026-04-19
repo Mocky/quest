@@ -60,7 +60,13 @@ func List(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	if err != nil {
 		return err
 	}
-	telemetry.RecordQueryResult(ctx, "list", len(tasks))
+	telemetry.RecordQueryResult(ctx, "list", len(tasks), telemetry.QueryFilter{
+		Status: filter.Statuses,
+		Role:   filter.Roles,
+		Tier:   filter.Tiers,
+		Type:   filter.Types,
+		Ready:  filter.Ready,
+	})
 
 	enriched, err := enrichForColumns(ctx, s, tasks, columns)
 	if err != nil {

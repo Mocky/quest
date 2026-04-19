@@ -472,19 +472,107 @@ func RecordCancelOutcome(ctx context.Context, taskID string, recursive bool, can
 // RecordContentReason and the rest of the content recorders live in
 // content.go (Task 12.7).
 
-// RecordQueryResult records dept.quest.query.result_count{command}.
-// Body fills in fully at Task 12.9.
-func RecordQueryResult(ctx context.Context, command string, count int) {
-	_ = ctx
-	_ = command
-	_ = count
+// QueryFilter carries the bounded-enum filter values from a list/deps
+// invocation. Each slice holds the accepted filter values as resolved
+// by the handler — sorted/joined inside the recorder so dashboards see
+// a stable string. Tag and parent filters are deliberately absent
+// (OTEL.md §4.3 — unbounded cardinality).
+type QueryFilter struct {
+	Status []string
+	Role   []string
+	Tier   []string
+	Type   []string
+	Ready  bool
 }
 
-// RecordGraphResult records dept.quest.query.result_count and
-// dept.quest.graph.traversal_nodes for `quest graph`. Body fills in at
-// Task 12.9.
-func RecordGraphResult(ctx context.Context, nodesReturned, nodesVisited int) {
-	_ = ctx
-	_ = nodesReturned
-	_ = nodesVisited
+// RecordQueryResult records dept.quest.query.result_count{command} +
+// the §4.3 query span attributes for list/deps. The filter argument
+// carries bounded-enum filter values; tag and parent filters are
+// excluded by spec (OTEL.md §4.3).
+func RecordQueryResult(ctx context.Context, operation string, resultCount int, filter QueryFilter) {
+	span := trace.SpanFromContext(ctx)
+	if !nonRecording(span) {
+		attrs := []attribute.KeyValue{
+			attribute.Int("quest.query.result_count", resultCount),
+		}
+		if v := joinSorted(filter.Status); v != "" {
+			attrs = append(attrs, attribute.String("quest.query.filter.status", v))
+		}
+		if v := joinSorted(filter.Role); v != "" {
+			attrs = append(attrs, attribute.String("quest.query.filter.role", v))
+		}
+		if v := joinSorted(filter.Tier); v != "" {
+			attrs = append(attrs, attribute.String("quest.query.filter.tier", v))
+		}
+		if v := joinSorted(filter.Type); v != "" {
+			attrs = append(attrs, attribute.String("quest.query.filter.type", v))
+		}
+		if filter.Ready {
+			attrs = append(attrs, attribute.Bool("quest.query.ready", true))
+		}
+		span.SetAttributes(attrs...)
+	}
+	if queryResultCountHis != nil {
+		queryResultCountHis.Record(ctx, int64(resultCount), metric.WithAttributes(
+			attribute.String("command", operation),
+		))
+	}
+}
+
+// RecordGraphResult records dept.quest.graph.traversal_nodes,
+// dept.quest.query.result_count, and the §4.3 graph span attributes
+// for `quest graph`. quest.task.id carries the rootID per the
+// task-affecting attribute row; quest.graph.traversal_nodes lives on
+// the metric only, never as a span attribute.
+func RecordGraphResult(ctx context.Context, rootID string, nodeCount, edgeCount, externalCount, traversalNodes int) {
+	span := trace.SpanFromContext(ctx)
+	if !nonRecording(span) {
+		span.SetAttributes(
+			attribute.String("quest.task.id", rootID),
+			attribute.Int("quest.graph.node_count", nodeCount),
+			attribute.Int("quest.graph.edge_count", edgeCount),
+			attribute.Int("quest.graph.external_count", externalCount),
+		)
+	}
+	if graphTraversalHis != nil {
+		graphTraversalHis.Record(ctx, int64(traversalNodes), metric.WithAttributes(
+			attribute.String("command", "graph"),
+		))
+	}
+	if queryResultCountHis != nil {
+		queryResultCountHis.Record(ctx, int64(nodeCount), metric.WithAttributes(
+			attribute.String("command", "graph"),
+		))
+	}
+}
+
+func joinSorted(vs []string) string {
+	if len(vs) == 0 {
+		return ""
+	}
+	cp := make([]string, len(vs))
+	copy(cp, vs)
+	sortStrings(cp)
+	return joinComma(cp)
+}
+
+func sortStrings(vs []string) {
+	for i := 1; i < len(vs); i++ {
+		j := i
+		for j > 0 && vs[j-1] > vs[j] {
+			vs[j-1], vs[j] = vs[j], vs[j-1]
+			j--
+		}
+	}
+}
+
+func joinComma(vs []string) string {
+	if len(vs) == 0 {
+		return ""
+	}
+	out := vs[0]
+	for _, v := range vs[1:] {
+		out += "," + v
+	}
+	return out
 }
