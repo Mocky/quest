@@ -1285,11 +1285,11 @@ Export the quest database to a human-readable directory structure for inspection
 
 Only available to elevated roles. Export reads every task in the project, which is a cross-task query; per Role Gating, workers do not browse or query tasks beyond their own. Operators producing archives and planners reviewing project state are the intended callers.
 
-| Flag         | Description                                   |
-| ------------ | --------------------------------------------- |
-| `--dir PATH` | Output directory (default: `./quest-export/`) |
+| Flag         | Description                                                                       |
+| ------------ | --------------------------------------------------------------------------------- |
+| `--dir PATH` | Output directory (default: `<workspace>/quest-export/` — sibling of `.quest/`)    |
 
-Exports default to a sibling of `.quest/` (not a subdirectory) so human-readable review artifacts are not mingled with the operational database.
+The default is resolved relative to the workspace root (where `.quest/` lives), not CWD, so running `quest export` from a subdirectory still places the archive beside `.quest/` and does not mingle human-readable review artifacts with the operational database. An explicit relative `--dir` is resolved against CWD per standard CLI convention.
 
 **Export structure:**
 

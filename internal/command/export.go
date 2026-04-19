@@ -30,17 +30,16 @@ type exportAck struct {
 }
 
 // Export handles `quest export [--dir PATH]`. Default output is
-// `<workspace>/quest-export/` — always a sibling of `.quest/` per spec
-// §`quest export` ("default: `./quest-export/`" is spec-relative to
-// the workspace root, not CWD, so running from a subdirectory still
-// places the archive beside .quest). When --dir is provided and
-// relative, it is resolved against CWD per standard CLI convention.
+// `<workspace>/quest-export/` — a sibling of `.quest/` per spec
+// §`quest export`, so running from a subdirectory still places the
+// archive beside `.quest/`. An explicit relative `--dir` is resolved
+// against CWD per standard CLI convention.
 func Export(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
 
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	dirFlag := fs.String("dir", "", "output directory (default: <workspace>/quest-export)")
+	dirFlag := fs.String("dir", "", "output directory (default: <workspace>/quest-export/ — sibling of .quest/)")
 	if err := fs.Parse(args); err != nil {
 		if stderrors.Is(err, flag.ErrHelp) {
 			return nil
