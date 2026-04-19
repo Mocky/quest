@@ -14,13 +14,18 @@ import (
 )
 
 // Instrument package-level handles. Most land in Task 12.5;
-// schemaMigrationsCtr arrives with Task 12.1's MigrateSpan, and
-// operationsCtr lands with Task 12.2's WrapCommand. nil checks keep
-// the calling sites safe even when an instrument has not been
-// registered yet (e.g., disabled-OTEL path or mid-phase build).
+// schemaMigrationsCtr arrives with Task 12.1's MigrateSpan,
+// operationsCtr lands with Task 12.2's WrapCommand, and the
+// store-tx histograms / lock-timeout counter land with Task 12.4's
+// InstrumentedStore. nil checks keep the calling sites safe even
+// when an instrument has not been registered yet (e.g., disabled-OTEL
+// path or mid-phase build).
 var (
-	schemaMigrationsCtr metric.Int64Counter
-	operationsCtr       metric.Int64Counter
+	schemaMigrationsCtr  metric.Int64Counter
+	operationsCtr        metric.Int64Counter
+	storeTxDurationHis   metric.Float64Histogram
+	storeTxLockWaitHis   metric.Float64Histogram
+	storeLockTimeoutsCtr metric.Int64Counter
 )
 
 // initSchemaMigrationsInstrument is invoked by Setup once the meter
@@ -47,6 +52,38 @@ func initSchemaMigrationsInstrument() {
 		return
 	}
 	operationsCtr = op
+
+	dur, err := meter.Float64Histogram("dept.quest.store.tx.duration",
+		metric.WithDescription("BEGIN IMMEDIATE transaction duration by kind."),
+		metric.WithUnit("ms"),
+		metric.WithExplicitBucketBoundaries(1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000),
+	)
+	if err != nil {
+		stdlog.Warn("instrument", "name", "dept.quest.store.tx.duration", "err", err)
+		return
+	}
+	storeTxDurationHis = dur
+
+	wait, err := meter.Float64Histogram("dept.quest.store.tx.lock_wait",
+		metric.WithDescription("Time spent waiting for the SQLite write lock."),
+		metric.WithUnit("ms"),
+		metric.WithExplicitBucketBoundaries(0, 1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000),
+	)
+	if err != nil {
+		stdlog.Warn("instrument", "name", "dept.quest.store.tx.lock_wait", "err", err)
+		return
+	}
+	storeTxLockWaitHis = wait
+
+	timeouts, err := meter.Int64Counter("dept.quest.store.lock_timeouts",
+		metric.WithDescription("Operations that exited with code 7."),
+		metric.WithUnit("{operation}"),
+	)
+	if err != nil {
+		stdlog.Warn("instrument", "name", "dept.quest.store.lock_timeouts", "err", err)
+		return
+	}
+	storeLockTimeoutsCtr = timeouts
 }
 
 // statusAttrs caches the {status} attribute set for
@@ -57,16 +94,8 @@ func statusAttrs(status string) metric.MeasurementOption {
 	return metric.WithAttributes(attribute.String("status", status))
 }
 
-// StoreSpan opens a child span under the active command span for
-// store-level operations (`quest.store.traverse`,
-// `quest.store.rename_subgraph`). Handlers call it when they need a
-// named child span without importing go.opentelemetry.io/otel/trace.
-// Phase 2 returns ctx and a no-op end closure; Task 12 fills in the
-// real tracer.Start + three-step error recording.
-func StoreSpan(ctx context.Context, name string) (context.Context, func(err error)) {
-	_ = name
-	return ctx, func(err error) { _ = err }
-}
+// StoreSpan lives in store.go (Task 12.4) — the helper opens a child
+// span under the active command span for graph/move traversals.
 
 // RecordTaskContext sets the §4.3 task-affecting attributes
 // (quest.task.id, quest.task.tier, quest.task.type) on the active

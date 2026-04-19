@@ -182,6 +182,21 @@ func (tx *Tx) Kind() TxKind        { return tx.kind }
 func (tx *Tx) RowsAffected() int64 { return tx.rowsAffected }
 func (tx *Tx) Outcome() TxOutcome  { return tx.outcome }
 
+// InvokedAt returns the timestamp captured before db.BeginTx so the
+// InstrumentedStore decorator can stamp the quest.store.tx span with
+// the lock-wait period via trace.WithTimestamp(tx.InvokedAt()).
+func (tx *Tx) InvokedAt() time.Time { return tx.invokedAt }
+
+// SetHooks installs the decorator's onCommit / onRollback closures.
+// Either may be nil. Called once by the InstrumentedStore decorator
+// immediately after BeginImmediate returns; the bare store leaves
+// both fields nil and the Commit/Rollback methods skip the call when
+// either is unset.
+func (tx *Tx) SetHooks(onCommit func(tx *Tx), onRollback func(tx *Tx, err error)) {
+	tx.onCommit = onCommit
+	tx.onRollback = onRollback
+}
+
 func classifyOutcome(err error) TxOutcome {
 	switch {
 	case err == nil:
