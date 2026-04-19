@@ -151,8 +151,13 @@ func Update(ctx context.Context, cfg config.Config, s store.Store, args []string
 		}
 	}
 
-	// Ownership — skipped on open tasks (plan §Deliberate deviations).
-	if cur.status == "accepted" && !isElevated {
+	// Ownership applies after acceptance (spec §accept: "After
+	// acceptance, only the owning session ... can call quest update").
+	// That covers accepted + terminal (complete/failed/cancelled); only
+	// `open` has no owner yet and is skipped. Fires before the cancelled
+	// and terminal-state gates so a non-owner learns exit 4, not 5 —
+	// spec §Error precedence (permission before state).
+	if cur.status != "open" && !isElevated {
 		if cur.ownerSession != cfg.Agent.Session {
 			return fmt.Errorf("task is owned by another session: %w", errors.ErrPermission)
 		}

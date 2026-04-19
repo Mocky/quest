@@ -350,6 +350,29 @@ func TestUpdateOwningWorkerOnAcceptedAllowed(t *testing.T) {
 	}
 }
 
+// TestUpdateOwnershipCheckFiresOnTerminal: per spec §accept ("After
+// acceptance, only the owning session ... can call quest update") the
+// ownership check must cover post-accept statuses, not just accepted.
+// A non-owning worker adding a --note to a complete task owned by a
+// different session returns exit 4 (permission), not a silent success.
+func TestUpdateOwnershipCheckFiresOnTerminal(t *testing.T) {
+	cases := []string{"complete", "failed", "cancelled"}
+	for _, status := range cases {
+		t.Run(status, func(t *testing.T) {
+			s, _ := testStore(t)
+			seedTaskFull(t, s, "proj-a1", "Alpha", status, "sess-owner")
+
+			err, _, _ := runUpdate(t, s, workerCfg("sess-stranger"), "", []string{"proj-a1", "--note", "sneaky"})
+			if err == nil {
+				t.Fatalf("got nil, want ErrPermission")
+			}
+			if !stderrors.Is(err, errors.ErrPermission) {
+				t.Fatalf("err = %v, want wraps ErrPermission", err)
+			}
+		})
+	}
+}
+
 // TestUpdateElevatedOnAcceptedBypassesOwnership: an elevated role can
 // update an accepted task owned by a different session.
 func TestUpdateElevatedOnAcceptedBypassesOwnership(t *testing.T) {
