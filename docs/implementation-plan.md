@@ -54,7 +54,7 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
 | 0 | [phase-0-bootstrap.md](impl/phase-0-bootstrap.md) | Repo scaffolding + `quest version` end-to-end | complete |
 | 1 | [phase-1-configuration.md](impl/phase-1-configuration.md) | `internal/config/`: workspace discovery, parse, Load/Validate | complete |
 | 2 | [phase-2-logging-errors.md](impl/phase-2-logging-errors.md) | slog setup, error sentinels, telemetry no-op shell | complete |
-| 3 | [phase-3-storage-foundation.md](impl/phase-3-storage-foundation.md) | SQLite open + WAL + migrations + schema v1 | not started |
+| 3 | [phase-3-storage-foundation.md](impl/phase-3-storage-foundation.md) | SQLite open + WAL + migrations + schema v1 | in progress |
 | 4 | [phase-4-cli-skeleton.md](impl/phase-4-cli-skeleton.md) | ID generator, dispatcher, output renderer | not started |
 | 5 | [phase-5-init.md](impl/phase-5-init.md) | `quest init` | not started |
 | 6 | [phase-6-worker-commands.md](impl/phase-6-worker-commands.md) | `show`, `accept`, `update`, `complete`, `fail` | not started |

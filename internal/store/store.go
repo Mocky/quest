@@ -1,11 +1,17 @@
 package store
 
-// Store is the storage interface every command handler talks to. Method
-// signatures are declared in Task 3.3 alongside the task/history/dep
-// types and the *sqliteStore implementation. Phase 2 exposes the type
-// identifier so internal/telemetry/ can reference it (telemetry.WrapStore
-// takes a Store and returns a Store).
-type Store interface{}
+import "context"
+
+// Store is the storage interface every command handler talks to. Phase
+// 2 (Task 2.0) declared only the type name so internal/telemetry/ could
+// reference it; Phase 3 fills in the transaction and schema-version
+// primitives needed by Tasks 3.1 and 4.2. Task 3.3 extends this with
+// the read methods (GetTask, ListTasks, etc.) once the row types land.
+type Store interface {
+	Close() error
+	BeginImmediate(ctx context.Context, kind TxKind) (*Tx, error)
+	CurrentSchemaVersion(ctx context.Context) (int, error)
+}
 
 // TxKind labels a BEGIN IMMEDIATE transaction for the quest.store.tx
 // span attribute and the dept.quest.store.tx.duration{tx_kind}
