@@ -449,24 +449,41 @@ func RecordBatchError(ctx context.Context, phase, code, field, ref string, line 
 	}
 }
 
-// RecordMoveOutcome records quest.move.* span attributes. Body fills
-// in fully at Task 12.10.
+// RecordMoveOutcome records quest.move.* span attributes for the
+// `quest move` command. subgraphSize is the count of tasks renamed
+// (self + descendants); depUpdates is the count of dependencies-table
+// rows the FK cascade rewrote. (OTEL.md §8.6 / §4.3.)
 func RecordMoveOutcome(ctx context.Context, oldID, newID string, subgraphSize, depUpdates int) {
-	_ = ctx
-	_ = oldID
-	_ = newID
-	_ = subgraphSize
-	_ = depUpdates
+	span := trace.SpanFromContext(ctx)
+	if nonRecording(span) {
+		return
+	}
+	span.SetAttributes(
+		attribute.String("quest.move.old_id", oldID),
+		attribute.String("quest.move.new_id", newID),
+		attribute.Int("quest.move.subgraph_size", subgraphSize),
+		attribute.Int("quest.move.dep_updates", depUpdates),
+	)
 }
 
-// RecordCancelOutcome records cancel / cancel_recursive span attributes.
-// Body fills in fully at Task 12.10.
+// RecordCancelOutcome records cancel / cancel_recursive span
+// attributes. taskID is the cancel target (also emitted as the
+// task-affecting quest.task.id row per §4.3 — no proprietary
+// quest.cancel.target_id duplicates it). cancelledCount is the
+// number of tasks transitioned to cancelled by this call (including
+// the root); skippedCount is the number of already-terminal
+// descendants skipped. (OTEL.md §8.6 / §4.3.)
 func RecordCancelOutcome(ctx context.Context, taskID string, recursive bool, cancelledCount, skippedCount int) {
-	_ = ctx
-	_ = taskID
-	_ = recursive
-	_ = cancelledCount
-	_ = skippedCount
+	span := trace.SpanFromContext(ctx)
+	if nonRecording(span) {
+		return
+	}
+	span.SetAttributes(
+		attribute.String("quest.task.id", taskID),
+		attribute.Bool("quest.cancel.recursive", recursive),
+		attribute.Int("quest.cancel.cancelled_count", cancelledCount),
+		attribute.Int("quest.cancel.skipped_count", skippedCount),
+	)
 }
 
 // RecordContentReason and the rest of the content recorders live in
