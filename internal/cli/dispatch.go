@@ -40,7 +40,7 @@ type commandDescriptor struct {
 // 5-11 swaps out for the real `internal/command/<name>.go` handler.
 var descriptors = []commandDescriptor{
 	{Name: "version", Handler: command.Version, Elevated: false, RequiresWorkspace: false, SuppressTelemetry: true},
-	{Name: "init", Handler: notImplemented("init"), Elevated: false, RequiresWorkspace: false, SuppressTelemetry: false},
+	{Name: "init", Handler: command.Init, Elevated: false, RequiresWorkspace: false, SuppressTelemetry: false},
 	{Name: "show", Handler: notImplemented("show"), Elevated: false, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "accept", Handler: notImplemented("accept"), Elevated: false, RequiresWorkspace: true, SuppressTelemetry: false},
 	{Name: "update", Handler: notImplemented("update"), Elevated: false, RequiresWorkspace: true, SuppressTelemetry: false},

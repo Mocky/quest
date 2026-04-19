@@ -56,7 +56,7 @@ These are the global rules that multiple tasks below depend on. Re-confirming th
 | 2 | [phase-2-logging-errors.md](impl/phase-2-logging-errors.md) | slog setup, error sentinels, telemetry no-op shell | complete |
 | 3 | [phase-3-storage-foundation.md](impl/phase-3-storage-foundation.md) | SQLite open + WAL + migrations + schema v1 | complete |
 | 4 | [phase-4-cli-skeleton.md](impl/phase-4-cli-skeleton.md) | ID generator, dispatcher, output renderer | complete |
-| 5 | [phase-5-init.md](impl/phase-5-init.md) | `quest init` | not started |
+| 5 | [phase-5-init.md](impl/phase-5-init.md) | `quest init` | complete |
 | 6 | [phase-6-worker-commands.md](impl/phase-6-worker-commands.md) | `show`, `accept`, `update`, `complete`, `fail` | not started |
 | 7 | [phase-7-planner-creation.md](impl/phase-7-planner-creation.md) | `create`, dep validator, `batch` | not started |
 | 8 | [phase-8-task-management.md](impl/phase-8-task-management.md) | `cancel`, `reset`, `move` | not started |
