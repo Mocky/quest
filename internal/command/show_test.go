@@ -20,9 +20,10 @@ import (
 )
 
 // testStore opens a fresh sqlite DB at t.TempDir(), migrates it, and
-// returns the live Store. Centralized here so every test in the
-// package uses the same setup path.
-func testStore(t *testing.T) store.Store {
+// returns the live Store plus the on-disk path (for tests that need to
+// inspect the DB via a sibling *sql.DB). Centralized here so every
+// test in the package uses the same setup.
+func testStore(t *testing.T) (store.Store, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "quest.db")
 	s, err := store.Open(path)
@@ -33,7 +34,7 @@ func testStore(t *testing.T) store.Store {
 	if _, err := store.Migrate(context.Background(), s); err != nil {
 		t.Fatalf("store.Migrate: %v", err)
 	}
-	return s
+	return s, path
 }
 
 // baseCfg is a workspace-backed Config for handler-level tests —
@@ -80,7 +81,7 @@ func seedMinimalTask(t *testing.T, s store.Store, id, title string) {
 // "existence → exit 3" rule: a show against an unknown ID wraps
 // ErrNotFound.
 func TestShowMissingTaskReturnsNotFound(t *testing.T) {
-	s := testStore(t)
+	s, _ := testStore(t)
 	err, out, _ := runShow(t, s, baseCfg(), []string{"proj-nope"})
 	if err == nil {
 		t.Fatalf("Show(proj-nope): got nil error, want ErrNotFound")
@@ -96,7 +97,7 @@ func TestShowMissingTaskReturnsNotFound(t *testing.T) {
 // TestShowDefaultsToAgentTask verifies AGENT_TASK fills in when the
 // positional ID is omitted. Config flows through cfg.Agent.Task.
 func TestShowDefaultsToAgentTask(t *testing.T) {
-	s := testStore(t)
+	s, _ := testStore(t)
 	seedMinimalTask(t, s, "proj-a1", "Alpha")
 
 	cfg := baseCfg()
@@ -119,7 +120,7 @@ func TestShowDefaultsToAgentTask(t *testing.T) {
 // TestShowMissingIDAndNoAgentTask pins the ErrUsage fallback when
 // neither the positional ID nor AGENT_TASK is set.
 func TestShowMissingIDAndNoAgentTask(t *testing.T) {
-	s := testStore(t)
+	s, _ := testStore(t)
 	err, _, _ := runShow(t, s, baseCfg(), nil)
 	if err == nil {
 		t.Fatalf("Show(): got nil error, want ErrUsage")
@@ -134,7 +135,7 @@ func TestShowMissingIDAndNoAgentTask(t *testing.T) {
 
 // TestShowUnexpectedPositionalArgs rejects trailing args with ErrUsage.
 func TestShowUnexpectedPositionalArgs(t *testing.T) {
-	s := testStore(t)
+	s, _ := testStore(t)
 	seedMinimalTask(t, s, "proj-a1", "Alpha")
 	err, _, _ := runShow(t, s, baseCfg(), []string{"proj-a1", "proj-a2"})
 	if err == nil {
@@ -150,7 +151,7 @@ func TestShowUnexpectedPositionalArgs(t *testing.T) {
 // field; nullable columns unwritten at insert time land as JSON null,
 // collections land as [], and metadata lands as {}.
 func TestShowEmitsAllFieldsWithNulls(t *testing.T) {
-	s := testStore(t)
+	s, _ := testStore(t)
 	seedMinimalTask(t, s, "proj-a1", "Alpha")
 
 	err, stdout, _ := runShow(t, s, baseCfg(), []string{"proj-a1"})
@@ -211,7 +212,7 @@ func TestShowEmitsAllFieldsWithNulls(t *testing.T) {
 // edge and asserts `quest show` returns the target's title and status
 // inline (spec §quest show).
 func TestShowWithDepsDenormalizesTargetTitleAndStatus(t *testing.T) {
-	s := testStore(t)
+	s, _ := testStore(t)
 	seedMinimalTask(t, s, "proj-a1", "Upstream")
 	seedMinimalTask(t, s, "proj-a2", "Downstream")
 
@@ -257,7 +258,7 @@ func TestShowWithDepsDenormalizesTargetTitleAndStatus(t *testing.T) {
 // carve-out promises: default (absent), --history on empty history
 // (present as []), --history populated (present with rows).
 func TestShowHistoryFieldPresence(t *testing.T) {
-	s := testStore(t)
+	s, _ := testStore(t)
 	seedMinimalTask(t, s, "proj-a1", "Alpha")
 
 	// Default: history absent.
@@ -344,7 +345,7 @@ func TestShowHistoryFieldPresence(t *testing.T) {
 // {"timestamp":..., "role":..., "session":..., "action":"reset",
 // "reason":"..."}.
 func TestShowHistoryFlattensPayloadKeys(t *testing.T) {
-	s := testStore(t)
+	s, _ := testStore(t)
 	seedMinimalTask(t, s, "proj-a1", "Alpha")
 
 	tx, err := s.BeginImmediate(context.Background(), store.TxReset)
@@ -390,7 +391,7 @@ func TestShowHistoryFlattensPayloadKeys(t *testing.T) {
 // empty role/session should surface as JSON null (via *string), never
 // "". Proves cross-cutting.md §Nullable TEXT columns.
 func TestShowNullHistoryRoleSession(t *testing.T) {
-	s := testStore(t)
+	s, _ := testStore(t)
 	seedMinimalTask(t, s, "proj-a1", "Alpha")
 
 	tx, err := s.BeginImmediate(context.Background(), store.TxUpdate)
