@@ -1,0 +1,237 @@
+package command
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	stderrors "errors"
+	"flag"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+
+	"github.com/mocky/quest/internal/config"
+	"github.com/mocky/quest/internal/errors"
+	"github.com/mocky/quest/internal/store"
+	"github.com/mocky/quest/internal/telemetry"
+)
+
+// graphNode is the JSON shape of one entry in the `nodes` array. Field
+// order matches spec §quest graph: id, title, type, status, tier, role,
+// children. Tier and role are *string so an unset value emits JSON null
+// (cross-cutting.md §Nullable TEXT columns). External nodes appear
+// with the same shape but children is always []; outgoing edges are
+// not expanded.
+type graphNode struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Type     string   `json:"type"`
+	Status   string   `json:"status"`
+	Tier     *string  `json:"tier"`
+	Role     *string  `json:"role"`
+	Children []string `json:"children"`
+}
+
+// graphEdge is one outgoing dependency edge from a subtree task. Field
+// names are quest-specific (`task` / `target`) per spec §quest graph
+// design notes.
+type graphEdge struct {
+	Task         string `json:"task"`
+	Type         string `json:"type"`
+	Target       string `json:"target"`
+	TargetStatus string `json:"target_status"`
+}
+
+// graphResponse is the top-level JSON envelope: `nodes` then `edges`.
+// Both are always non-nil arrays so encoding/json emits [] on the
+// empty case (spec §Output & Error Conventions — never omit).
+type graphResponse struct {
+	Nodes []graphNode `json:"nodes"`
+	Edges []graphEdge `json:"edges"`
+}
+
+// Graph handles `quest graph ID`. ID is required (no AGENT_TASK
+// fallback). Traversal descends from ID through children and follows
+// dependency edges outward; targets outside the subtree appear as
+// unexpanded external nodes per spec.
+func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
+	_ = stdin
+
+	positional, flagArgs := splitLeadingPositional(args)
+	fs := flag.NewFlagSet("graph", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if perr := fs.Parse(flagArgs); perr != nil {
+		if stderrors.Is(perr, flag.ErrHelp) {
+			return nil
+		}
+		return fmt.Errorf("graph: %s: %w", perr.Error(), errors.ErrUsage)
+	}
+	positional = append(positional, fs.Args()...)
+	if len(positional) == 0 || positional[0] == "" {
+		return fmt.Errorf("graph: quest graph requires an explicit task ID: %w", errors.ErrUsage)
+	}
+	if len(positional) > 1 {
+		return fmt.Errorf("graph: unexpected positional arguments: %w", errors.ErrUsage)
+	}
+	rootID := positional[0]
+
+	root, err := s.GetTask(ctx, rootID)
+	if err != nil {
+		return err
+	}
+	telemetry.RecordTaskContext(ctx, root.ID, root.Tier, root.Type)
+
+	ctx2, end := telemetry.StoreSpan(ctx, "quest.store.traverse")
+	defer func() { end(err) }()
+
+	subtree, childrenByParent, err := collectSubtree(ctx2, s, root)
+	if err != nil {
+		return err
+	}
+	subtreeIDs := map[string]struct{}{}
+	for _, t := range subtree {
+		subtreeIDs[t.ID] = struct{}{}
+	}
+
+	var (
+		edges       []graphEdge
+		externalSet = map[string]struct{}{}
+	)
+	for _, t := range subtree {
+		deps, derr := s.GetDependencies(ctx2, t.ID)
+		if derr != nil {
+			return derr
+		}
+		for _, d := range deps {
+			edges = append(edges, graphEdge{
+				Task:         t.ID,
+				Type:         d.Type,
+				Target:       d.ID,
+				TargetStatus: d.Status,
+			})
+			if _, ok := subtreeIDs[d.ID]; !ok {
+				externalSet[d.ID] = struct{}{}
+			}
+		}
+	}
+
+	externalIDs := make([]string, 0, len(externalSet))
+	for id := range externalSet {
+		externalIDs = append(externalIDs, id)
+	}
+	sort.Strings(externalIDs)
+
+	externals := make([]graphNode, 0, len(externalIDs))
+	for _, id := range externalIDs {
+		ext, gerr := s.GetTask(ctx2, id)
+		if gerr != nil {
+			return gerr
+		}
+		externals = append(externals, graphNode{
+			ID:       ext.ID,
+			Title:    ext.Title,
+			Type:     ext.Type,
+			Status:   ext.Status,
+			Tier:     nullString(ext.Tier),
+			Role:     nullString(ext.Role),
+			Children: []string{},
+		})
+	}
+
+	nodes := make([]graphNode, 0, len(subtree)+len(externals))
+	for _, t := range subtree {
+		cs := childrenByParent[t.ID]
+		if cs == nil {
+			cs = []string{}
+		}
+		nodes = append(nodes, graphNode{
+			ID:       t.ID,
+			Title:    t.Title,
+			Type:     t.Type,
+			Status:   t.Status,
+			Tier:     nullString(t.Tier),
+			Role:     nullString(t.Role),
+			Children: cs,
+		})
+	}
+	nodes = append(nodes, externals...)
+	if edges == nil {
+		edges = []graphEdge{}
+	}
+
+	resp := graphResponse{Nodes: nodes, Edges: edges}
+	telemetry.RecordGraphResult(ctx, len(nodes), len(subtree))
+
+	if cfg.Output.Format == "text" {
+		return emitGraphText(stdout, rootID, subtree, childrenByParent, edges)
+	}
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "")
+	return enc.Encode(resp)
+}
+
+// collectSubtree walks from root through children in BFS order and
+// returns the full task list plus a map from parent ID to sorted child
+// ID list. Sibling order matches ID-ascending (GetChildren already
+// orders by id). Tasks is BFS order so the caller can render the tree
+// without a separate pass.
+func collectSubtree(ctx context.Context, s store.Store, root store.Task) ([]store.Task, map[string][]string, error) {
+	tasks := []store.Task{root}
+	seen := map[string]bool{root.ID: true}
+	children := map[string][]string{}
+	queue := []string{root.ID}
+	for len(queue) > 0 {
+		parent := queue[0]
+		queue = queue[1:]
+		kids, err := s.GetChildren(ctx, parent)
+		if err != nil {
+			return nil, nil, err
+		}
+		ids := make([]string, 0, len(kids))
+		for _, k := range kids {
+			if seen[k.ID] {
+				continue
+			}
+			seen[k.ID] = true
+			ids = append(ids, k.ID)
+			tasks = append(tasks, k)
+			queue = append(queue, k.ID)
+		}
+		children[parent] = ids
+	}
+	return tasks, children, nil
+}
+
+// emitGraphText renders the indented tree. Parent-child depth is
+// computed from the difference between a task ID and rootID — tasks
+// inside the subtree are dotted descendants of rootID by construction.
+// Dependency edges are listed under the owning task, indented one
+// level beyond it.
+func emitGraphText(w io.Writer, rootID string, subtree []store.Task, children map[string][]string, edges []graphEdge) error {
+	depthOf := func(id string) int {
+		if id == rootID {
+			return 0
+		}
+		rest := strings.TrimPrefix(id, rootID+".")
+		if rest == id {
+			return 0
+		}
+		return 1 + strings.Count(rest, ".")
+	}
+	edgesBy := map[string][]graphEdge{}
+	for _, e := range edges {
+		edgesBy[e.Task] = append(edgesBy[e.Task], e)
+	}
+	var buf bytes.Buffer
+	for _, t := range subtree {
+		indent := strings.Repeat("  ", depthOf(t.ID))
+		fmt.Fprintf(&buf, "%s%s  %s [%s]\n", indent, t.ID, t.Title, t.Status)
+		for _, e := range edgesBy[t.ID] {
+			fmt.Fprintf(&buf, "%s  %s  %s [%s]\n", indent, e.Type, e.Target, e.TargetStatus)
+		}
+	}
+	_ = children
+	_, err := w.Write(buf.Bytes())
+	return err
+}
