@@ -13,6 +13,7 @@ import (
 
 	"github.com/mocky/quest/internal/config"
 	"github.com/mocky/quest/internal/errors"
+	"github.com/mocky/quest/internal/output"
 	"github.com/mocky/quest/internal/store"
 	"github.com/mocky/quest/internal/telemetry"
 )
@@ -35,10 +36,12 @@ type graphNode struct {
 
 // graphEdge is one outgoing dependency edge from a subtree task. Field
 // names are quest-specific (`task` / `target`) per spec §quest graph
-// design notes.
+// design notes. LinkType names the relationship primitive (`blocked-by`,
+// `caused-by`, …); the target task's classification (`task`/`bug`) is
+// available via the corresponding entry in `nodes[]`.
 type graphEdge struct {
 	Task         string `json:"task"`
-	Type         string `json:"type"`
+	LinkType     string `json:"link_type"`
 	Target       string `json:"target"`
 	TargetStatus string `json:"target_status"`
 }
@@ -106,7 +109,7 @@ func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string,
 		for _, d := range deps {
 			edges = append(edges, graphEdge{
 				Task:         t.ID,
-				Type:         d.Type,
+				LinkType:     d.LinkType,
 				Target:       d.ID,
 				TargetStatus: d.Status,
 			})
@@ -164,7 +167,7 @@ func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string,
 	telemetry.RecordGraphResult(ctx, rootID, len(nodes), len(edges), len(externals), len(subtree))
 
 	if cfg.Output.Format == "text" {
-		return emitGraphText(stdout, rootID, subtree, childrenByParent, edges)
+		return emitGraphText(stdout, rootID, subtree, externals, edges)
 	}
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "")
@@ -203,12 +206,16 @@ func collectSubtree(ctx context.Context, s store.Store, root store.Task) ([]stor
 	return tasks, children, nil
 }
 
-// emitGraphText renders the indented tree. Parent-child depth is
-// computed from the difference between a task ID and rootID — tasks
-// inside the subtree are dotted descendants of rootID by construction.
-// Dependency edges are listed under the owning task, indented one
-// level beyond it.
-func emitGraphText(w io.Writer, rootID string, subtree []store.Task, children map[string][]string, edges []graphEdge) error {
+// emitGraphText renders the indented tree per spec §quest graph
+// --format text. Every task reference — whether a tree node or an
+// edge target — uses the canonical `{id} [{status}] (bug?) {title}`
+// shape from output.TaskRefLine. Parent-child depth is computed from
+// the dotted ID offset relative to rootID; externals live outside the
+// subtree hierarchy and only surface as edge-target references.
+// The titleByID/typeByID map is built once from the subtree plus
+// externals so each edge row looks up target metadata in O(1) without
+// re-querying the store.
+func emitGraphText(w io.Writer, rootID string, subtree []store.Task, externals []graphNode, edges []graphEdge) error {
 	depthOf := func(id string) int {
 		if id == rootID {
 			return 0
@@ -219,6 +226,19 @@ func emitGraphText(w io.Writer, rootID string, subtree []store.Task, children ma
 		}
 		return 1 + strings.Count(rest, ".")
 	}
+	titleByID := map[string]string{}
+	statusByID := map[string]string{}
+	typeByID := map[string]string{}
+	for _, t := range subtree {
+		titleByID[t.ID] = t.Title
+		statusByID[t.ID] = t.Status
+		typeByID[t.ID] = t.Type
+	}
+	for _, n := range externals {
+		titleByID[n.ID] = n.Title
+		statusByID[n.ID] = n.Status
+		typeByID[n.ID] = n.Type
+	}
 	edgesBy := map[string][]graphEdge{}
 	for _, e := range edges {
 		edgesBy[e.Task] = append(edgesBy[e.Task], e)
@@ -226,12 +246,12 @@ func emitGraphText(w io.Writer, rootID string, subtree []store.Task, children ma
 	var buf bytes.Buffer
 	for _, t := range subtree {
 		indent := strings.Repeat("  ", depthOf(t.ID))
-		fmt.Fprintf(&buf, "%s%s  %s [%s]\n", indent, t.ID, t.Title, t.Status)
+		fmt.Fprintln(&buf, indent+output.TaskRefLine(t.ID, t.Status, t.Type, t.Title))
 		for _, e := range edgesBy[t.ID] {
-			fmt.Fprintf(&buf, "%s  %s  %s [%s]\n", indent, e.Type, e.Target, e.TargetStatus)
+			targetRef := output.TaskRefLine(e.Target, statusByID[e.Target], typeByID[e.Target], titleByID[e.Target])
+			fmt.Fprintf(&buf, "%s  %s  %s\n", indent, e.LinkType, targetRef)
 		}
 	}
-	_ = children
 	_, err := w.Write(buf.Bytes())
 	return err
 }

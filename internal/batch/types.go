@@ -37,11 +37,13 @@ type RefTarget struct {
 
 // DepEntry is one parsed dependencies[] entry: a typed edge from
 // the line's new task to an earlier batch ref or an existing task.
-// Type is validated at phase 4 against the link-type enum; phase 1
-// only asserts the field is present as a string.
+// LinkType is validated at phase 4 against the link-type enum; phase
+// 1 only asserts the field is present as a string. The field and the
+// wire key (`link_type`) share the same name so parser, validator, and
+// applier all speak in one vocabulary.
 type DepEntry struct {
-	Target RefTarget
-	Type   string
+	Target   RefTarget
+	LinkType string
 }
 
 // BatchError is one error emitted by the four-phase validator. The

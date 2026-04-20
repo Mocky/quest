@@ -26,6 +26,8 @@ import (
 // omitted"). History is *[]historyEntry with omitempty so the field is
 // absent by default and present as `[]` when --history is passed on a
 // task with no history — the one documented carve-out in §quest show.
+// Parent is a *taskRef so non-root tasks emit the four-field
+// `{id,title,status,type}` cluster and root tasks emit JSON null.
 type showResponse struct {
 	ID                 string             `json:"id"`
 	Title              string             `json:"title"`
@@ -36,7 +38,7 @@ type showResponse struct {
 	Role               *string            `json:"role"`
 	Tier               *string            `json:"tier"`
 	Tags               []string           `json:"tags"`
-	Parent             *string            `json:"parent"`
+	Parent             *taskRef           `json:"parent"`
 	AcceptanceCriteria *string            `json:"acceptance_criteria"`
 	Metadata           map[string]any     `json:"metadata"`
 	OwnerSession       *string            `json:"owner_session"`
@@ -50,6 +52,18 @@ type showResponse struct {
 	HandoffWrittenAt   *string            `json:"handoff_written_at"`
 	Debrief            *string            `json:"debrief"`
 	History            *[]historyEntry    `json:"history,omitempty"`
+}
+
+// taskRef is the four-field task-reference cluster the spec pins as the
+// canonical shape wherever a task appears by reference (parent,
+// dependency targets, graph edge targets). Field order is the spec
+// order — id, title, status, type — and all four keys are always
+// present when the wrapping pointer is non-nil.
+type taskRef struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+	Type   string `json:"type"`
 }
 
 // historyEntry renders one history row with its action-specific payload
@@ -165,7 +179,10 @@ func Show(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	}
 	telemetry.RecordTaskContext(ctx, task.ID, task.Tier, task.Type)
 
-	resp := buildShowResponse(task)
+	resp, err := buildShowResponse(ctx, s, task)
+	if err != nil {
+		return err
+	}
 	if *historyFlag {
 		entries, err := s.GetHistory(ctx, id)
 		if err != nil {
@@ -183,14 +200,28 @@ func Show(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 		}
 		resp.History = &out
 	}
+	if cfg.Output.Format == "text" {
+		return emitShowText(stdout, resp)
+	}
 	return output.Emit(stdout, cfg.Output.Format, resp)
 }
 
 // buildShowResponse adapts the store.Task (plain-string null-when-empty)
 // to the output struct (pointer-string emits-JSON-null-when-nil).
 // Slices and the metadata map come through unchanged — the store read
-// guarantees non-nil containers.
-func buildShowResponse(t store.Task) showResponse {
+// guarantees non-nil containers. When t.Parent is set the parent row is
+// fetched to populate the four-field taskRef cluster; a missing parent
+// row (FK integrity says this shouldn't happen) surfaces as an internal
+// error rather than silently serializing null.
+func buildShowResponse(ctx context.Context, s store.Store, t store.Task) (showResponse, error) {
+	var parent *taskRef
+	if t.Parent != "" {
+		p, err := s.GetTask(ctx, t.Parent)
+		if err != nil {
+			return showResponse{}, fmt.Errorf("show: load parent %q: %w", t.Parent, err)
+		}
+		parent = &taskRef{ID: p.ID, Title: p.Title, Status: p.Status, Type: p.Type}
+	}
 	return showResponse{
 		ID:                 t.ID,
 		Title:              t.Title,
@@ -201,7 +232,7 @@ func buildShowResponse(t store.Task) showResponse {
 		Role:               nullString(t.Role),
 		Tier:               nullString(t.Tier),
 		Tags:               t.Tags,
-		Parent:             nullString(t.Parent),
+		Parent:             parent,
 		AcceptanceCriteria: nullString(t.AcceptanceCriteria),
 		Metadata:           t.Metadata,
 		OwnerSession:       nullString(t.OwnerSession),
@@ -214,7 +245,7 @@ func buildShowResponse(t store.Task) showResponse {
 		HandoffSession:     nullString(t.HandoffSession),
 		HandoffWrittenAt:   nullString(t.HandoffWrittenAt),
 		Debrief:            nullString(t.Debrief),
-	}
+	}, nil
 }
 
 // nullString returns nil for "" so JSON encoding emits null; otherwise

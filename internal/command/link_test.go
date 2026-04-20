@@ -65,14 +65,14 @@ func TestLinkBlockedByHappyPath(t *testing.T) {
 		t.Fatalf("Link: %v", err)
 	}
 	var ack struct {
-		Task   string `json:"task"`
-		Target string `json:"target"`
-		Type   string `json:"type"`
+		Task     string `json:"task"`
+		Target   string `json:"target"`
+		LinkType string `json:"link_type"`
 	}
 	if jerr := json.Unmarshal([]byte(stdout), &ack); jerr != nil {
 		t.Fatalf("stdout: %v; raw=%q", jerr, stdout)
 	}
-	if ack.Task != "proj-a1" || ack.Target != "proj-a2" || ack.Type != "blocked-by" {
+	if ack.Task != "proj-a1" || ack.Target != "proj-a2" || ack.LinkType != "blocked-by" {
 		t.Errorf("ack = %+v, want {proj-a1, proj-a2, blocked-by}", ack)
 	}
 	var n int
@@ -325,7 +325,7 @@ func TestUnlinkRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unlink: %v", err)
 	}
-	if !strings.Contains(stdout, `"type":"blocked-by"`) {
+	if !strings.Contains(stdout, `"link_type":"blocked-by"`) {
 		t.Errorf("stdout = %q", stdout)
 	}
 	var n int

@@ -48,7 +48,7 @@ func TestBatchHappyPath(t *testing.T) {
 	path := writeBatchFile(t,
 		`{"ref":"epic","title":"Epic"}`+"\n"+
 			`{"ref":"a","title":"A","parent":"epic"}`+"\n"+
-			`{"ref":"b","title":"B","parent":"epic","dependencies":[{"ref":"a","type":"blocked-by"}]}`+"\n")
+			`{"ref":"b","title":"B","parent":"epic","dependencies":[{"ref":"a","link_type":"blocked-by"}]}`+"\n")
 
 	err, stdout, stderr := runBatch(t, s, createCfg(), []string{path})
 	if err != nil {

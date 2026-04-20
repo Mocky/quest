@@ -250,11 +250,11 @@ func parseRefTarget(raw json.RawMessage, allowBareString bool) (RefTarget, error
 }
 
 // parseDepEntry parses one object from the `dependencies` array.
-// Missing `type` is reported as missing_field; ambiguous reference
-// shape produces ambiguous_reference; errors are de-duplicated so a
-// single malformed entry produces at most one BatchError per issue
-// class rather than stacking a missing_field on top of every
-// ambiguous_reference.
+// Missing `link_type` is reported as missing_field; ambiguous
+// reference shape produces ambiguous_reference; errors are
+// de-duplicated so a single malformed entry produces at most one
+// BatchError per issue class rather than stacking a missing_field on
+// top of every ambiguous_reference.
 func parseDepEntry(lineNo, idx int, raw json.RawMessage) (DepEntry, []BatchError) {
 	fieldPath := fmt.Sprintf("dependencies[%d]", idx)
 
@@ -268,26 +268,26 @@ func parseDepEntry(lineNo, idx int, raw json.RawMessage) (DepEntry, []BatchError
 			Field:   fieldPath,
 			Message: tErr.Error(),
 		})
-		// Skip the type check — ambiguous reference already
+		// Skip the link_type check — ambiguous reference already
 		// locates the problem; piling on missing_field does not
 		// help the caller fix the entry.
 		return DepEntry{Target: target}, errs
 	}
 
-	// Extract `type` for the entry — it lives inside the same
-	// object as ref/id. Empty type is a missing_field error; invalid
-	// values are phase 4 (invalid_link_type).
+	// Extract `link_type` for the entry — it lives inside the same
+	// object as ref/id. Empty link_type is a missing_field error;
+	// invalid values are phase 4 (invalid_link_type).
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &obj); err == nil {
-		if rawT, ok := obj["type"]; ok {
+		if rawT, ok := obj["link_type"]; ok {
 			var typ string
 			if jerr := json.Unmarshal(rawT, &typ); jerr == nil && typ != "" {
-				return DepEntry{Target: target, Type: typ}, errs
+				return DepEntry{Target: target, LinkType: typ}, errs
 			}
 		}
 	}
-	errs = append(errs, batchMissingField(lineNo, fieldPath+".type",
-		"required field '"+fieldPath+".type' is missing"))
+	errs = append(errs, batchMissingField(lineNo, fieldPath+".link_type",
+		"required field '"+fieldPath+".link_type' is missing"))
 	return DepEntry{Target: target}, errs
 }
 

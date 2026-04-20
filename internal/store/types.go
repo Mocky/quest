@@ -84,14 +84,18 @@ const (
 )
 
 // Dependency is a typed edge between tasks per spec §Multi-type links.
-// Title and Status are denormalized from the target task row for
+// Title, Status, and Type are denormalized from the target task row for
 // GetTaskWithDeps — they are populated by the read query's JOIN, not
-// persisted in the dependencies table.
+// persisted in the dependencies table. Type is the target task's
+// classification (`task`/`bug`); LinkType is the relationship primitive
+// (`blocked-by`, `caused-by`, …). Field order matches the wire format
+// pinned in spec §quest show so encoding/json emits the canonical order.
 type Dependency struct {
-	ID     string `json:"id"`
-	Type   string `json:"type"`
-	Title  string `json:"title"`
-	Status string `json:"status"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	Type     string `json:"type"`
+	LinkType string `json:"link_type"`
 }
 
 // Note is one row of the notes table. Timestamps are RFC3339 UTC per

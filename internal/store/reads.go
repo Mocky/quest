@@ -271,11 +271,11 @@ func (s *sqliteStore) GetChildren(ctx context.Context, parentID string) ([]Task,
 }
 
 // GetDependencies returns outgoing edges for id (task_id is the source)
-// with the target's title and status denormalized via JOIN, per spec
-// §quest show. Sorted by (created_at, target_id, link_type) for stable
-// output across calls.
+// with the target's title, status, and type denormalized via JOIN, per
+// spec §quest show. Sorted by (created_at, target_id, link_type) for
+// stable output across calls.
 func (s *sqliteStore) GetDependencies(ctx context.Context, id string) ([]Dependency, error) {
-	const q = `SELECT d.target_id, d.link_type, t.title, t.status
+	const q = `SELECT d.target_id, t.title, t.status, t.type, d.link_type
 		FROM dependencies d JOIN tasks t ON t.id = d.target_id
 		WHERE d.task_id = ?
 		ORDER BY d.created_at, d.target_id, d.link_type`
@@ -287,7 +287,7 @@ func (s *sqliteStore) GetDependencies(ctx context.Context, id string) ([]Depende
 	out := []Dependency{}
 	for rows.Next() {
 		var d Dependency
-		if err := rows.Scan(&d.ID, &d.Type, &d.Title, &d.Status); err != nil {
+		if err := rows.Scan(&d.ID, &d.Title, &d.Status, &d.Type, &d.LinkType); err != nil {
 			return nil, classifyDriverErr(err)
 		}
 		out = append(out, d)

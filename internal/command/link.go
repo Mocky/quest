@@ -20,11 +20,14 @@ import (
 // linkAck is the spec §Write-command output shape for `link` and
 // `unlink`: the edge identified by source task, target task, and
 // link type. Same shape applies on idempotent no-ops — callers cannot
-// distinguish "added now" from "already present" from the body.
+// distinguish "added now" from "already present" from the body. The
+// relationship primitive key is `link_type` to match the field name
+// used everywhere else a link type appears (show dependencies, graph
+// edges, batch input).
 type linkAck struct {
-	Task   string `json:"task"`
-	Target string `json:"target"`
-	Type   string `json:"type"`
+	Task     string `json:"task"`
+	Target   string `json:"target"`
+	LinkType string `json:"link_type"`
 }
 
 // linkArgs captures the four mutually-exclusive relationship flags as
@@ -222,8 +225,8 @@ func Link(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 		telemetry.RecordLinkAdded(ctx, taskID, edge.Target, edge.LinkType)
 	}
 	return output.Emit(stdout, cfg.Output.Format, linkAck{
-		Task:   taskID,
-		Target: edge.Target,
-		Type:   edge.LinkType,
+		Task:     taskID,
+		Target:   edge.Target,
+		LinkType: edge.LinkType,
 	})
 }

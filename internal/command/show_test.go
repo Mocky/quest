@@ -236,10 +236,11 @@ func TestShowWithDepsDenormalizesTargetTitleAndStatus(t *testing.T) {
 	}
 	var resp struct {
 		Dependencies []struct {
-			ID     string `json:"id"`
-			Type   string `json:"type"`
-			Title  string `json:"title"`
-			Status string `json:"status"`
+			ID       string `json:"id"`
+			Title    string `json:"title"`
+			Status   string `json:"status"`
+			Type     string `json:"type"`
+			LinkType string `json:"link_type"`
 		} `json:"dependencies"`
 	}
 	if jerr := json.Unmarshal([]byte(stdout), &resp); jerr != nil {
@@ -249,8 +250,8 @@ func TestShowWithDepsDenormalizesTargetTitleAndStatus(t *testing.T) {
 		t.Fatalf("dependencies = %d, want 1", len(resp.Dependencies))
 	}
 	d := resp.Dependencies[0]
-	if d.ID != "proj-a1" || d.Type != "blocked-by" || d.Title != "Upstream" || d.Status != "open" {
-		t.Errorf("dep = %+v, want {id=proj-a1, type=blocked-by, title=Upstream, status=open}", d)
+	if d.ID != "proj-a1" || d.LinkType != "blocked-by" || d.Title != "Upstream" || d.Status != "open" || d.Type != "task" {
+		t.Errorf("dep = %+v, want {id=proj-a1, link_type=blocked-by, title=Upstream, status=open, type=task}", d)
 	}
 }
 
@@ -385,6 +386,423 @@ func TestShowHistoryFlattensPayloadKeys(t *testing.T) {
 	} else if string(r) != `"session crashed"` {
 		t.Errorf("reason = %s, want \"session crashed\"", r)
 	}
+}
+
+// TestShowParentIsObjectWhenSet pins the spec §quest show denormalized
+// parent: when the task has a parent, `parent` renders as the
+// four-field taskref cluster `{id, title, status, type}`; otherwise
+// null. The shape is load-bearing for agents that read the parent's
+// status without a second `quest show` call.
+func TestShowParentIsObjectWhenSet(t *testing.T) {
+	s, _ := testStore(t)
+	seedMinimalTask(t, s, "proj-a1", "Auth module")
+	// Insert child directly to bypass quest create parent-status
+	// preconditions — the renderer only cares about row shape, not
+	// create-time validation.
+	tx, err := s.BeginImmediate(context.Background(), store.TxCreate)
+	if err != nil {
+		t.Fatalf("BeginImmediate: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`INSERT INTO tasks(id, title, type, status, parent, created_at)
+		 VALUES ('proj-a1.1', 'JWT validation', 'task', 'open', 'proj-a1', ?)`,
+		"2026-04-18T01:00:00Z"); err != nil {
+		t.Fatalf("insert child: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Non-root: parent is an object with all four keys populated.
+	err, stdout, _ := runShow(t, s, baseCfg(), []string{"proj-a1.1"})
+	if err != nil {
+		t.Fatalf("Show child: %v", err)
+	}
+	var resp struct {
+		Parent *struct {
+			ID     string `json:"id"`
+			Title  string `json:"title"`
+			Status string `json:"status"`
+			Type   string `json:"type"`
+		} `json:"parent"`
+	}
+	if jerr := json.Unmarshal([]byte(stdout), &resp); jerr != nil {
+		t.Fatalf("stdout JSON: %v; raw=%q", jerr, stdout)
+	}
+	if resp.Parent == nil {
+		t.Fatalf("parent = null, want object; stdout=%q", stdout)
+	}
+	if resp.Parent.ID != "proj-a1" || resp.Parent.Title != "Auth module" ||
+		resp.Parent.Status != "open" || resp.Parent.Type != "task" {
+		t.Errorf("parent = %+v, want {id=proj-a1, title=Auth module, status=open, type=task}",
+			resp.Parent)
+	}
+
+	// Root: parent is JSON null.
+	err, stdout, _ = runShow(t, s, baseCfg(), []string{"proj-a1"})
+	if err != nil {
+		t.Fatalf("Show root: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if jerr := json.Unmarshal([]byte(stdout), &raw); jerr != nil {
+		t.Fatalf("root JSON: %v", jerr)
+	}
+	if string(raw["parent"]) != "null" {
+		t.Errorf("root parent = %s, want null", raw["parent"])
+	}
+}
+
+// TestShowTextHeaderHasBugMarker pins the spec §Header rule: when the
+// task's type is bug, the header gets a ` (bug) ` marker between the
+// status bracket and the title. Default `task` omits the marker.
+func TestShowTextHeaderHasBugMarker(t *testing.T) {
+	s, _ := testStore(t)
+	// Seed one task of each classification.
+	tx, err := s.BeginImmediate(context.Background(), store.TxCreate)
+	if err != nil {
+		t.Fatalf("BeginImmediate: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`INSERT INTO tasks(id, title, type, status, created_at) VALUES
+		 ('proj-a1', 'Plain task', 'task', 'open', ?),
+		 ('proj-a2', 'Nasty regression', 'bug', 'open', ?)`,
+		"2026-04-18T00:00:00Z", "2026-04-18T00:00:00Z"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	cfg := baseCfg()
+	cfg.Output.Format = "text"
+
+	err, out1, _ := runShow(t, s, cfg, []string{"proj-a1"})
+	if err != nil {
+		t.Fatalf("Show proj-a1: %v", err)
+	}
+	first := firstLine(out1)
+	if first != "proj-a1 [open] Plain task" {
+		t.Errorf("task header = %q, want \"proj-a1 [open] Plain task\"", first)
+	}
+
+	err, out2, _ := runShow(t, s, cfg, []string{"proj-a2"})
+	if err != nil {
+		t.Fatalf("Show proj-a2: %v", err)
+	}
+	first = firstLine(out2)
+	if first != "proj-a2 [open] (bug) Nasty regression" {
+		t.Errorf("bug header = %q, want \"proj-a2 [open] (bug) Nasty regression\"", first)
+	}
+}
+
+// TestShowTextMinimalTask pins the smallest possible rendering: a
+// bare task has a header, an `exec` row is absent when tier is unset,
+// and no sections follow.
+func TestShowTextMinimalTask(t *testing.T) {
+	s, _ := testStore(t)
+	seedMinimalTask(t, s, "proj-a1", "Alpha")
+	cfg := baseCfg()
+	cfg.Output.Format = "text"
+	err, stdout, _ := runShow(t, s, cfg, []string{"proj-a1"})
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	want := "proj-a1 [open] Alpha\n"
+	if stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+// TestShowTextMetadataCluster pins the 4-space indent, the widest-key
+// padding, and the presence rules for parent / tags / exec /
+// metadata / started / completed.
+func TestShowTextMetadataCluster(t *testing.T) {
+	s, _ := testStore(t)
+	tx, err := s.BeginImmediate(context.Background(), store.TxCreate)
+	if err != nil {
+		t.Fatalf("BeginImmediate: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`INSERT INTO tasks(id, title, type, status, tier, role, owner_session, metadata, created_at) VALUES
+		 ('proj-a1', 'Parent', 'bug', 'open', 'T1', 'planner', NULL, '{}', ?),
+		 ('proj-a1.1', 'Child', 'task', 'open', 'T3', 'coder', 'sess-1', '{"priority":"high"}', ?)`,
+		"2026-04-18T00:00:00Z", "2026-04-18T00:00:00Z"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`UPDATE tasks SET parent='proj-a1' WHERE id='proj-a1.1'`); err != nil {
+		t.Fatalf("set parent: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`INSERT INTO tags(task_id, tag) VALUES ('proj-a1.1', 'auth'), ('proj-a1.1', 'go')`); err != nil {
+		t.Fatalf("insert tags: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	cfg := baseCfg()
+	cfg.Output.Format = "text"
+	err, stdout, _ := runShow(t, s, cfg, []string{"proj-a1.1"})
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	// Widest key is "metadata" (8) → value column starts at 4+8+2 = 14.
+	// Parent row: parent cluster with (bug) marker since proj-a1.type=bug.
+	// Tags row: comma-space join. Exec: T3 - coder - sess-1. Metadata:
+	// priority=high.
+	wantLines := []string{
+		"proj-a1.1 [open] Child",
+		"    parent    proj-a1 [open] (bug) Parent",
+		"    tags      auth, go",
+		"    exec      T3 - coder - sess-1",
+		"    metadata  priority=high",
+	}
+	got := strings.Split(stdout, "\n")
+	for i, want := range wantLines {
+		if i >= len(got) {
+			t.Fatalf("line %d missing; stdout=%q", i, stdout)
+		}
+		if got[i] != want {
+			t.Errorf("line %d = %q, want %q", i, got[i], want)
+		}
+	}
+}
+
+// TestShowTextExecTrailingNullDrops pins the spec's trailing-null
+// behavior: a task with tier+role but no owner_session renders
+// `T3 - coder` (no trailing em-dash or separator).
+func TestShowTextExecTrailingNullDrops(t *testing.T) {
+	s, _ := testStore(t)
+	tx, err := s.BeginImmediate(context.Background(), store.TxCreate)
+	if err != nil {
+		t.Fatalf("BeginImmediate: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`INSERT INTO tasks(id, title, type, status, tier, role, created_at) VALUES
+		 ('proj-a1', 'Alpha', 'task', 'open', 'T3', 'coder', ?)`,
+		"2026-04-18T00:00:00Z"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	cfg := baseCfg()
+	cfg.Output.Format = "text"
+	err, stdout, _ := runShow(t, s, cfg, []string{"proj-a1"})
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if !strings.Contains(stdout, "exec  T3 - coder\n") {
+		t.Errorf("missing exec row with trailing-null drop: %q", stdout)
+	}
+	// Must NOT contain a dangling separator or em-dash.
+	if strings.Contains(stdout, "T3 - coder - ") || strings.Contains(stdout, "T3 - coder -—") {
+		t.Errorf("unexpected trailing separator: %q", stdout)
+	}
+}
+
+// TestShowTextDependenciesSection pins the Dependencies body: rows
+// are 4-indented, the link_type column pads to the widest value, and
+// each target renders with the `(bug)` marker when appropriate.
+func TestShowTextDependenciesSection(t *testing.T) {
+	s, _ := testStore(t)
+	tx, err := s.BeginImmediate(context.Background(), store.TxCreate)
+	if err != nil {
+		t.Fatalf("BeginImmediate: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`INSERT INTO tasks(id, title, type, status, created_at) VALUES
+		 ('proj-a1', 'JWT',    'task', 'completed', ?),
+		 ('proj-a2', 'Crash',  'bug',  'completed', ?),
+		 ('proj-a3', 'Middle', 'task', 'open',      ?)`,
+		"2026-04-18T00:00:00Z", "2026-04-18T00:00:00Z", "2026-04-18T00:00:00Z"); err != nil {
+		t.Fatalf("insert tasks: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`INSERT INTO dependencies(task_id, target_id, link_type, created_at) VALUES
+		 ('proj-a3', 'proj-a1', 'blocked-by',  ?),
+		 ('proj-a3', 'proj-a2', 'caused-by',   ?)`,
+		"2026-04-18T01:00:00Z", "2026-04-18T01:00:01Z"); err != nil {
+		t.Fatalf("insert deps: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	cfg := baseCfg()
+	cfg.Output.Format = "text"
+	err, stdout, _ := runShow(t, s, cfg, []string{"proj-a3"})
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	// Widest link_type is "blocked-by" (10). Both rows pad to 10+2
+	// spaces before the target's task-ref cluster.
+	wantBlocked := "    blocked-by  proj-a1 [completed] JWT"
+	wantCaused := "    caused-by   proj-a2 [completed] (bug) Crash"
+	if !strings.Contains(stdout, wantBlocked) {
+		t.Errorf("missing blocked-by row %q in %q", wantBlocked, stdout)
+	}
+	if !strings.Contains(stdout, wantCaused) {
+		t.Errorf("missing caused-by row %q in %q", wantCaused, stdout)
+	}
+	if !strings.Contains(stdout, "\nDependencies\n") {
+		t.Errorf("missing Dependencies heading: %q", stdout)
+	}
+}
+
+// TestShowTextDebriefMissingOnCompleted pins the spec's
+// (missing) debrief rule: a completed task with null debrief renders
+// the Debrief section with the literal `(missing)` body.
+func TestShowTextDebriefMissingOnCompleted(t *testing.T) {
+	s, _ := testStore(t)
+	tx, err := s.BeginImmediate(context.Background(), store.TxCreate)
+	if err != nil {
+		t.Fatalf("BeginImmediate: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`INSERT INTO tasks(id, title, type, status, created_at) VALUES
+		 ('proj-a1', 'Done', 'task', 'completed', ?)`,
+		"2026-04-18T00:00:00Z"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	cfg := baseCfg()
+	cfg.Output.Format = "text"
+	err, stdout, _ := runShow(t, s, cfg, []string{"proj-a1"})
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if !strings.Contains(stdout, "\nDebrief\n    (missing)\n") {
+		t.Errorf("missing debrief (missing) body: %q", stdout)
+	}
+}
+
+// TestShowTextPipedWraps80 pins the spec's piped-output width: when
+// the writer is not a TTY (bytes.Buffer in this test), prose sections
+// wrap at 80 columns (innerWidth 76 after the 4-space indent). Uses
+// space-separated short words so the word-wrapper has break points —
+// a single token longer than width overflows by design, matching the
+// spec's "long lines overflow; truncation is not used for show".
+func TestShowTextPipedWraps80(t *testing.T) {
+	s, _ := testStore(t)
+	words := strings.Repeat("alpha beta gamma delta epsilon ", 20) // 600+ chars of 5-7 letter words
+	tx, err := s.BeginImmediate(context.Background(), store.TxCreate)
+	if err != nil {
+		t.Fatalf("BeginImmediate: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`INSERT INTO tasks(id, title, type, status, description, created_at) VALUES
+		 ('proj-a1', 'Alpha', 'task', 'open', ?, ?)`,
+		words, "2026-04-18T00:00:00Z"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	cfg := baseCfg()
+	cfg.Output.Format = "text"
+	err, stdout, _ := runShow(t, s, cfg, []string{"proj-a1"})
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	// Find the Description body lines and assert the 4-space indent
+	// prefix plus that no line exceeds 80 columns.
+	var bodyLines []string
+	collect := false
+	for _, line := range strings.Split(stdout, "\n") {
+		if line == "Description" {
+			collect = true
+			continue
+		}
+		if collect {
+			if line == "" {
+				break
+			}
+			bodyLines = append(bodyLines, line)
+		}
+	}
+	if len(bodyLines) < 2 {
+		t.Fatalf("description did not wrap: %d lines, raw=%q", len(bodyLines), stdout)
+	}
+	for i, l := range bodyLines {
+		if !strings.HasPrefix(l, "    ") {
+			t.Errorf("line %d missing 4-space indent: %q", i, l)
+		}
+		if len(l) > 80 {
+			t.Errorf("line %d exceeds 80 cols (%d): %q", i, len(l), l)
+		}
+	}
+}
+
+// TestShowTextHistoryBlock pins the --history section: heading carries
+// the count, each row shows `{ts}  {role}/{session}  {action}` with
+// action-specific detail when applicable.
+func TestShowTextHistoryBlock(t *testing.T) {
+	s, _ := testStore(t)
+	seedMinimalTask(t, s, "proj-a1", "Alpha")
+
+	tx, err := s.BeginImmediate(context.Background(), store.TxUpdate)
+	if err != nil {
+		t.Fatalf("BeginImmediate: %v", err)
+	}
+	if err := store.AppendHistory(context.Background(), tx, store.History{
+		TaskID:    "proj-a1",
+		Timestamp: "2026-04-18T10:00:00Z",
+		Action:    store.HistoryCreated,
+		Role:      "planner",
+		Session:   "sess-p1",
+		Payload:   map[string]any{"tier": "T2", "role": "coder", "tags": []any{"go", "auth"}},
+	}); err != nil {
+		t.Fatalf("append created: %v", err)
+	}
+	if err := store.AppendHistory(context.Background(), tx, store.History{
+		TaskID:    "proj-a1",
+		Timestamp: "2026-04-18T10:05:00Z",
+		Action:    store.HistoryAccepted,
+		Role:      "coder",
+		Session:   "sess-c1",
+	}); err != nil {
+		t.Fatalf("append accepted: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	cfg := baseCfg()
+	cfg.Output.Format = "text"
+	err, stdout, _ := runShow(t, s, cfg, []string{"--history", "proj-a1"})
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if !strings.Contains(stdout, "\nHistory (2)\n") {
+		t.Errorf("missing History heading with count: %q", stdout)
+	}
+	// `created` detail: key=value with list rendering for tags.
+	if !strings.Contains(stdout, "role=coder tags=[go,auth] tier=T2") {
+		t.Errorf("missing created detail: %q", stdout)
+	}
+	// `accepted` row has no detail column.
+	if !strings.Contains(stdout, "planner/sess-p1") {
+		t.Errorf("missing role/session for created row: %q", stdout)
+	}
+	if !strings.Contains(stdout, "coder/sess-c1") {
+		t.Errorf("missing role/session for accepted row: %q", stdout)
+	}
+}
+
+// firstLine returns the first line of s (no trailing newline). Used
+// by header-only assertions where the remainder of stdout is noise.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // TestShowNullHistoryRoleSession pins NULL round-trip: storing an

@@ -82,7 +82,7 @@ func resolveParentID(line BatchLine, refToID map[string]string) (string, bool) {
 // from creation.
 func allDepsResolvable(line BatchLine, refToID map[string]string) bool {
 	for _, d := range line.Dependencies {
-		if !validLinkTypes[d.Type] {
+		if !validLinkTypes[d.LinkType] {
 			return false
 		}
 		if d.Target.ID != "" {
@@ -174,7 +174,7 @@ func createOne(ctx context.Context, tx *store.Tx, line BatchLine, parentID strin
 	}
 	var edgeRecords []map[string]any
 	for _, d := range line.Dependencies {
-		if !validLinkTypes[d.Type] {
+		if !validLinkTypes[d.LinkType] {
 			continue
 		}
 		target := d.Target.ID
@@ -186,12 +186,12 @@ func createOne(ctx context.Context, tx *store.Tx, line BatchLine, parentID strin
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO dependencies(task_id, target_id, link_type, created_at) VALUES (?, ?, ?, ?)`,
-			id, target, d.Type, now); err != nil {
+			id, target, d.LinkType, now); err != nil {
 			return "", fmt.Errorf("%w: batch apply: insert dependency: %s", errors.ErrGeneral, err.Error())
 		}
 		edgeRecords = append(edgeRecords, map[string]any{
 			"target":    target,
-			"link_type": d.Type,
+			"link_type": d.LinkType,
 		})
 	}
 

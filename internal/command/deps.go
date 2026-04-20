@@ -73,7 +73,7 @@ func emitDepsText(w io.Writer, deps []store.Dependency) error {
 	}
 	rows := make([][]string, 0, len(deps))
 	for _, d := range deps {
-		rows = append(rows, []string{d.ID, d.Type, d.Status, d.Title})
+		rows = append(rows, []string{d.ID, d.LinkType, d.Status, d.Title})
 	}
 	return output.Table(w, cols, rows)
 }

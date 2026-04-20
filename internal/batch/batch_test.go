@@ -138,7 +138,7 @@ func TestPhaseParseDependencyBareStringIsAmbiguous(t *testing.T) {
 // TestPhaseParseDependencyBothKeysIsAmbiguous: a dependency entry
 // with both ref and id triggers ambiguous_reference.
 func TestPhaseParseDependencyBothKeysIsAmbiguous(t *testing.T) {
-	body := `{"ref":"a","title":"A","dependencies":[{"ref":"x","id":"proj-01","type":"blocked-by"}]}` + "\n"
+	body := `{"ref":"a","title":"A","dependencies":[{"ref":"x","id":"proj-01","link_type":"blocked-by"}]}` + "\n"
 	_, errs := batch.PhaseParse([]byte(body))
 	if !hasErr(errs, func(e batch.BatchError) bool {
 		return e.Code == batch.BatchCodeAmbiguousReference && e.Field == "dependencies[0]"
@@ -148,14 +148,29 @@ func TestPhaseParseDependencyBothKeysIsAmbiguous(t *testing.T) {
 }
 
 // TestPhaseParseDependencyMissingType: a dep entry with ref but
-// no type field → missing_field with dependencies[n].type.
+// no link_type field → missing_field with dependencies[n].link_type.
 func TestPhaseParseDependencyMissingType(t *testing.T) {
 	body := `{"ref":"a","title":"A","dependencies":[{"ref":"x"}]}` + "\n"
 	_, errs := batch.PhaseParse([]byte(body))
 	if !hasErr(errs, func(e batch.BatchError) bool {
-		return e.Code == batch.BatchCodeMissingField && e.Field == "dependencies[0].type"
+		return e.Code == batch.BatchCodeMissingField && e.Field == "dependencies[0].link_type"
 	}) {
-		t.Fatalf("errs = %+v, want missing_field dependencies[0].type", errs)
+		t.Fatalf("errs = %+v, want missing_field dependencies[0].link_type", errs)
+	}
+}
+
+// TestPhaseParseDependencyLegacyTypeKeyMissing: a dep entry that uses
+// the pre-rename `type` key is treated as missing_field at
+// dependencies[n].link_type so planners migrating from the old JSONL
+// shape see a precise error rather than silent acceptance. Pins the
+// breaking spec change (spec commit 9d5fc76).
+func TestPhaseParseDependencyLegacyTypeKeyMissing(t *testing.T) {
+	body := `{"ref":"a","title":"A","dependencies":[{"ref":"x","type":"blocked-by"}]}` + "\n"
+	_, errs := batch.PhaseParse([]byte(body))
+	if !hasErr(errs, func(e batch.BatchError) bool {
+		return e.Code == batch.BatchCodeMissingField && e.Field == "dependencies[0].link_type"
+	}) {
+		t.Fatalf("errs = %+v, want missing_field dependencies[0].link_type for legacy `type` key", errs)
 	}
 }
 
@@ -219,8 +234,8 @@ func TestPhaseReferenceSuppressesDerivedErrors(t *testing.T) {
 // line blocks the other triggers a cycle error.
 func TestPhaseGraphBatchInternalCycle(t *testing.T) {
 	s := testStore(t)
-	body := `{"ref":"a","title":"A","dependencies":[{"ref":"b","type":"blocked-by"}]}` + "\n" +
-		`{"ref":"b","title":"B","dependencies":[{"ref":"a","type":"blocked-by"}]}` + "\n"
+	body := `{"ref":"a","title":"A","dependencies":[{"ref":"b","link_type":"blocked-by"}]}` + "\n" +
+		`{"ref":"b","title":"B","dependencies":[{"ref":"a","link_type":"blocked-by"}]}` + "\n"
 	_, errs := runPhases(t, s, body)
 	// Can't reference "b" before it's defined — this fires as
 	// unresolved_ref on line 1 (forward ref). Rewrite test for
@@ -261,21 +276,21 @@ func TestPhaseSemanticInvalidTag(t *testing.T) {
 	}
 }
 
-// TestPhaseSemanticInvalidLinkType: an unknown type string →
-// invalid_link_type with field=dependencies[n].type.
+// TestPhaseSemanticInvalidLinkType: an unknown link_type string →
+// invalid_link_type with field=dependencies[n].link_type.
 func TestPhaseSemanticInvalidLinkType(t *testing.T) {
 	s := testStore(t)
 	// Self-reference-avoiding: use an earlier line as the ref
 	// target so phase 2 doesn't fail the dep.
 	body := `{"ref":"a","title":"A"}` + "\n" +
-		`{"ref":"b","title":"B","dependencies":[{"ref":"a","type":"bogus"}]}` + "\n"
+		`{"ref":"b","title":"B","dependencies":[{"ref":"a","link_type":"bogus"}]}` + "\n"
 	_, errs := runPhases(t, s, body)
 	ltErrs := withCode(errs, batch.BatchCodeInvalidLinkType)
 	if len(ltErrs) != 1 {
 		t.Fatalf("errs = %+v, want 1 invalid_link_type", ltErrs)
 	}
-	if ltErrs[0].Field != "dependencies[0].type" || ltErrs[0].Value != "bogus" {
-		t.Errorf("err = %+v, want field=dependencies[0].type, value=bogus", ltErrs[0])
+	if ltErrs[0].Field != "dependencies[0].link_type" || ltErrs[0].Value != "bogus" {
+		t.Errorf("err = %+v, want field=dependencies[0].link_type, value=bogus", ltErrs[0])
 	}
 }
 
@@ -377,7 +392,7 @@ func fixtureJSONString(s string) string {
 func TestPhaseSemanticBlockedByCancelled(t *testing.T) {
 	s := testStore(t)
 	seedTask(t, s, "proj-x", "cancelled", "task")
-	body := `{"ref":"a","title":"A","dependencies":[{"id":"proj-x","type":"blocked-by"}]}` + "\n"
+	body := `{"ref":"a","title":"A","dependencies":[{"id":"proj-x","link_type":"blocked-by"}]}` + "\n"
 	_, errs := runPhases(t, s, body)
 	if !hasErr(errs, func(e batch.BatchError) bool {
 		return e.Code == batch.BatchCodeBlockedByCancelled && e.Target == "proj-x"
@@ -392,7 +407,7 @@ func TestPhaseSemanticBlockedByCancelled(t *testing.T) {
 func TestPhaseSemanticRetryTargetStatus(t *testing.T) {
 	s := testStore(t)
 	seedTask(t, s, "proj-x", "completed", "task")
-	body := `{"ref":"a","title":"A","dependencies":[{"id":"proj-x","type":"retry-of"}]}` + "\n"
+	body := `{"ref":"a","title":"A","dependencies":[{"id":"proj-x","link_type":"retry-of"}]}` + "\n"
 	_, errs := runPhases(t, s, body)
 	if !hasErr(errs, func(e batch.BatchError) bool {
 		return e.Code == batch.BatchCodeRetryTargetStatus &&
@@ -407,7 +422,7 @@ func TestPhaseSemanticRetryTargetStatus(t *testing.T) {
 func TestPhaseSemanticSourceTypeRequired(t *testing.T) {
 	s := testStore(t)
 	seedTask(t, s, "proj-x", "completed", "task")
-	body := `{"ref":"a","title":"A","type":"task","dependencies":[{"id":"proj-x","type":"caused-by"}]}` + "\n"
+	body := `{"ref":"a","title":"A","type":"task","dependencies":[{"id":"proj-x","link_type":"caused-by"}]}` + "\n"
 	_, errs := runPhases(t, s, body)
 	if !hasErr(errs, func(e batch.BatchError) bool {
 		return e.Code == batch.BatchCodeSourceTypeRequired

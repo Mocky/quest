@@ -60,7 +60,7 @@ func PhaseGraph(ctx context.Context, s store.Store, lines []BatchLine, valid map
 		}
 		key := nodeKey(line)
 		for _, d := range line.Dependencies {
-			if d.Type != LinkBlockedBy {
+			if d.LinkType != LinkBlockedBy {
 				continue
 			}
 			var tgtKey string
@@ -208,7 +208,7 @@ func walkCommittedForCycle(ctx context.Context, s store.Store, startID, srcKey s
 			continue
 		}
 		for _, d := range deps {
-			if d.Type != LinkBlockedBy {
+			if d.LinkType != LinkBlockedBy {
 				continue
 			}
 			stack = append(stack, d.ID)

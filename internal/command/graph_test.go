@@ -39,7 +39,7 @@ type graphNodeT struct {
 
 type graphEdgeT struct {
 	Task         string `json:"task"`
-	Type         string `json:"type"`
+	LinkType     string `json:"link_type"`
 	Target       string `json:"target"`
 	TargetStatus string `json:"target_status"`
 }
@@ -135,8 +135,8 @@ func TestGraphRootAtEpicFullTree(t *testing.T) {
 		if e.Task != "proj-a1.3" {
 			t.Errorf("edge.task = %q, want proj-a1.3", e.Task)
 		}
-		if e.Type != "blocked-by" {
-			t.Errorf("edge.type = %q, want blocked-by", e.Type)
+		if e.LinkType != "blocked-by" {
+			t.Errorf("edge.link_type = %q, want blocked-by", e.LinkType)
 		}
 	}
 }
@@ -236,12 +236,14 @@ func TestGraphCrossProjectExternal(t *testing.T) {
 	if ext.Title != "Crash report" || ext.Type != "bug" || ext.Status != "completed" {
 		t.Errorf("external node = %+v, want crash report/bug/completed", ext)
 	}
-	if len(g.Edges) != 1 || g.Edges[0].Type != "caused-by" {
+	if len(g.Edges) != 1 || g.Edges[0].LinkType != "caused-by" {
 		t.Errorf("edges = %+v, want one caused-by", g.Edges)
 	}
 }
 
 // TestGraphTextFormat pins the indented tree + dep-edge shape.
+// Every task reference uses the canonical `{id} [{status}] (bug?)
+// {title}` cluster, unified with `quest show --format text`.
 func TestGraphTextFormat(t *testing.T) {
 	s, _ := testStore(t)
 	seedListTask(t, s, "proj-a1", "Auth module", "", "open", "", "", "")
@@ -255,17 +257,43 @@ func TestGraphTextFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Graph: %v", err)
 	}
-	if !strings.Contains(stdout, "proj-a1  Auth module [open]") {
+	if !strings.Contains(stdout, "proj-a1 [open] Auth module") {
 		t.Errorf("missing root line: %q", stdout)
 	}
-	if !strings.Contains(stdout, "  proj-a1.1  JWT [completed]") {
+	if !strings.Contains(stdout, "  proj-a1.1 [completed] JWT") {
 		t.Errorf("missing child line: %q", stdout)
 	}
-	if !strings.Contains(stdout, "  proj-a1.2  Middleware [open]") {
+	if !strings.Contains(stdout, "  proj-a1.2 [open] Middleware") {
 		t.Errorf("missing second-child line: %q", stdout)
 	}
-	if !strings.Contains(stdout, "    blocked-by  proj-a1.1 [completed]") {
+	if !strings.Contains(stdout, "    blocked-by  proj-a1.1 [completed] JWT") {
 		t.Errorf("missing dep edge under proj-a1.2: %q", stdout)
+	}
+}
+
+// TestGraphTextFormatBugMarker pins the `(bug)` marker on both node
+// lines and edge target references when the target's type is bug.
+// Mirror of the show --format text marker check, covering the graph
+// surface so a regression in either renderer fails independently.
+func TestGraphTextFormatBugMarker(t *testing.T) {
+	s, _ := testStore(t)
+	seedListTask(t, s, "proj-a1", "Fix auth bug", "", "open", "", "", "bug")
+	seedListTask(t, s, "proj-31", "Crash report", "", "completed", "", "", "bug")
+	seedDep(t, s, "proj-a1", "proj-31", "caused-by")
+
+	cfg := plannerCfg()
+	cfg.Output.Format = "text"
+	err, stdout, _ := runGraph(t, s, cfg, []string{"proj-a1"})
+	if err != nil {
+		t.Fatalf("Graph: %v", err)
+	}
+	// Root bug shows (bug) marker.
+	if !strings.Contains(stdout, "proj-a1 [open] (bug) Fix auth bug") {
+		t.Errorf("missing bug marker on root node: %q", stdout)
+	}
+	// Edge target (external bug) shows (bug) marker too.
+	if !strings.Contains(stdout, "  caused-by  proj-31 [completed] (bug) Crash report") {
+		t.Errorf("missing bug marker on edge target: %q", stdout)
 	}
 }
 

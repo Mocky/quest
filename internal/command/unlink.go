@@ -86,8 +86,8 @@ func Unlink(ctx context.Context, cfg config.Config, s store.Store, args []string
 		telemetry.RecordLinkRemoved(ctx, taskID, edge.Target, edge.LinkType)
 	}
 	return output.Emit(stdout, cfg.Output.Format, linkAck{
-		Task:   taskID,
-		Target: edge.Target,
-		Type:   edge.LinkType,
+		Task:     taskID,
+		Target:   edge.Target,
+		LinkType: edge.LinkType,
 	})
 }

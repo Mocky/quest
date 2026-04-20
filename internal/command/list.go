@@ -276,7 +276,7 @@ func blockedByIDs(ctx context.Context, s store.Store, id string) ([]string, erro
 	}
 	ids := []string{}
 	for _, d := range deps {
-		if d.Type == "blocked-by" {
+		if d.LinkType == "blocked-by" {
 			ids = append(ids, d.ID)
 		}
 	}

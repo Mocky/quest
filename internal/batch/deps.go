@@ -225,7 +225,7 @@ func outgoingBlockedBy(ctx context.Context, s store.Store, n, sourceID string, i
 		return next
 	}
 	for _, d := range deps {
-		if d.Type == LinkBlockedBy {
+		if d.LinkType == LinkBlockedBy {
 			next = append(next, d.ID)
 		}
 	}

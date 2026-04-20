@@ -78,6 +78,84 @@ func TestShowJSONHasRequiredFields(t *testing.T) {
 	testutil.AssertJSONKeyOrder(t, []byte(stdout), required)
 }
 
+// TestShowParentIsObject pins the spec's denormalized parent cluster:
+// when the task has a parent, `parent` is a four-field object whose
+// keys appear in `id, title, status, type` order. On a root task the
+// field is JSON null (covered by TestShowEmitsAllFieldsWithNulls).
+func TestShowParentIsObject(t *testing.T) {
+	s, _ := testStore(t)
+	seedMinimalTask(t, s, "proj-a1", "Auth module")
+	tx, err := s.BeginImmediate(context.Background(), store.TxCreate)
+	if err != nil {
+		t.Fatalf("BeginImmediate: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`INSERT INTO tasks(id, title, type, status, parent, created_at)
+		 VALUES ('proj-a1.1', 'Child', 'task', 'open', 'proj-a1', ?)`,
+		"2026-04-18T01:00:00Z"); err != nil {
+		t.Fatalf("insert child: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	err, stdout, _ := runHandler(t, command.Show, s, baseCfg(), []string{"proj-a1.1"}, "")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	// Pull the parent value as a raw object and assert key order.
+	var raw map[string]json.RawMessage
+	if jerr := json.Unmarshal([]byte(stdout), &raw); jerr != nil {
+		t.Fatalf("stdout JSON: %v; raw=%q", jerr, stdout)
+	}
+	parentBytes, ok := raw["parent"]
+	if !ok {
+		t.Fatalf("missing `parent` key: %q", stdout)
+	}
+	testutil.AssertSchema(t, parentBytes, []string{"id", "title", "status", "type"})
+	testutil.AssertJSONKeyOrder(t, parentBytes, []string{"id", "title", "status", "type"})
+}
+
+// TestShowDepsShape pins the five-key dependency cluster emitted
+// inside `dependencies[]` on both `quest show` and `quest deps`:
+// id, title, status, type, link_type — in that order.
+func TestShowDepsShape(t *testing.T) {
+	s, _ := testStore(t)
+	seedMinimalTask(t, s, "proj-a1", "Target")
+	seedMinimalTask(t, s, "proj-a2", "Source")
+
+	tx, err := s.BeginImmediate(context.Background(), store.TxLink)
+	if err != nil {
+		t.Fatalf("BeginImmediate: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`INSERT INTO dependencies(task_id, target_id, link_type, created_at)
+		 VALUES ('proj-a2', 'proj-a1', 'blocked-by', ?)`,
+		"2026-04-18T01:00:00Z"); err != nil {
+		t.Fatalf("insert dep: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	err, stdout, _ := runHandler(t, command.Show, s, baseCfg(), []string{"proj-a2"}, "")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	var wrapper struct {
+		Dependencies []json.RawMessage `json:"dependencies"`
+	}
+	if jerr := json.Unmarshal([]byte(stdout), &wrapper); jerr != nil {
+		t.Fatalf("stdout JSON: %v; raw=%q", jerr, stdout)
+	}
+	if len(wrapper.Dependencies) != 1 {
+		t.Fatalf("dependencies = %d, want 1", len(wrapper.Dependencies))
+	}
+	want := []string{"id", "title", "status", "type", "link_type"}
+	testutil.AssertSchema(t, wrapper.Dependencies[0], want)
+	testutil.AssertJSONKeyOrder(t, wrapper.Dependencies[0], want)
+}
+
 // TestShowMissingTaskExitsThree pins spec §Error precedence:
 // existence wins over usage. A show against an unknown ID wraps
 // ErrNotFound (exit 3), not ErrUsage (exit 2).
@@ -204,14 +282,14 @@ func TestUpdateOutputShape(t *testing.T) {
 	})
 }
 
-// TestLinkOutputShape pins {"task","target","type"} for both happy
-// path and idempotent no-op (second link emits same body).
+// TestLinkOutputShape pins {"task","target","link_type"} for both
+// happy path and idempotent no-op (second link emits same body).
 func TestLinkOutputShape(t *testing.T) {
 	s, _ := testStore(t)
 	seedTaskWithStatus(t, s, "proj-a1", "A", "", "open")
 	seedTaskWithStatus(t, s, "proj-a2", "B", "", "open")
 
-	want := []string{"task", "target", "type"}
+	want := []string{"task", "target", "link_type"}
 	for _, label := range []string{"first", "idempotent-second"} {
 		err, stdout, _ := runHandler(t, command.Link, s, plannerCfg(),
 			[]string{"proj-a1", "--blocked-by", "proj-a2"}, "")
@@ -223,9 +301,9 @@ func TestLinkOutputShape(t *testing.T) {
 	}
 }
 
-// TestUnlinkOutputShape pins the same {"task","target","type"} body
-// for unlink, including the missing-edge no-op which still emits the
-// edge identifier.
+// TestUnlinkOutputShape pins the same {"task","target","link_type"}
+// body for unlink, including the missing-edge no-op which still emits
+// the edge identifier.
 func TestUnlinkOutputShape(t *testing.T) {
 	s, _ := testStore(t)
 	seedTaskWithStatus(t, s, "proj-a1", "A", "", "open")
@@ -236,7 +314,7 @@ func TestUnlinkOutputShape(t *testing.T) {
 		t.Fatalf("seed link: %v", err)
 	}
 
-	want := []string{"task", "target", "type"}
+	want := []string{"task", "target", "link_type"}
 	for _, label := range []string{"removal", "idempotent-noop"} {
 		err, stdout, _ := runHandler(t, command.Unlink, s, plannerCfg(),
 			[]string{"proj-a1", "--blocked-by", "proj-a2"}, "")

@@ -22,7 +22,7 @@ var validLinkTypes = map[string]bool{
 // checks per (valid) line so a single malformed edge produces the
 // clearest single error:
 //   - tag pattern (invalid_tag, field `tags[n]`)
-//   - link-type enum (invalid_link_type, field `dependencies[n].type`)
+//   - link-type enum (invalid_link_type, field `dependencies[n].link_type`)
 //   - type enum (invalid_type, field `type`) against spec §Core fields
 //   - tier enum (invalid_tier, field `tier`) against spec §Model tiers
 //   - title byte cap (field_too_long, field `title`) — see spec
@@ -139,25 +139,25 @@ func tagErrors(line BatchLine) []BatchError {
 	return errs
 }
 
-// linkTypeErrors checks each dependency entry's Type against the
-// enum. Empty Type was already reported as missing_field at phase
-// 1; an unrecognized string is the invalid_link_type case.
+// linkTypeErrors checks each dependency entry's LinkType against
+// the enum. Empty LinkType was already reported as missing_field at
+// phase 1; an unrecognized string is the invalid_link_type case.
 func linkTypeErrors(line BatchLine) []BatchError {
 	var errs []BatchError
 	for i, d := range line.Dependencies {
-		if d.Type == "" {
+		if d.LinkType == "" {
 			continue
 		}
-		if validLinkTypes[d.Type] {
+		if validLinkTypes[d.LinkType] {
 			continue
 		}
 		errs = append(errs, BatchError{
 			Line:    line.LineNo,
 			Phase:   PhaseNameSemantic,
 			Code:    BatchCodeInvalidLinkType,
-			Field:   fmt.Sprintf("dependencies[%d].type", i),
-			Value:   d.Type,
-			Message: fmt.Sprintf("invalid link_type %q (want blocked-by, caused-by, discovered-from, or retry-of)", d.Type),
+			Field:   fmt.Sprintf("dependencies[%d].link_type", i),
+			Value:   d.LinkType,
+			Message: fmt.Sprintf("invalid link_type %q (want blocked-by, caused-by, discovered-from, or retry-of)", d.LinkType),
 		})
 	}
 	return errs
@@ -215,13 +215,13 @@ func parentNotOpenErrors(ctx context.Context, s store.Store, line BatchLine, cac
 func semanticDepErrors(ctx context.Context, s store.Store, line BatchLine) []BatchError {
 	var edges []Edge
 	for _, d := range line.Dependencies {
-		if !validLinkTypes[d.Type] {
+		if !validLinkTypes[d.LinkType] {
 			continue
 		}
 		if d.Target.ID == "" {
 			continue
 		}
-		edges = append(edges, Edge{Target: d.Target.ID, LinkType: d.Type})
+		edges = append(edges, Edge{Target: d.Target.ID, LinkType: d.LinkType})
 	}
 	if len(edges) == 0 {
 		return nil
