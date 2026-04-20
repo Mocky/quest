@@ -20,7 +20,7 @@ var migrationsFS embed.FS
 // can operate against. Bumped by every migration that lands.
 // Task 3.2's TestMigrationSequenceContiguous asserts the highest
 // numeric migration prefix equals this constant.
-const SupportedSchemaVersion = 1
+const SupportedSchemaVersion = 2
 
 // Migrate applies every pending SQL migration in a single transaction
 // and returns the count of migration files actually executed. Callers

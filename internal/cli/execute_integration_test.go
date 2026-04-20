@@ -114,8 +114,8 @@ func TestExecuteDispatchReachesHandler(t *testing.T) {
 	if err := db.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&v); err != nil {
 		t.Fatalf("query schema_version: %v", err)
 	}
-	if v != "1" {
-		t.Fatalf("schema_version = %q, want 1", v)
+	if v != "2" {
+		t.Fatalf("schema_version = %q, want 2", v)
 	}
 }
 

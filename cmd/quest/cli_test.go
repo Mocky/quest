@@ -155,8 +155,8 @@ func TestInitHappyPath(t *testing.T) {
 	if err := db.QueryRow("SELECT value FROM meta WHERE key='schema_version'").Scan(&version); err != nil {
 		t.Fatalf("query schema_version: %v", err)
 	}
-	if version != "1" {
-		t.Errorf("schema_version = %q, want 1", version)
+	if version != "2" {
+		t.Errorf("schema_version = %q, want 2", version)
 	}
 
 	wantTables := []string{

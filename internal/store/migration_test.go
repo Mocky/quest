@@ -17,7 +17,7 @@ import (
 	"github.com/mocky/quest/internal/store"
 )
 
-func TestMigrateFreshAppliesSchemaV1(t *testing.T) {
+func TestMigrateFreshAppliesEverySchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "quest.db")
 	s, err := store.Open(path)
 	if err != nil {
@@ -29,8 +29,8 @@ func TestMigrateFreshAppliesSchemaV1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("applied = %d, want 1", applied)
+	if applied != store.SupportedSchemaVersion {
+		t.Fatalf("applied = %d, want %d", applied, store.SupportedSchemaVersion)
 	}
 	v, err := s.CurrentSchemaVersion(context.Background())
 	if err != nil {
@@ -140,6 +140,84 @@ func TestMigrateRefusesNewerSchema(t *testing.T) {
 	}
 	if v != store.SupportedSchemaVersion+1 {
 		t.Fatalf("version = %d, want %d (DB must be untouched)", v, store.SupportedSchemaVersion+1)
+	}
+}
+
+// TestMigrateV2RenamesCompleteStatusRows exercises migration 002 on a
+// DB that still carries pre-rename `status = 'complete'` rows from a
+// v1-era binary. Bootstrap: let Migrate build schema v1 (and higher),
+// then roll schema_version back to 1 and seed rows with the old value
+// — the next Migrate call replays 002+ against them.
+func TestMigrateV2RenamesCompleteStatusRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quest.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	if _, err := store.Migrate(context.Background(), s); err != nil {
+		t.Fatalf("initial Migrate: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE meta SET value = '1' WHERE key = 'schema_version'`); err != nil {
+		t.Fatalf("reset schema_version: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO tasks(id, title, status, created_at) VALUES
+			('proj-c1', 'Done', 'complete', '2026-04-18T00:00:00Z'),
+			('proj-c2', 'Open',  'open',     '2026-04-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed tasks: %v", err)
+	}
+	_ = db.Close()
+
+	applied, err := store.Migrate(context.Background(), s)
+	if err != nil {
+		t.Fatalf("second Migrate: %v", err)
+	}
+	if applied != store.SupportedSchemaVersion-1 {
+		t.Fatalf("applied = %d, want %d", applied, store.SupportedSchemaVersion-1)
+	}
+
+	db, err = sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer db.Close()
+
+	var stillComplete int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE status = 'complete'`).Scan(&stillComplete); err != nil {
+		t.Fatalf("count complete: %v", err)
+	}
+	if stillComplete != 0 {
+		t.Errorf("rows with status='complete' = %d, want 0", stillComplete)
+	}
+
+	var renamed string
+	if err := db.QueryRow(`SELECT status FROM tasks WHERE id = 'proj-c1'`).Scan(&renamed); err != nil {
+		t.Fatalf("select proj-c1: %v", err)
+	}
+	if renamed != "completed" {
+		t.Errorf("proj-c1 status = %q, want 'completed'", renamed)
+	}
+
+	var untouched string
+	if err := db.QueryRow(`SELECT status FROM tasks WHERE id = 'proj-c2'`).Scan(&untouched); err != nil {
+		t.Fatalf("select proj-c2: %v", err)
+	}
+	if untouched != "open" {
+		t.Errorf("proj-c2 status = %q, want 'open' (untouched)", untouched)
+	}
+
+	var version string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
+		t.Fatalf("select schema_version: %v", err)
+	}
+	if version != "2" {
+		t.Errorf("schema_version = %q, want '2'", version)
 	}
 }
 
