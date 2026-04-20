@@ -431,6 +431,16 @@ The one carve-out is referential bookkeeping during `quest move`: when a task's 
 - `url` is present for `pr_added` -- the PR URL that was added
 - For `created`, the payload captures non-default values of the planning fields set at create time: `tier`, `role`, `type` (when not the default `task`), `parent`, `tags`, and any initial `dependencies`. Fields left at their defaults are omitted from the payload, not serialized as `null`. This is the retrospective input -- "which tier/role choices produced which outcomes?" -- without requiring a join against the current `tasks` row (which may have been edited after creation)
 
+### Field constraints
+
+The following size caps apply at arg-parse time, before any DB I/O, and return exit code 2 (`usage_error`) with a stderr message naming the flag and the observed byte size.
+
+**`title`: 128 bytes.** The task title is capped at 128 bytes of UTF-8 encoded content. The cap applies to every entry point that sets the title: `quest create --title`, `quest update --title`, and the `title` field in a `quest batch` line. Batch lines report the violation as a per-line JSONL error in the `semantic` phase with code `field_too_long` (see Batch error output).
+
+The 128-byte cap is deliberately tight. Titles are the single-line summary shown in `quest list`, in dependency rows under `quest show`, and in graph output; keeping them short preserves table layouts and keeps the per-task cost in prompt context small. Agents that need to say more belong in `description` and `context`, which are uncapped beyond the 1 MiB `@file` size limit. Raising the cap is backward-compatible; tightening it is not, so the initial cap errs on the tight side.
+
+Bytes, not code points: the check counts the UTF-8 encoded length of the string, consistent with the `@file` byte-based size limit. This avoids Unicode normalization and grapheme-cluster ambiguity.
+
 ### Model tiers
 
 The planning agent assigns a tier to each task to control which model executes it. The framework uses this field to select the appropriate model when starting a worker agent.
@@ -862,6 +872,7 @@ Additional fields depend on `code`:
 | `invalid_link_type`    | semantic  | `field` (e.g., `dependencies[0].type`), `value` (offending string) |
 | `invalid_type`         | semantic  | `field` (`type`), `value` (offending string)               |
 | `invalid_tier`         | semantic  | `field` (`tier`), `value` (offending string)               |
+| `field_too_long`       | semantic  | `field` (e.g., `title`), `limit` (byte cap), `observed` (byte count of the offending value) |
 | `parent_not_open`      | semantic  | `field` (`parent.id`), `id` (parent id), `actual_status`   |
 
 For cross-line errors (`duplicate_ref`, `cycle`), `line` points to the later line of the pair (or the edge that closed the cycle); the extra fields locate the other party without requiring a second pass.
