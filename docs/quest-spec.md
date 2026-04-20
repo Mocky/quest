@@ -129,9 +129,24 @@ The task ID from `AGENT_TASK` is used as the default target for commands, so `qu
 # Role gating
 elevated_roles = ["planner"]
 
+# Session ownership enforcement. When true, only the session that called
+# `quest accept` (or an elevated role) can write progress / debrief on the
+# task; a non-owning, non-elevated caller receives exit 4. When false, the
+# owner_session is still recorded for audit/telemetry but is not enforced.
+enforce_session_ownership = false
+
 # Task IDs
 id_prefix = "proj"              # short prefix for this project, set at init (see Prefix validation)
 ```
+
+### Session ownership
+
+`quest accept` records `owner_session` from `AGENT_SESSION` so every task carries the identity of the session that is executing it. Whether that ownership is *enforced* on subsequent writes is controlled by `enforce_session_ownership` in `.quest/config.toml`.
+
+- `enforce_session_ownership = false` (default). `owner_session` is recorded and surfaced in `quest show` and history, but quest does not reject writes from a different session. Any caller that passes the role gate and the existence check may call `quest update`, `quest complete`, or `quest fail`. Use this when the framework driving quest already guarantees single-worker dispatch, or when humans and agents are expected to co-operate on the same task without session-id coordination.
+- `enforce_session_ownership = true`. After `quest accept`, only the owning session (where `AGENT_SESSION == owner_session`) or a caller with an elevated role may call `quest update`, `quest complete`, or `quest fail`. A non-owning, non-elevated caller receives exit code 4 (`permission_denied`). Use this when the framework dispatches multiple agents that share a workspace and you want quest to act as a second line of defense against cross-session writes.
+
+The setting only changes the permission check. `owner_session`, `handoff_session`, and history `session` values are recorded identically in both modes so retrospectives, telemetry, and crash recovery do not depend on the mode.
 
 ---
 
@@ -251,7 +266,7 @@ A single command invocation can trip multiple checks (e.g., a non-elevated worke
 1. **Role gate** → exit 6 (`role_denied`). For pure-elevated commands (`create`, `batch`, `cancel`, `reset`, `move`, `link`, `unlink`, `tag`, `untag`, `deps`, `list`, `graph`), the role gate fires first: a worker invoking any of these gets exit 6 without the dispatcher consulting the task row at all. This makes role denial uniform regardless of whether the referenced task exists and prevents workers from probing task IDs. The role gate is the framework's context-window and surface-area boundary; it must never leak spec-state details to roles that should not see them.
     - **Mixed-flag carve-out.** `quest update` is dispatched at worker level (so workers can call `--note` / `--pr` / `--handoff`). For `update`, existence (exit 3) fires first, then the role gate re-runs on any elevated flag present. This is the one command where existence precedes the role gate, because the first role gate has already been passed at dispatch (the command itself is worker-accessible).
 2. **Existence** → exit 3 (`not_found`). Checked by the transaction's initial `SELECT`. A missing task ID short-circuits every remaining check because no state is known about it.
-3. **Permission** → exit 4 (`permission_denied`). Ownership checks for worker commands on tasks owned by a different session. Runs after existence because permission is about the target task, not the caller's role.
+3. **Permission** → exit 4 (`permission_denied`). Ownership checks for worker commands on tasks owned by a different session. Runs after existence because permission is about the target task, not the caller's role. Only fires when `enforce_session_ownership = true` (see §Role Gating > Session ownership); when the setting is `false` (default), this step is skipped entirely and the precedence ladder proceeds from Existence (exit 3) directly to State (exit 5).
 4. **State** → exit 5 (`conflict`). Task status precondition failures (terminal-state gating, non-open parent, non-terminal children, wrong from-status for the transition). Runs after permission so an intruder does not learn the target's status.
 5. **Usage** → exit 2 (`usage_error`). Flag-shape problems like an invalid tier string. Runs last because usage validation of free-form fields (notes, descriptions) is pointless if the caller cannot act on the task anyway. Note: `@file` resolution errors (missing file, oversized file, second `@-`) are unrecoverable I/O failures that fire at arg-parse time, before any DB I/O — those also map to exit 2 but are not shape checks and do not participate in this precedence ladder.
 
@@ -342,7 +357,7 @@ Text mode (`--format text`) for write commands is a one-liner summarizing the ac
 
 | Field                | Set by | Description                                                                                                                                                                                                                                                                                                                                 |
 | -------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `owner_session`      | system | Session ID of the agent that accepted the task. Set automatically on `quest accept` from `AGENT_SESSION`. Only the owning session (or an elevated role) can call `quest update`, `quest complete`, or `quest fail` on the task. Cleared on `quest reset` so a new session can accept. `null` when unset                                     |
+| `owner_session`      | system | Session ID of the agent that accepted the task. Set automatically on `quest accept` from `AGENT_SESSION`. Whether non-owning sessions may write to the task is controlled by `enforce_session_ownership` in `.quest/config.toml` (see §Role Gating > Session ownership): when `true`, only the owning session (or an elevated role) may call `quest update`, `quest complete`, or `quest fail` (non-owning, non-elevated gets exit 4); when `false` (default), the field is recorded for audit and telemetry but not enforced. Cleared on `quest reset` so a new session can accept. `null` when unset                                     |
 | `started_at`         | system | ISO 8601 timestamp recorded when the task transitions to `accepted`. Cleared on `quest reset`                                                                                                                                                                                                                                               |
 | `completed_at`       | system | ISO 8601 timestamp recorded when the task transitions to `completed` or `failed`. Together with `started_at`, enables duration analysis in retrospectives                                                                                                                                                                                    |
 | `prs`                | worker | Links to PRs containing task output (append-only, idempotent)                                                                                                                                                                                                                                                                               |
@@ -791,7 +806,7 @@ Accept is strict:
 - On parent tasks, it fails (exit code 5) if any child is not in a terminal state (`completed`, `failed`, or `cancelled`). This precondition ensures a verifier is never accepting a parent while child work is still in flight, upholding the one-session-one-task principle. Leaves have no analogous check.
   **Output shape** for this conflict: stdout carries `{"error": "conflict", "task": "<id>", "non_terminal_children": [{"id": "<child-id>", "status": "<status>"}, ...]}`. The `non_terminal_children` key is a stable contract — agents switch on the field name to extract the blocking IDs. The same key is used on the equivalent `quest complete` conflict body. Stderr carries the standard two-line `quest: conflict: ...` + `quest: exit 5 (conflict)` tail.
 - If two agents race to accept the same task, the first writer wins. The second receives exit code 5 (conflict). The accept runs inside a `BEGIN IMMEDIATE` transaction with a SELECT-then-UPDATE in every case -- a leaf accept, like any other status transition, needs to distinguish "task does not exist" (exit 3) from "task exists but is not in `open` status" (exit 5), which an atomic `UPDATE ... WHERE status='open'` with a `RowsAffected` check cannot do (see §Storage > Atomicity). For parents, the transaction additionally verifies the terminal-children precondition before the UPDATE.
-- On successful accept, `owner_session` is set from `AGENT_SESSION` and `started_at` is recorded. After acceptance, only the owning session (or an elevated role) can call `quest update`, `quest complete`, or `quest fail` on the task. A non-owning, non-elevated session receives exit code 4 (permission denied).
+- On successful accept, `owner_session` is set from `AGENT_SESSION` and `started_at` is recorded. When `enforce_session_ownership = true` (see §Role Gating > Session ownership), only the owning session (or an elevated role) can call `quest update`, `quest complete`, or `quest fail` on the task; a non-owning, non-elevated session receives exit code 4 (permission denied). When `enforce_session_ownership = false` (default), `owner_session` is recorded but the ownership check is skipped — any caller passing the role gate may proceed.
 
 ---
 

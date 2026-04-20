@@ -69,6 +69,13 @@ type WorkspaceConfig struct {
     // ElevatedRoles is the set of AGENT_ROLE values that unlock the planner surface.
     // Source: .quest/config.toml. Default: [].
     ElevatedRoles []string
+
+    // EnforceSessionOwnership gates whether writes to an accepted task require
+    // AGENT_SESSION to match the task's owner_session.
+    // When true, non-owning non-elevated callers get exit 4 on update/complete/fail.
+    // When false (default), owner_session is still recorded but not enforced.
+    // Source: .quest/config.toml. Default: false.
+    EnforceSessionOwnership bool
 }
 
 type AgentConfig struct {
@@ -168,6 +175,11 @@ Written once by `quest init`, read on every invocation. Fields are immutable for
 # Role gating — AGENT_ROLE values that unlock elevated commands.
 elevated_roles = ["planner"]
 
+# Session ownership enforcement. When true, only the session that called
+# `quest accept` (or an elevated role) can update/complete/fail the task.
+# When false (default), owner_session is recorded but not enforced.
+enforce_session_ownership = false
+
 # Task IDs
 id_prefix = "proj"
 ```
@@ -197,10 +209,11 @@ func Load(flags Flags) Config {
 
     cfg := Config{
         Workspace: WorkspaceConfig{
-            Root:          root,
-            DBPath:        dbPath(root), // {Root}/.quest/quest.db, or "" when root is empty
-            IDPrefix:      file.IDPrefix,         // required, no default
-            ElevatedRoles: file.ElevatedRoles,    // default: nil (empty)
+            Root:                    root,
+            DBPath:                  dbPath(root), // {Root}/.quest/quest.db, or "" when root is empty
+            IDPrefix:                file.IDPrefix,                // required, no default
+            ElevatedRoles:           file.ElevatedRoles,           // default: nil (empty)
+            EnforceSessionOwnership: file.EnforceSessionOwnership, // default: false (zero value)
         },
         Agent: AgentConfig{
             Role:        os.Getenv("AGENT_ROLE"),    // empty when unset
