@@ -102,6 +102,17 @@ func Init(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	if err != nil {
 		return err
 	}
+	// Pre-migration snapshot parity with the dispatcher path
+	// (docs/backup-plan.md §5.2). The guard is effectively a no-op on
+	// fresh init (from is always 0 here because store.Open just
+	// created an empty DB), but keeps both call sites symmetric and
+	// obviously correct.
+	if from > 0 {
+		snapPath, snapErr := store.PreMigrationSnapshot(ctx, cwd, wrapped, store.SupportedSchemaVersion)
+		if snapErr != nil {
+			return fmt.Errorf("init: pre-migration snapshot failed at %s: %s: %w", snapPath, snapErr.Error(), errors.ErrGeneral)
+		}
+	}
 	migCtx, end := telemetry.MigrateSpan(ctx, from, store.SupportedSchemaVersion)
 	applied, merr := store.Migrate(migCtx, wrapped)
 	end(applied, merr)

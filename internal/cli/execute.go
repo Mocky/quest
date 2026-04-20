@@ -139,6 +139,19 @@ func Execute(ctx context.Context, cfg config.Config, args []string, stdin io.Rea
 		}
 		switch {
 		case from < store.SupportedSchemaVersion:
+			// Pre-migration snapshot: spec §Storage > Pre-migration
+			// snapshot pins the .quest/backups/pre-v{N}-{timestamp}.db
+			// write and "If the copy fails, the migration does not run
+			// and the binary exits 1." Skipped when from == 0 because a
+			// fresh-init DB has no prior-version content worth rolling
+			// back to (see docs/backup-plan.md §5.2).
+			if from > 0 {
+				snapPath, snapErr := store.PreMigrationSnapshot(ctx, cfg.Workspace.Root, s, store.SupportedSchemaVersion)
+				if snapErr != nil {
+					wrapped := fmt.Errorf("%w: pre-migration snapshot failed at %s: %s", errors.ErrGeneral, snapPath, snapErr.Error())
+					return telemetry.RecordDispatchError(ctx, wrapped, stderr)
+				}
+			}
 			migCtx, end := telemetry.MigrateSpan(parentCtx, from, store.SupportedSchemaVersion)
 			applied, mErr := store.Migrate(migCtx, s)
 			end(applied, mErr)

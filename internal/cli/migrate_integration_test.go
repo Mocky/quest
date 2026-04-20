@@ -5,6 +5,7 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,6 +126,189 @@ func TestDispatcherPathMigrateSpanIsSibling(t *testing.T) {
 	}
 	if got := schemaMigrationCount(t, meter); got != 1 {
 		t.Errorf("dept.quest.schema.migrations count = %d; want 1", got)
+	}
+}
+
+// TestDispatcherWritesPreMigrationSnapshot pins spec §Storage > Pre-
+// migration snapshot: when the dispatcher migrates a workspace from
+// schema_version > 0 to SupportedSchemaVersion, it first writes a
+// transaction-consistent snapshot to .quest/backups/pre-v{N}-*.db via
+// the online backup API. Seeds the workspace at schema_version 1
+// (after a full init to 2, then a manual downgrade of meta) so the
+// second dispatcher call exercises the real migration-plus-snapshot
+// path.
+func TestDispatcherWritesPreMigrationSnapshot(t *testing.T) {
+	cfg := setupWorkspace(t, "proj", "planner")
+
+	// First invocation migrates 0→2 (no snapshot — from == 0 is the
+	// fresh-init carve-out).
+	if exit, _, errb := runExecute([]string{"list"}, cfg); exit != 0 {
+		t.Fatalf("prime list: exit=%d stderr=%s", exit, errb)
+	}
+
+	// Manually regress meta.schema_version to 1 so the next dispatcher
+	// call migrates 1→2 and takes a pre-migration snapshot.
+	db, err := sql.Open("sqlite", "file:"+cfg.Workspace.DBPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE meta SET value = '1' WHERE key = 'schema_version'`); err != nil {
+		t.Fatalf("regress meta: %v", err)
+	}
+	_ = db.Close()
+
+	if exit, _, errb := runExecute([]string{"list"}, cfg); exit != 0 {
+		t.Fatalf("second list: exit=%d stderr=%s", exit, errb)
+	}
+
+	// Find the snapshot file.
+	matches, err := filepath.Glob(filepath.Join(cfg.Workspace.Root, ".quest", "backups", "pre-v2-*.db"))
+	if err != nil {
+		t.Fatalf("glob backups: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("pre-v2 snapshot count = %d, want 1; matches=%v", len(matches), matches)
+	}
+
+	// The snapshot's schema_version should be 1 — the pre-migration
+	// state.
+	snap, err := sql.Open("sqlite", "file:"+matches[0])
+	if err != nil {
+		t.Fatalf("open snapshot: %v", err)
+	}
+	defer snap.Close()
+	var v string
+	if err := snap.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&v); err != nil {
+		t.Fatalf("read snapshot schema_version: %v", err)
+	}
+	if v != "1" {
+		t.Errorf("snapshot schema_version = %q, want 1 (pre-migration state)", v)
+	}
+
+	// Live DB should be at 2 afterwards.
+	live, err := sql.Open("sqlite", "file:"+cfg.Workspace.DBPath)
+	if err != nil {
+		t.Fatalf("reopen live: %v", err)
+	}
+	defer live.Close()
+	if err := live.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&v); err != nil {
+		t.Fatalf("read live schema_version: %v", err)
+	}
+	if v != "2" {
+		t.Errorf("live schema_version = %q, want 2", v)
+	}
+}
+
+// TestPreMigrationSnapshotFailureAbortsMigration is the load-bearing
+// safety invariant: if the pre-migration snapshot cannot be written,
+// the migration MUST NOT run. Blocks MkdirAll by putting a regular
+// file where .quest/backups/ would go, drives the dispatcher, asserts
+// exit 1 and that the live DB's schema_version is unchanged.
+func TestPreMigrationSnapshotFailureAbortsMigration(t *testing.T) {
+	cfg := setupWorkspace(t, "proj", "planner")
+
+	// Prime to schema_version 2.
+	if exit, _, errb := runExecute([]string{"list"}, cfg); exit != 0 {
+		t.Fatalf("prime list: exit=%d stderr=%s", exit, errb)
+	}
+	// Regress to schema_version 1.
+	db, err := sql.Open("sqlite", "file:"+cfg.Workspace.DBPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE meta SET value = '1' WHERE key = 'schema_version'`); err != nil {
+		t.Fatalf("regress meta: %v", err)
+	}
+	_ = db.Close()
+
+	// Block .quest/backups/ by placing a non-directory at that path.
+	blocker := filepath.Join(cfg.Workspace.Root, ".quest", "backups")
+	if err := os.WriteFile(blocker, []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile blocker: %v", err)
+	}
+
+	exit, _, stderr := runExecute([]string{"list"}, cfg)
+	if exit != 1 {
+		t.Fatalf("exit = %d, want 1 (general_failure); stderr=%q", exit, stderr)
+	}
+	if !strings.Contains(stderr, "pre-migration snapshot failed") {
+		t.Errorf("stderr missing pre-migration message: %q", stderr)
+	}
+
+	// Live DB must still be at schema_version 1 — the migration did
+	// not run.
+	live, err := sql.Open("sqlite", "file:"+cfg.Workspace.DBPath)
+	if err != nil {
+		t.Fatalf("reopen live: %v", err)
+	}
+	defer live.Close()
+	var v string
+	if err := live.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&v); err != nil {
+		t.Fatalf("read live schema_version: %v", err)
+	}
+	if v != "1" {
+		t.Errorf("live schema_version = %q, want 1 (migration should not have run)", v)
+	}
+}
+
+// TestFreshInitDoesNotWriteSnapshot pins the §5.2 carve-out from
+// docs/backup-plan.md: when from == 0 (a fresh init), no pre-
+// migration snapshot is taken because the prior-version file has no
+// recoverable content.
+func TestFreshInitDoesNotWriteSnapshot(t *testing.T) {
+	root := t.TempDir()
+	orig, _ := os.Getwd()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(orig)
+
+	cfg := config.Config{
+		Log:    config.LogConfig{Level: "warn", OTELLevel: "info"},
+		Output: config.OutputConfig{Format: "json"},
+	}
+	if exit, _, errb := runExecute([]string{"init", "--prefix", "proj"}, cfg); exit != 0 {
+		t.Fatalf("init exit=%d stderr=%s", exit, errb)
+	}
+
+	// Also run a dispatcher-path command to exercise the other call
+	// site; the first workspace-bound command after init finds
+	// schema_version already at SupportedSchemaVersion, so no migration
+	// path is entered.
+	wrkCfg := config.Config{
+		Workspace: config.WorkspaceConfig{
+			Root:          root,
+			DBPath:        filepath.Join(root, ".quest", "quest.db"),
+			IDPrefix:      "proj",
+			ElevatedRoles: []string{"planner"},
+		},
+		Agent:  config.AgentConfig{Role: "planner"},
+		Log:    config.LogConfig{Level: "warn", OTELLevel: "info"},
+		Output: config.OutputConfig{Format: "json"},
+	}
+	if exit, _, errb := runExecute([]string{"list"}, wrkCfg); exit != 0 {
+		t.Fatalf("list after init exit=%d stderr=%s", exit, errb)
+	}
+
+	backupsDir := filepath.Join(root, ".quest", "backups")
+	info, err := os.Stat(backupsDir)
+	switch {
+	case os.IsNotExist(err):
+		// Correct — directory should not exist on fresh init.
+	case err != nil:
+		t.Fatalf("stat .quest/backups: %v", err)
+	default:
+		// Allowed only if empty.
+		if !info.IsDir() {
+			t.Fatalf(".quest/backups is not a directory")
+		}
+		entries, err := os.ReadDir(backupsDir)
+		if err != nil {
+			t.Fatalf("ReadDir: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("fresh init produced %d backup files; want 0", len(entries))
+		}
 	}
 }
 
