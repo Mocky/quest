@@ -4,6 +4,7 @@ package cli_test
 
 import (
 	"context"
+	"encoding/json"
 	stderrors "errors"
 	"os"
 	"path/filepath"
@@ -44,7 +45,7 @@ func captureFor(t *testing.T) (*tracetest.InMemoryExporter, *testutil.CapturingM
 var elevatedCommands = []string{
 	"create", "batch", "cancel", "reset", "move",
 	"link", "unlink", "tag", "untag",
-	"deps", "list", "graph", "export",
+	"deps", "list", "graph", "export", "backup",
 }
 
 // TestRoleGateDenials exercises every elevated command at worker
@@ -76,6 +77,52 @@ var updateElevatedFlags = []string{
 	"--title", "--description", "--context",
 	"--type", "--tier", "--role",
 	"--acceptance-criteria",
+}
+
+// TestBackupFromDispatcher exercises `quest backup --to PATH` end-to-
+// end: elevated planner role, real workspace, snapshot + sidecar
+// produced. Parallels the other dispatcher-happy-path tests. Writes
+// the workspace's config.toml by hand because setupWorkspace leaves
+// it blank.
+func TestBackupFromDispatcher(t *testing.T) {
+	cfg := setupWorkspace(t, "proj", "planner")
+	if err := os.WriteFile(
+		filepath.Join(cfg.Workspace.Root, ".quest", "config.toml"),
+		[]byte("elevated_roles = [\"planner\"]\nid_prefix = \"proj\"\n"),
+		0o644); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+	outDir := t.TempDir()
+	outPath := filepath.Join(outDir, "snap.db")
+
+	exit, stdout, stderrs := runExecute([]string{"backup", "--to", outPath}, cfg)
+	if exit != 0 {
+		t.Fatalf("exit = %d; stderr=%s", exit, stderrs)
+	}
+	var ack struct {
+		DB            string `json:"db"`
+		Config        string `json:"config"`
+		SchemaVersion int    `json:"schema_version"`
+		Bytes         int64  `json:"bytes"`
+	}
+	if jerr := json.Unmarshal([]byte(stdout), &ack); jerr != nil {
+		t.Fatalf("stdout not JSON: %v; raw=%q", jerr, stdout)
+	}
+	if ack.DB != outPath {
+		t.Errorf("ack.DB = %q, want %q", ack.DB, outPath)
+	}
+	if ack.Config != outPath+".config.toml" {
+		t.Errorf("ack.Config = %q, want sidecar path", ack.Config)
+	}
+	if ack.Bytes <= 0 {
+		t.Errorf("ack.Bytes = %d, want > 0", ack.Bytes)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Errorf("snapshot missing: %v", err)
+	}
+	if _, err := os.Stat(outPath + ".config.toml"); err != nil {
+		t.Errorf("sidecar missing: %v", err)
+	}
 }
 
 // TestUpdateElevatedFlagsDenied iterates the mixed-flag set per
