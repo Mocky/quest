@@ -624,7 +624,7 @@ History is excluded by default because workers care about current state -- descr
   "role": "coder",
   "tier": "T3",
   "tags": ["go", "auth"],
-  "parent": "proj-01",
+  "parent": {"id": "proj-01", "title": "Auth module", "status": "open", "type": "task"},
   "acceptance_criteria": null,
   "metadata": {},
   "owner_session": null,
@@ -633,15 +633,17 @@ History is excluded by default because workers care about current state -- descr
   "dependencies": [
     {
       "id": "proj-01.1",
-      "type": "blocked-by",
       "title": "JWT validation",
-      "status": "complete"
+      "status": "complete",
+      "type": "task",
+      "link_type": "blocked-by"
     },
     {
       "id": "proj-01.2",
-      "type": "blocked-by",
       "title": "Session store",
-      "status": "accepted"
+      "status": "accepted",
+      "type": "task",
+      "link_type": "blocked-by"
     }
   ],
   "prs": [],
@@ -654,6 +656,124 @@ History is excluded by default because workers care about current state -- descr
 ```
 
 All fields are always present in JSON output. Fields with no value are `null` (scalars) or `[]` (arrays) / `{}` (objects) -- never omitted. This guarantees a predictable schema for agent parsing. Fields are ordered as shown above: identity, then planning fields, then relationships, then execution fields.
+
+`parent` is denormalized to `{id, title, status, type}` when the task has a parent, `null` on root tasks. Dependency objects carry the same four-field task-reference cluster plus a `link_type` naming the relationship (`blocked-by`, `caused-by`, `discovered-from`, `retry-of`). The quartet `{id, title, status, type}` is the canonical shape anywhere a task reference appears in quest output (parent, dependencies, graph edge targets); consumers can treat it as a reusable mini-schema. The `link_type` field is named distinctly from task `type` so the classification primitive (`task`/`bug`) stays separate from the relationship primitive.
+
+**`--format text`**:
+
+```
+proj-01.3 [complete] Auth middleware
+    parent     proj-01 [complete] (bug) Auth regression sweep
+    tags       go, auth
+    exec       T3 - coder - sess-d7b
+    metadata   priority=high, reviewer=sess-v1a
+    started    2026-04-14 10:50Z  (1d ago)
+    completed  2026-04-14 11:45Z  (23h ago)
+
+Description
+    Implement the auth middleware that validates JWT tokens on
+    protected routes. Reject expired, unsigned, and wrong-key tokens.
+
+Context
+    The JWT validation module (proj-01.1) exposes Validate(token).
+
+Acceptance criteria
+    - [x] Integration tests pass
+    - [x] All endpoints return 2xx on valid tokens
+
+Dependencies
+    blocked-by  proj-01.1 [complete] JWT validation
+    blocked-by  proj-01.2 [complete] Session store
+
+Notes (2)
+    2026-04-14 11:15Z  Integration test for /protected passes
+    2026-04-14 11:30Z  Refresh-token endpoint wired up
+
+PRs
+    https://github.com/foo/bar/pull/42  (2026-04-14 11:30Z)
+
+Handoff (sess-c3f, 2026-04-14 10:32Z)
+    Refactored token validation into middleware. Integration test for
+    /protected passes. Still need refresh-token endpoint -- see
+    auth/refresh.go stub.
+
+Debrief
+    JWT validation + session lookup landed in middleware.go. Coverage
+    at 94%. Token-rotation race filed as proj-01.5.
+```
+
+Text mode is human-facing and is not a contract -- agents parse JSON. The format is governed by the rules below; any deviation is a renderer bug.
+
+**Header.** The first line is `{id} [{status}] {title}`. When `type == "bug"` a ` (bug) ` marker is inserted between the status bracket and the title: `{id} [{status}] (bug) {title}`. No marker is rendered for the default `type == "task"`. The title is emitted verbatim (the 128-byte title cap keeps it within a single reasonable terminal width).
+
+**Metadata cluster.** The header is followed immediately (no blank line) by the metadata rows, indented 4 spaces so they align with every section body below. Keys left-align; values start at the widest-key length + 2 spaces.
+
+| Row         | Rendered when                          | Value                                                                                                          |
+| ----------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `parent`    | `parent` is non-null                   | `{id} [{status}] (bug?) {title}` -- the task-reference shape                                                   |
+| `tags`      | `tags` is non-empty                    | comma-separated, joined with `, `                                                                              |
+| `exec`      | always (`tier` is always set)          | `{tier} - {role} - {session}`, joined with ` - `; trailing nulls drop entirely; mid-string nulls render as `—` |
+| `metadata`  | `metadata` is non-empty                | `key=value` pairs comma-joined; nested values render as compact JSON                                           |
+| `started`   | `started_at` is non-null               | `{UTC timestamp, minute precision}  ({relative time})`                                                         |
+| `completed` | `completed_at` is non-null             | `{UTC timestamp, minute precision}  ({relative time})`                                                         |
+
+A row is omitted entirely when its condition is not met -- `show` never emits a placeholder row like `parent  —`. Rows carry real data or they are absent.
+
+**Sections.** After a single blank line, zero or more sections follow. Each section is a flush-left heading followed by a 4-space-indented body; sections are separated from each other by a single blank line.
+
+| Heading               | Rendered when                                                  | Body                                                                                                                                        |
+| --------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Description`         | `description` is non-empty                                     | verbatim, wrapped                                                                                                                           |
+| `Context`             | `context` is non-empty                                         | verbatim, wrapped                                                                                                                           |
+| `Acceptance criteria` | `acceptance_criteria` is non-empty                             | verbatim, wrapped                                                                                                                           |
+| `Dependencies`        | `dependencies` is non-empty                                    | one row per dependency: `{link_type}  {id} [{status}] (bug?) {title}`                                                                       |
+| `Notes (N)`           | `notes` is non-empty (N is the count)                          | one row per note: `{timestamp}  {note body}`, wrapped with hanging indent to the note column                                                |
+| `PRs`                 | `prs` is non-empty                                             | one row per PR: `{url}  ({added_at timestamp})`                                                                                             |
+| `Handoff`             | `handoff` is non-null                                          | heading includes a parenthesized `(handoff_session, handoff_written_at)` suffix; body is the handoff content, wrapped                        |
+| `Debrief`             | `debrief` is non-null OR `status == "complete"`                | debrief body wrapped; when `status == "complete"` and `debrief` is null the body is the literal `(missing)`                                 |
+| `History (N)`         | `--history` flag is present (N is the entry count)             | one row per entry (see History layout below)                                                                                                |
+
+Sections whose condition is not met are omitted entirely. No placeholder headings or `(none)` bodies.
+
+**Type marker consistency.** Every task reference in the output (header, `parent` row, `Dependencies` rows, and the corresponding rows in `quest graph --format text`) renders `type` identically: a ` (bug)` marker between the status bracket and the title when the referenced task is a bug, nothing otherwise. The default is the common case; the marker is a strong visual signal in mixed output.
+
+**Timestamp format.** Minute precision, UTC, `Z`-terminated: `YYYY-MM-DD HH:MMZ`. JSON output retains second precision per the data-type rules; text mode drops seconds because the display-side precision gain does not justify the column width. The `started` and `completed` rows append a parenthesized relative suffix computed against wall clock (`(1d ago)`, `(23h ago)`, `(5m ago)`, `(just now)`). Note, PR, handoff, and history timestamps render absolute only.
+
+**Wrap rules.**
+
+- TTY output wraps prose sections (`Description`, `Context`, `Acceptance criteria`, `Notes`, `Handoff`, `Debrief`) to `min(terminal width, 100)` columns. Wider terminals do not extend prose past 100 columns because line length past ~100 hurts readability.
+- Piped output wraps prose sections to 80 columns.
+- The metadata cluster and row-oriented sections (`Dependencies`, `PRs`, `History`) are not wrapped. Long lines overflow the terminal; truncation is not used for `show` -- human readers need complete content and accept overflow in exchange.
+
+**History layout.** With `--history`, an additional `History (N)` section is appended at the end:
+
+```
+History (9)
+    2026-04-14 10:00Z  planner/sess-p1a  created         tier=T2 role=coder tags=[go,auth]
+    2026-04-14 10:05Z  coder/sess-c3f    accepted
+    2026-04-14 10:30Z  coder/sess-c3f    note_added
+    2026-04-14 10:32Z  coder/sess-c3f    handoff_set
+    2026-04-14 10:45Z  planner/sess-p1a  reset           "session crashed, retrying at T3"
+    2026-04-14 10:45Z  planner/sess-p1a  field_updated   tier: T2 -> T3
+    2026-04-14 10:50Z  coder/sess-d7b    accepted
+    2026-04-14 11:30Z  coder/sess-d7b    pr_added        https://github.com/foo/bar/pull/42
+    2026-04-14 11:45Z  coder/sess-d7b    completed
+```
+
+Per line: `{timestamp}  {role or -}/{session or -}  {action}  [{detail}]`. The action column pads to the widest action string in the section so detail strings align. Per-action detail:
+
+| Action                                                           | Detail                                                                       |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `created`                                                        | non-default create-time fields as `key=value`; list fields render as `[a,b]` |
+| `accepted`, `completed`, `failed`, `note_added`, `handoff_set`   | no detail -- bodies live in the dedicated sections above                     |
+| `cancelled`, `reset`                                             | `"{reason}"` when set, omitted when null                                     |
+| `moved`                                                          | `{old_id} -> {new_id}`                                                       |
+| `pr_added`                                                       | the PR URL                                                                   |
+| `field_updated`                                                  | `{field}: {from} -> {to}`, comma-joined across multiple fields               |
+| `linked`, `unlinked`                                             | `{link_type} {target}`                                                       |
+| `tagged`, `untagged`                                             | the tag value                                                                |
+
+Heavy-content actions (`note_added`, `handoff_set`) carry no inline detail; the dedicated section above holds the body. The History section is a mutation timeline, not a content log.
 
 ---
 
@@ -812,8 +932,8 @@ A bare string in `parent` (e.g., `"parent": "epic-1"`) is shorthand for `{"ref":
 {"ref": "epic-1", "title": "Auth module", "type": "task", "tier": "T3", "acceptance_criteria": "Integration tests pass, all endpoints return correct status codes"}
 {"ref": "task-1", "title": "JWT validation", "parent": "epic-1", "tier": "T2", "role": "coder", "tags": ["go", "auth"]}
 {"ref": "task-2", "title": "Session store", "parent": {"ref": "epic-1"}, "tier": "T2", "role": "coder", "tags": ["go"]}
-{"ref": "task-3", "title": "Auth middleware", "parent": "epic-1", "tier": "T3", "role": "coder", "dependencies": [{"ref": "task-1", "type": "blocked-by"}, {"ref": "task-2", "type": "blocked-by"}]}
-{"ref": "task-4", "title": "Fix token leak", "type": "bug", "parent": {"id": "proj-a1"}, "tier": "T2", "dependencies": [{"id": "proj-31", "type": "caused-by"}]}
+{"ref": "task-3", "title": "Auth middleware", "parent": "epic-1", "tier": "T3", "role": "coder", "dependencies": [{"ref": "task-1", "link_type": "blocked-by"}, {"ref": "task-2", "link_type": "blocked-by"}]}
+{"ref": "task-4", "title": "Fix token leak", "type": "bug", "parent": {"id": "proj-a1"}, "tier": "T2", "dependencies": [{"id": "proj-31", "link_type": "caused-by"}]}
 ```
 
 The first `task-2` line uses the explicit `{"ref": ...}` form; `task-1` and `task-3` use the bare-string shorthand. `task-4` parents under an external pre-existing task via `{"id": ...}`.
@@ -869,7 +989,7 @@ Additional fields depend on `code`:
 | `blocked_by_cancelled` | semantic  | `target`                                                   |
 | `source_type_required` | semantic  | `link_type`, `required_type`                               |
 | `invalid_tag`          | semantic  | `field` (e.g., `tags[2]`), `value` (offending tag)         |
-| `invalid_link_type`    | semantic  | `field` (e.g., `dependencies[0].type`), `value` (offending string) |
+| `invalid_link_type`    | semantic  | `field` (e.g., `dependencies[0].link_type`), `value` (offending string) |
 | `invalid_type`         | semantic  | `field` (`type`), `value` (offending string)               |
 | `invalid_tier`         | semantic  | `field` (`tier`), `value` (offending string)               |
 | `field_too_long`       | semantic  | `field` (e.g., `title`), `limit` (byte cap), `observed` (byte count of the offending value) |
@@ -877,7 +997,7 @@ Additional fields depend on `code`:
 
 For cross-line errors (`duplicate_ref`, `cycle`), `line` points to the later line of the pair (or the edge that closed the cycle); the extra fields locate the other party without requiring a second pass.
 
-Array-index notation in `field` (e.g., `tags[2]`, `dependencies[0].type`) uses zero-indexed positions within the line's arrays.
+Array-index notation in `field` (e.g., `tags[2]`, `dependencies[0].link_type`) uses zero-indexed positions within the line's arrays.
 
 Example stderr for a batch with three errors:
 
@@ -1216,13 +1336,13 @@ Shows parent-child structure, dependency edges with types, and task statuses.
   "edges": [
     {
       "task": "proj-a1.3",
-      "type": "blocked-by",
+      "link_type": "blocked-by",
       "target": "proj-a1.1",
       "target_status": "complete"
     },
     {
       "task": "proj-a1.3",
-      "type": "blocked-by",
+      "link_type": "blocked-by",
       "target": "proj-a1.2",
       "target_status": "accepted"
     }
@@ -1239,23 +1359,23 @@ Edge fields mirror the CLI: `task` is the task that holds the link (first arg to
 - **Edge field naming.** `task` and `target` use quest-specific terminology rather than generic graph terms (e.g., `source`/`target`) to maintain consistency with the CLI surface (`quest link TASK --blocked-by TARGET`).
 - **Node fields are structural.** Graph output exists for verifying dependency structure and status, not for displaying full task metadata. Fields like `tags` are intentionally excluded -- they don't contribute to structural verification and are available via `quest list` and `quest show`.
 
-**`--format text`**: human-readable tree. Parent-child structure is conveyed by indentation. Dependency edges are listed under the task that holds the link, matching the JSON model.
+**`--format text`**: human-readable tree. Parent-child structure is conveyed by indentation. Dependency edges are listed under the task that holds the link, matching the JSON model. Every task reference -- node or edge target -- uses the same `{id} [{status}] (bug?) {title}` shape as `quest show`, so the same scan pattern applies across commands. A ` (bug)` marker is inserted between the status bracket and the title when the referenced task's `type` is `bug`; it is omitted for the default `task` type.
 
 ```
-proj-a1  Auth module [open]
-  proj-a1.1  JWT validation [complete]
-  proj-a1.2  Session store [accepted]
-  proj-a1.3  Auth middleware [open]
-    blocked-by  proj-a1.1 [complete]
-    blocked-by  proj-a1.2 [accepted]
+proj-a1 [open] Auth module
+  proj-a1.1 [complete] JWT validation
+  proj-a1.2 [accepted] Session store
+  proj-a1.3 [open] Auth middleware
+    blocked-by  proj-a1.1 [complete] JWT validation
+    blocked-by  proj-a1.2 [accepted] Session store
 ```
 
 **Non-root example.** `quest graph proj-a1.3` roots at the leaf. Traversal does not walk up to `proj-a1`. The `blocked-by` targets are siblings, which are external to the subtree, so they appear in `nodes` as unexpanded leaves but are not rendered as tree children in the text form:
 
 ```
-proj-a1.3  Auth middleware [open]
-  blocked-by  proj-a1.1 [complete]
-  blocked-by  proj-a1.2 [accepted]
+proj-a1.3 [open] Auth middleware
+  blocked-by  proj-a1.1 [complete] JWT validation
+  blocked-by  proj-a1.2 [accepted] Session store
 ```
 
 Used by the planning agent to verify graph correctness after batch task creation, and by humans to understand the structure of a deliverable.
