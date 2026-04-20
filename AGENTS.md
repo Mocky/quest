@@ -56,8 +56,8 @@ These are the load-bearing decisions from the spec. Read the spec section in par
 - **SQLite with WAL mode, single project per workspace** (Storage). Walk up from CWD to find `.quest/`. One project per workspace — nested quest projects are not supported.
 - **Serialized writes, 5s busy timeout, exit code 7 on contention.** Quest does not retry internally. The caller (the agent) decides whether to retry. A rising rate of exit-7 returns is the signal to upgrade to the deferred `questd` daemon.
 - **Structural transactions use `BEGIN IMMEDIATE`.** Any command that does a multi-row check (parent acceptance, cascade cancel, move, complete-with-children) must hold the write lock from the start of the transaction. Simple single-row transitions can use atomic `UPDATE ... WHERE` with `RowsAffected` checks.
-- **Role gating.** Workers see only worker commands (`show`, `accept`, `update`, `complete`, `fail`). Planner commands are gated by `elevated_roles` in config. `AGENT_ROLE` drives the decision.
-- **`AGENT_TASK` is the task ID for workers.** Worker commands default to it. Workers never pass a task ID on the command line.
+- **Role gating is opt-in restriction, not opt-in elevation.** An unset `AGENT_ROLE` gets the full command surface (humans at a shell, or any caller outside vigil). An explicit `AGENT_ROLE` whose value is in `elevated_roles` gets the full surface. An explicit `AGENT_ROLE` whose value is *not* in `elevated_roles` is gated down to worker commands (`show`, `accept`, `update`, `complete`, `fail`) and returns exit 6 on anything else. Vigil activates the gate by setting an explicit role on every dispatch.
+- **`AGENT_TASK` is identity/telemetry metadata, not a CLI default.** Vigil stamps it on dispatch so quest can record `dept.task.id` on spans and correlate logs. Worker commands **always** take the task ID as a positional argument -- they do not fall back to `AGENT_TASK`. Identity env vars must not double as CLI convenience defaults; that was what invited agents to self-identify.
 - **Append-only history.** Every mutation writes a history row keyed by task ID and timestamp. History is a separate table, not a JSON blob on the task row, so `quest show` without `--history` never pays for it.
 - **Export is the archival format; the DB is the operational format.** `quest export` must produce human-readable files (per-task JSON, markdown debriefs, JSONL event streams) that can be inspected, backed up, and version-controlled without quest tooling. This is a hard success criterion.
 - **Schema versioning is forward-only.** Migrations ship with the binary and run inside a single transaction. A newer-than-supported schema version causes the binary to refuse to run, never to silently corrupt data. Downgrades are restore-from-export, not schema rollback.
@@ -69,7 +69,7 @@ These are the load-bearing decisions from the spec. Read the spec section in par
 - Don't add LLM calls to quest. All reasoning belongs in callers.
 - Don't make quest aware of lore, rite, or vigil internals. Memory IDs, workflow IDs, and session IDs are opaque strings.
 - Don't add retry loops around the write lock. Return exit code 7 and let the caller decide.
-- Don't expose planner commands to workers by default. Role gating is a security and context-window concern, not a convenience.
+- Don't weaken the role gate when `AGENT_ROLE` is an explicit non-elevated value. Role gating is a security and context-window concern for dispatched workers -- it is not a convenience feature, and it must not be bypassed by the caller self-identifying.
 - Don't bypass `internal/config/`. No `os.Getenv`, no `flag.Parse`, no direct TOML reads anywhere else.
 - Don't import OTEL outside `internal/telemetry/` (once that package exists).
 - Don't change error codes or exit codes without updating the spec. Agents depend on them.

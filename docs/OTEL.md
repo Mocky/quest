@@ -1008,7 +1008,7 @@ No `service.instance.id` -- each CLI invocation is ephemeral. `deployment.enviro
 | Variable       | Purpose                                                                  |
 | -------------- | ------------------------------------------------------------------------ |
 | `AGENT_ROLE`   | Agent identity -- role gating, `gen_ai.agent.name`, history              |
-| `AGENT_TASK`   | Default target for worker commands, `dept.task.id` span attribute, history |
+| `AGENT_TASK`   | Session's assigned task ID -- `dept.task.id` span attribute, log field    |
 | `AGENT_SESSION`| Session correlation -- `dept.session.id` span attribute, history         |
 | `TRACEPARENT`  | W3C trace context -- parent span for the root command span               |
 | `TRACESTATE`   | W3C trace state -- carried forward for sampling decisions only           |

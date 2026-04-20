@@ -35,7 +35,7 @@ The planning agent typically creates all tasks for a deliverable in a single ses
 
 Worker agents are started by the framework to execute individual tasks. A worker:
 
-- Reads its assigned task with `quest show` (task ID comes from the `AGENT_TASK` env var)
+- Reads its assigned task with `quest show <id>` -- vigil injects the task ID into the agent's prompt, and also sets `AGENT_TASK` for telemetry correlation
 - Signals it has begun with `quest accept`
 - Records progress with `quest update --note`
 - Completes with `quest complete --debrief` or reports failure with `quest fail --debrief`
@@ -97,29 +97,33 @@ Quest uses a SQLite database at `.quest/quest.db` for runtime storage.
 
 ## Role Gating
 
-Quest exposes a minimal CLI surface for worker agents by default and the full command surface for elevated roles (planning agents). The design principle: every agent session has exactly one task, and that task contains everything the agent needs to do its work. Workers do not browse, search, or query other tasks -- if information is missing, the principled fix is to inject it into the task (via context, description, or handoff), not to give the worker more commands. If a dependency is blocking work, that is a scheduling failure by the lead, not something the worker can resolve. Query and structural commands are reserved for elevated roles because only planning agents need a view across tasks.
+Quest has two command surfaces: a minimal one (`show`, `accept`, `update`, `complete`, `fail`) for worker agents executing a single assigned task, and the full surface including planning, query, and structural commands. Which surface a caller sees is controlled by `AGENT_ROLE` -- the framework (vigil) activates the worker surface by setting an explicit non-elevated role on dispatch; callers that do not set `AGENT_ROLE` (humans, ad-hoc scripts) or that set it to an elevated value see the full surface. The design principle behind the worker surface: every agent session has exactly one task, and that task contains everything the agent needs to do its work. Workers do not browse, search, or query other tasks -- if information is missing, the principled fix is to inject it into the task (via context, description, or handoff), not to give the worker more commands. If a dependency is blocking work, that is a scheduling failure by the lead, not something the worker can resolve. Query and structural commands are reserved for elevated dispatch because only planning agents need a view across tasks.
 
 ### Resolution logic
 
-Quest reads role and task context from environment variables:
+Quest reads agent identity from environment variables set by the framework (vigil) when it dispatches an agent session:
 
 ```
-AGENT_ROLE      -- the agent's role (e.g., "coder", "planner")
+AGENT_ROLE      -- the agent's role; activates role gating when set (see below)
 AGENT_SESSION   -- unique session ID assigned by vigil (opaque string)
-AGENT_TASK      -- the agent's assigned task ID (used as default for commands)
+AGENT_TASK      -- the session's assigned task ID
 TRACEPARENT     -- OpenTelemetry trace context for observability
 ```
 
-The task ID from `AGENT_TASK` is used as the default target for commands, so `quest accept tsk-123` becomes just `quest accept` when the env var is set.
+All four are identity/correlation signals -- `AGENT_ROLE` gates the command surface, `AGENT_SESSION` is stamped on history rows and `owner_session`, `AGENT_TASK` is stamped on telemetry as `dept.task.id`, `TRACEPARENT` links quest spans to the caller's trace. **None of them default into command arguments.** Worker commands that operate on a task always take the task ID as a positional argument. Identity and CLI convenience are kept separate so that command-line invocations are explicit and self-contained, and so that agents are not invited to set their own identity to make commands work.
 
 ### Resolution order
 
-1. Read the agent's role from `AGENT_ROLE`
-2. Read `elevated_roles` from `.quest/config.toml` (default: empty list)
+Role gating is **opt-in restriction**, not opt-in elevation. An empty `AGENT_ROLE` means "no role claim was made" -- typical of a human running quest from a shell, or any caller outside vigil -- and the caller gets the full command surface. Gating activates only when a role has been explicitly set and does not match an elevated role.
+
+1. Read `AGENT_ROLE` from the environment
+2. Read `elevated_roles` from `.quest/config.toml` (default: empty list; `quest init` writes `["planner"]`)
 3. If the command is worker-level: run it
-4. If the command is elevated-level: check if the agent's role is in `elevated_roles`
-5. If role is unset or not elevated: default to worker surface
-6. If a worker attempts an elevated command: reject with a clear message and exit code 6
+4. If `AGENT_ROLE` is unset (empty): run it (elevated commands included)
+5. If `AGENT_ROLE` is set and its value is in `elevated_roles`: run it
+6. If `AGENT_ROLE` is set but its value is not in `elevated_roles`: reject with exit code 6 (`role_denied`)
+
+The framework turns on the gate by setting an explicit `AGENT_ROLE` on every dispatch. A missing role from vigil is a vigil bug -- quest does not defend against it; vigil's own dispatch tests catch it. This design removes the temptation for a dispatched worker to set `AGENT_ROLE=planner` itself to reach an elevated command: if vigil set the role, the gate is active and self-elevation fails; if vigil did not set the role (human shell / non-vigil use), the gate is off and self-elevation is unnecessary.
 
 ### Config file
 
@@ -611,12 +615,12 @@ These commands are available to all agents regardless of role.
 ---
 
 ```
-quest show [ID] [--history]
+quest show ID [--history]
 ```
 
 Display full task details including description, context, status, dependencies and their statuses, notes, and handoff from any prior session. Dependencies are automatically included with their title and current status so the worker has immediate context about upstream/downstream tasks without needing to query them separately.
 
-If `ID` is omitted, uses the value of `AGENT_TASK`.
+`ID` is required. Quest does not default worker commands to `AGENT_TASK`: that env var is identity metadata (telemetry + correlation), not a CLI convenience. A missing ID returns exit code 2 (`usage_error`).
 
 | Flag        | Description                                             |
 | ----------- | ------------------------------------------------------- |
@@ -793,12 +797,12 @@ Heavy-content actions (`note_added`, `handoff_set`) carry no inline detail; the 
 ---
 
 ```
-quest accept [ID]
+quest accept ID
 ```
 
 Signal that the agent has received the task and begun work. Transitions status from `open` to `accepted`.
 
-If `ID` is omitted, uses the value of `AGENT_TASK`.
+`ID` is required; a missing ID returns exit code 2 (`usage_error`).
 
 Accept is strict:
 
@@ -811,10 +815,10 @@ Accept is strict:
 ---
 
 ```
-quest update [ID] [flags]
+quest update ID [flags]
 ```
 
-Write progress information to the task. Workers can update execution fields. Elevated roles can update any field. If `ID` is omitted, uses the value of `AGENT_TASK`.
+Write progress information to the task. Workers can update execution fields. Elevated roles can update any field. `ID` is required; a missing ID returns exit code 2 (`usage_error`).
 
 **Worker flags:**
 
@@ -850,10 +854,10 @@ All field changes are recorded in the task's history. Flags listed in Input Conv
 ---
 
 ```
-quest complete [ID] --debrief "..." [--pr "URL"]
+quest complete ID --debrief "..." [--pr "URL"]
 ```
 
-Mark the task as completed. Debrief is required -- every completed task must leave a record of what was done and what was learned. If `ID` is omitted, uses the value of `AGENT_TASK`.
+Mark the task as completed. Debrief is required -- every completed task must leave a record of what was done and what was learned. `ID` is required; a missing ID returns exit code 2 (`usage_error`).
 
 For leaf tasks, `quest complete` transitions from `accepted` to `completed`. For parent tasks, `quest complete` transitions from either `accepted` (when a dispatched verifier is closing the parent) or `open` (when the lead is direct-closing without dispatch) to `completed`. Completion of a parent fails if any child is not in a terminal state (`completed`, `failed`, or `cancelled`) -- exit code 5. The error message includes the IDs and current statuses of all non-terminal children in both JSON and text output, so the caller can act immediately without a separate `quest children` query. This is a structural integrity constraint, not derived status: quest does not auto-complete parents when children finish. The agent -- verifier or lead -- makes the judgment call, typically after evaluating the parent's acceptance criteria.
 
@@ -867,10 +871,10 @@ On successful completion, `completed_at` is recorded.
 ---
 
 ```
-quest fail [ID] --debrief "..." [--pr "URL"]
+quest fail ID --debrief "..." [--pr "URL"]
 ```
 
-Mark the task as failed. Debrief is required -- the after-action report should cover what was attempted, why the task failed, and what was learned. If `ID` is omitted, uses the value of `AGENT_TASK`. On failure, `completed_at` is recorded (marking the end of execution, whether successful or not).
+Mark the task as failed. Debrief is required -- the after-action report should cover what was attempted, why the task failed, and what was learned. `ID` is required; a missing ID returns exit code 2 (`usage_error`). On failure, `completed_at` is recorded (marking the end of execution, whether successful or not).
 
 The debrief can be as brief as a single sentence for simple failures ("upstream API unreachable, no work attempted"). The requirement is that every failure leaves a record, not that the record is lengthy -- even terse debriefs feed the curator's knowledge extraction pipeline and enable retrospective analysis.
 
@@ -1238,7 +1242,7 @@ Query commands are elevated because workers have exactly one task assigned at se
 quest deps ID
 ```
 
-List all dependencies for a task, their statuses, and their relationship types. `ID` is required -- unlike worker commands, `quest deps` does not default to `AGENT_TASK` because it is an elevated command used by planners to inspect tasks they are managing, not their own assigned task.
+List all dependencies for a task, their statuses, and their relationship types. `ID` is required; a missing ID returns exit code 2 (`usage_error`).
 
 ---
 
@@ -1300,7 +1304,7 @@ Row shape rules:
 quest graph ID
 ```
 
-Display the dependency graph rooted at a task. `ID` is required -- unlike worker commands, `quest graph` does not default to `AGENT_TASK`. A missing ID returns exit code 2 (`usage_error`). This mirrors `quest deps`: both are elevated query commands used by planners to inspect a specific subtree, not the caller's own assigned task.
+Display the dependency graph rooted at a task. `ID` is required; a missing ID returns exit code 2 (`usage_error`).
 
 `ID` may be any task -- root, interior, or leaf. Traversal descends from `ID` through `children` and follows dependency edges outward from tasks in the subtree. It does not traverse up to parents or ancestors; an `--include-ancestors` flag is deferred until a concrete need appears. Any node reached via a dependency edge that is not a descendant of `ID` (siblings, cross-project references, or other out-of-subtree tasks) appears as an unexpanded leaf: it is included in `nodes` so consumers can read its title and status, but its own `children` and outgoing edges are omitted.
 
@@ -1407,8 +1411,6 @@ quest init --prefix PREFIX
 
 Initialize a quest project in the current directory. Creates `.quest/` directory and `.quest/config.toml`. Requires `--prefix` to set the ID prefix for this project -- see Prefix validation for the allowed format. Fails with exit code 2 (usage error) if `--prefix` is missing or invalid. Fails with exit code 5 (conflict) if `.quest/` already exists in the current directory or any parent.
 
-Humans running quest from a shell default to the worker command surface, since `AGENT_ROLE` is unset. To access planner commands, set `AGENT_ROLE` to an elevated role from `.quest/config.toml` (default: `planner`) -- inline as `AGENT_ROLE=planner quest list`, or per session with `export AGENT_ROLE=planner`. See Role Gating.
-
 In `--format json` (default), output is a single JSON object with the resolved workspace path and prefix:
 
 ```json
@@ -1514,7 +1516,7 @@ These are concerns the framework handles -- not quest commands, but places where
 
 | Concern             | Framework responsibility                                                                                                                                                                                                                                                                                       |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Agent startup       | Framework reads task tier and role from quest, selects the appropriate model, sets `AGENT_ROLE` and `AGENT_TASK` env vars, and starts the agent                                                                                                                                                                |
+| Agent startup       | Framework reads task tier and role from quest, selects the appropriate model, sets `AGENT_ROLE` (to activate gating), `AGENT_SESSION` (session identity), and `AGENT_TASK` (telemetry correlation) env vars, injects the assigned task ID into the agent's prompt, and starts the agent                       |
 | Prompt construction | Framework reads task description and context from `quest show` output and injects them into the agent's prompt template                                                                                                                                                                                        |
 | Work dispatch       | Lead uses `quest list --ready` to identify actionable tasks -- leaves to dispatch, parents with a role to dispatch to verifiers, and roleless parents to direct-close -- and declares agent sessions accordingly                                                                                               |
 | Recurring tasks     | An external scheduler may call `quest create` or `quest batch` on a cron. Quest has no scheduling concept                                                                                                                                                                                                      |

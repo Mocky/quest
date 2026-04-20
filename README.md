@@ -10,7 +10,6 @@ quest stores, indexes, and reports on tasks. Planning agents decompose deliverab
 - **Enforces status transitions** — every mutation runs in a `BEGIN IMMEDIATE` transaction; write contention returns exit 7 for the caller to retry.
 - **Records history** — every state change writes one append-only history row, enabling audit and retrospective queries.
 - **Role-gates commands** — workers see only `show`, `accept`, `update`, `complete`, `fail`; planners see the full surface. Gating is driven by `AGENT_ROLE` against `elevated_roles` in `.quest/config.toml`.
-- **Defaults from environment** — `AGENT_TASK` becomes the target for worker commands, eliminating repetitive arguments in agent tool calls.
 - **Accepts `@file` input** — free-form flags (`--debrief`, `--description`, `--context`, `--note`, `--handoff`, `--reason`, `--acceptance-criteria`) accept `@path/to/file` or `@-` (stdin) so agents can pipe large bodies without shell escaping.
 - **Exports to human-readable files** — `quest export` writes per-task JSON, markdown debriefs, and JSONL event streams that survive a binary replacement.
 - **Emits OpenTelemetry** — when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; zero-cost when disabled.
@@ -46,11 +45,9 @@ quest init --prefix proj
 
 This creates `.quest/quest.db` and `.quest/config.toml`. The prefix (1-8 lowercase alphanumeric characters) appears in every task ID and is immutable for the project's lifetime.
 
-### 2. Create tasks (planner role)
+### 2. Create tasks
 
 ```bash
-export AGENT_ROLE=planner
-
 quest create --title "Ship v0.1" --description "Cut the first release"
 # → {"id":"proj-a1","status":"open"}
 
@@ -61,32 +58,34 @@ quest create --title "Tag and push" --parent proj-a1 --blocked-by proj-a1.1 --ti
 # → {"id":"proj-a1.2","status":"open"}
 ```
 
-### 3. Execute a task (worker role)
+`quest create` is a planner command. It works here because `AGENT_ROLE` is unset — role gating is **opt-in restriction**, so callers outside vigil (humans at a shell, ad-hoc scripts) get the full command surface. See [Role gating](#role-gating).
+
+### 3. Execute a task
 
 ```bash
-export AGENT_ROLE=   # unset (worker default)
-export AGENT_TASK=proj-a1.1
-export AGENT_SESSION=sess-042
-
-quest show                  # read the task
-quest accept                # transition open → accepted
-quest update --note "Drafted the v0.1 entry"
-quest complete --debrief "Release notes written; see CHANGELOG.md"
+quest show     proj-a1.1
+quest accept   proj-a1.1
+quest update   proj-a1.1 --note "Drafted the v0.1 entry"
+quest complete proj-a1.1 --debrief "Release notes written; see CHANGELOG.md"
 ```
 
-### 4. Inspect the graph (planner)
+Worker commands always take the task ID as a positional argument. When vigil dispatches an agent, it passes the task ID in the agent's prompt and *also* sets `AGENT_TASK` in the environment so quest can stamp it on telemetry as `dept.task.id` — but the env var is **not** a CLI default, and no agent should be constructing commands that depend on it being set.
+
+### 4. Inspect the graph
 
 ```bash
-AGENT_ROLE=planner quest graph proj-a1          # tree rooted at the epic
-AGENT_ROLE=planner quest deps  proj-a1.2        # direct blockers
-AGENT_ROLE=planner quest list  --status open    # all open tasks
+quest graph proj-a1          # tree rooted at the epic
+quest deps  proj-a1.2        # direct blockers
+quest list  --status open    # all open tasks
 ```
+
+These are planner commands; they work here for the same reason as step 2 — no `AGENT_ROLE` is set, so the gate is off.
 
 ### 5. Archive
 
 ```bash
-AGENT_ROLE=planner quest export              # writes .quest/export/
-AGENT_ROLE=planner quest export --dir out    # writes out/
+quest export              # writes .quest/export/
+quest export --dir out    # writes out/
 ```
 
 ## Command reference
@@ -95,13 +94,13 @@ Worker commands (no role required):
 
 | Command    | Purpose                                                |
 | ---------- | ------------------------------------------------------ |
-| `show`     | Read a task (defaults to `AGENT_TASK`); `--history`    |
+| `show`     | Read a task; `--history` includes the mutation log    |
 | `accept`   | Transition `open → accepted` (race-safe, first wins)   |
 | `update`   | Append notes / PRs / handoff; elevated flags gated     |
 | `complete` | Mark as `completed` with `--debrief` (required)        |
 | `fail`     | Mark as `failed` with `--debrief` (required)           |
 
-Planner commands (require an elevated `AGENT_ROLE`):
+Planner commands (gated — available when `AGENT_ROLE` is unset or in `elevated_roles`):
 
 | Command   | Purpose                                                     |
 | --------- | ----------------------------------------------------------- |
@@ -138,18 +137,13 @@ elevated_roles = ["planner"]
 id_prefix      = "proj"
 ```
 
-Resolution:
+Role gating is **opt-in restriction**. Resolution:
 
-1. `AGENT_ROLE` is read from the environment.
-2. If unset or not in `elevated_roles`, the role is treated as a **worker**.
-3. Planner commands invoked by a worker return exit 6 (`role_denied`) without touching the database — role denial is uniform regardless of whether the referenced task exists.
+1. `AGENT_ROLE` **unset** → full command surface (workers + planners). This is the default for humans running quest from a shell and for any caller outside the Grove framework. No env-var setup required.
+2. `AGENT_ROLE` **set** to a value in `elevated_roles` → full command surface.
+3. `AGENT_ROLE` **set** to a value *not* in `elevated_roles` → worker surface only. Planner commands return exit 6 (`role_denied`) without touching the database — role denial is uniform regardless of whether the referenced task exists.
 
-Humans running quest from a shell default to the worker surface. To access planner commands, set `AGENT_ROLE` inline or export it:
-
-```bash
-AGENT_ROLE=planner quest list
-export AGENT_ROLE=planner
-```
+Vigil activates the gate by setting an explicit `AGENT_ROLE` on every dispatch (`worker`, `planner`, `coder`, etc.). A dispatched worker cannot self-elevate by overriding `AGENT_ROLE`, because the explicit value is what enables the gate. Outside vigil, quest trusts the caller — there is no need to set env vars just to use the tool.
 
 ## Exit codes
 
@@ -174,8 +168,8 @@ See `docs/quest-spec.md` §Error precedence for which class wins when multiple c
 
 | Variable                       | Default | Purpose                                                                  |
 | ------------------------------ | ------- | ------------------------------------------------------------------------ |
-| `AGENT_ROLE`                   | unset   | Agent role (compared against `elevated_roles` for gating)                |
-| `AGENT_TASK`                   | unset   | Default task ID for worker commands                                      |
+| `AGENT_ROLE`                   | unset   | Agent role; activates role gating when set (see [Role gating](#role-gating)) |
+| `AGENT_TASK`                   | unset   | Session's assigned task ID, stamped on telemetry as `dept.task.id`       |
 | `AGENT_SESSION`                | unset   | Opaque session ID, stamped on history rows and `owner_session`           |
 | `QUEST_LOG_LEVEL`              | `warn`  | slog verbosity: `debug`, `info`, `warn`, `error`                         |
 | `QUEST_LOG_OTEL_LEVEL`         | `info`  | slog record level at which to ship to the OTEL log exporter              |

@@ -93,7 +93,7 @@ Quest does not mint its own per-invocation correlation ID. Three identifiers flo
 | --------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | `TRACEPARENT`   | W3C trace context propagated by vigil. The root-span ID correlates quest with the caller. | Span attributes (see OTEL.md §4.3). Log records automatically carry `trace_id` and `span_id` via the `otelslog` bridge. |
 | `AGENT_SESSION` | Unique session ID assigned by vigil.                                                  | Every history row (`sessions` field), span attribute `dept.session.id`, log field `dept.session.id`. |
-| `AGENT_TASK`    | The agent's assigned task.                                                            | Default target for commands. Span attribute `dept.task.id`, log field `dept.task.id`. |
+| `AGENT_TASK`    | The session's assigned task ID, set by vigil on dispatch.                             | Span attribute `dept.task.id`, log field `dept.task.id`. Not consumed as a command default -- worker commands take the task ID as a positional argument. |
 
 ### Flow
 
@@ -118,8 +118,8 @@ Vigil starts agent session
 
 Humans running `quest list` from a shell without vigil typically have none of these set. Quest behavior:
 
-- `AGENT_ROLE` unset → role gating defaults to the worker surface (see spec Role Gating). In telemetry, recorded as the literal string `"unset"` per OTEL.md §8.6.
-- `AGENT_TASK` unset → commands that require a task ID return exit 2 with a clear stderr message. Commands that accept a task ID as a positional argument proceed normally.
+- `AGENT_ROLE` unset → role gating is off (full command surface available; see spec Role Gating). In telemetry, the role is recorded as the literal string `"unset"` per OTEL.md §8.6.
+- `AGENT_TASK` unset → telemetry records an empty `dept.task.id`. No effect on command behavior: worker commands take the task ID as a positional argument regardless of this env var.
 - `AGENT_SESSION` unset → history entries record `session: null`. Spans record the empty string.
 - `TRACEPARENT` unset → quest creates a root trace for this invocation (OTEL.md §4.1).
 
