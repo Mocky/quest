@@ -12,7 +12,7 @@ quest is **reasoning-free**. It stores, indexes, and reports on tasks. All judgm
 
 ## Status
 
-quest is in the **implementation phase**. The behavioral contract is fully specified in `docs/quest-spec.md` (v4). No code exists yet — we are about to start.
+quest v0.1.0 shipped on 2026-04-19 (see `CHANGELOG.md`). The v4 behavioral contract in `docs/quest-spec.md` is the source of truth; ongoing work is incremental changes against it.
 
 ## Framework context
 
