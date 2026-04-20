@@ -512,7 +512,7 @@ The `meta.schema_version` integer in `quest.db` is the only durable version numb
 - Every schema change ships a numbered forward-only migration bundled into the binary.
 - Migrations run in a single transaction; failure leaves the database at the prior version.
 - The binary refuses to operate against a database with `schema_version` higher than it supports (exit code 1, stderr: `"database schema version N is newer than this binary supports — upgrade quest"`).
-- Downgrades are not supported. The recovery path is restore from `quest export` or a file-level backup.
+- Downgrades are not supported. The recovery path is restore from a file-level database backup — see quest-spec §Backup & Recovery. `quest export` is an archival format, not a restore source; there is no `quest import`. Every migration is preceded by an automatic pre-migration snapshot (quest-spec §Storage > Pre-migration snapshot) so the prior-version file is available on the same host without operator action.
 
 Implementers: keep migrations pure SQL where possible. Go-coded migrations (for data transforms) are allowed but must be testable against a fixture database from every prior version — see TESTING.md on migration tests.
 

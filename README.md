@@ -81,12 +81,18 @@ quest list  --status open    # all open tasks
 
 These are planner commands; they work here for the same reason as step 2 — no `AGENT_ROLE` is set, so the gate is off.
 
-### 5. Archive
+### 5. Back up and archive
 
 ```bash
-quest export              # writes .quest/export/
-quest export --dir out    # writes out/
+# Operational backup — restorable DB snapshot (safe while agents are running)
+quest backup --to /backups/quest-$(date +%F).db
+
+# Human-readable archive — review, audit, long-term storage
+quest export                 # writes <workspace>/quest-export/
+quest export --dir out       # writes out/
 ```
+
+`quest backup` produces a restorable database snapshot; `quest export` produces the human-readable archive. They serve different purposes — see [`docs/quest-spec.md`](docs/quest-spec.md) §Backup & Recovery for when to use which, plus the restore procedure.
 
 ## Command reference
 
@@ -116,7 +122,8 @@ Planner commands (gated — available when `AGENT_ROLE` is unset or in `elevated
 | `deps`    | List direct dependencies and their statuses                 |
 | `list`    | Filter tasks (`--status`, `--role`, `--tier`, `--tag`, …)   |
 | `graph`   | Render the tree rooted at an ID                             |
-| `export`  | Write the archive (`.quest/export/` or `--dir`)             |
+| `backup`  | Write a restorable DB snapshot (`--to PATH`)                |
+| `export`  | Write the human-readable archive (`<workspace>/quest-export/` or `--dir`) |
 
 System commands (no role required):
 

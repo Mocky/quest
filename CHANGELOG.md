@@ -5,6 +5,8 @@
 ### Added
 
 - Enforce the 128-byte cap on task `title` at every write path per spec §Field constraints. `quest create --title` and `quest update --title` exit 2 with a usage error naming the flag and the observed byte count; `quest batch` reports over-limit titles as a per-line `field_too_long` JSONL error in the `semantic` phase, carrying `field`, `limit`, and `observed`. Bytes, not code points — consistent with the `@file` 1 MiB limit.
+- `quest backup --to PATH` writes a transaction-consistent snapshot of `.quest/quest.db` via SQLite's online backup API, plus a sidecar copy of `.quest/config.toml` at `PATH.config.toml`. Safe to run while agents operate on the workspace. Elevated-role-gated. See spec §Backup & Recovery.
+- Automatic pre-migration snapshot: when the binary runs pending schema migrations, it first writes `.quest/backups/pre-v{N}-{timestamp}.db` via SQLite's online backup API. Snapshot failure aborts the migration (exit 1). See spec §Storage > Pre-migration snapshot.
 
 ### Changed
 

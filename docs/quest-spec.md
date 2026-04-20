@@ -88,10 +88,52 @@ Quest uses a SQLite database at `.quest/quest.db` for runtime storage.
 - **Atomicity:** every status transition -- `quest accept`, `quest complete`, `quest fail`, `quest reset`, `quest cancel` -- runs inside a `BEGIN IMMEDIATE` transaction with an explicit SELECT-then-UPDATE, even for leaves. A single atomic `UPDATE ... WHERE id=? AND status=?` with a `RowsAffected` check cannot distinguish exit 3 (`not_found`) from exit 5 (`conflict`) and therefore violates the error-precedence contract in §Error precedence. Append-only fields (`notes`, `prs`) use INSERT semantics. `handoff` uses upsert (INSERT or REPLACE) semantics
 - **Structural transactions:** every write command uses `BEGIN IMMEDIATE` to acquire the write lock at transaction start, so the existence/role/permission/state checks required by §Error precedence all run inside the same transaction as the mutation. Commands that additionally touch multiple rows for structural reasons -- `quest accept` on a parent (must verify all children are in a terminal state), `quest create --parent` (must verify parent is in `open` status and depth limit), `quest complete` on parent tasks (must verify all children are terminal), `quest move` (must check circular parentage, depth limits, and update multiple rows), and `quest cancel -r` (must recursively update descendants) -- include those checks inside the same transaction. `quest update` uses `BEGIN IMMEDIATE` on every invocation regardless of flags, including `--note` / `--pr` on an already-owned task: the existence check and terminal-state gating are unconditional preconditions, and using a single transaction path keeps `quest.store.tx{tx_kind=update}` observability uniform across worker-only and mixed-flag paths
 - **Schema:** the task entity is normalized across multiple tables -- `tasks` holds the mutable task row, `history` holds append-only mutation entries keyed by task ID and indexed by timestamp, `dependencies` holds typed links between tasks, and `tags` holds the task-tag join. History is a separate table (not a JSON array on the task row) so that `quest show` without `--history` never reads history pages, and future range queries (tail, stream, paginated audit) can be served by an indexed scan rather than a full-row deserialization. Internal schema details beyond this separation are an implementation concern, not API surface
-- **Schema versioning:** the database stores a `schema_version` integer in a `meta` table. On startup, quest reads the version and compares it to the range the binary supports. If the version is higher than supported, quest refuses to operate (exit code 1, stderr: `"database schema version N is newer than this binary supports -- upgrade quest"`) so a stale binary cannot silently corrupt a newer schema. If the version is lower, quest runs the pending forward-only migrations inside a single transaction before proceeding; a failed migration leaves the database at the prior version. Downgrades are not supported -- rolling back a binary upgrade is done by restoring from a prior `quest export` or a file-level database backup. The initial release ships at `schema_version = 1`; every subsequent schema change ships a numbered migration and bumps the version. Migration code is part of the binary, not loaded from disk
+- **Schema versioning:** the database stores a `schema_version` integer in a `meta` table. On startup, quest reads the version and compares it to the range the binary supports. If the version is higher than supported, quest refuses to operate (exit code 1, stderr: `"database schema version N is newer than this binary supports -- upgrade quest"`) so a stale binary cannot silently corrupt a newer schema. If the version is lower, quest runs the pending forward-only migrations inside a single transaction before proceeding; a failed migration leaves the database at the prior version. Downgrades are not supported -- rolling back a binary upgrade is done by swapping `.quest/quest.db` back with a prior file-level backup (see §Backup & Recovery). `quest export` is not a valid restore source; there is no `quest import`. Every migration is preceded by an automatic pre-migration snapshot (see next bullet) so the prior-version database file is always available on the same host without operator action. The initial release ships at `schema_version = 1`; every subsequent schema change ships a numbered migration and bumps the version. Migration code is part of the binary, not loaded from disk
+- **Pre-migration snapshot:** when the binary detects that `schema_version` is lower than it supports and is about to run migrations, it first writes a transaction-consistent snapshot of `.quest/quest.db` to `.quest/backups/pre-v{N}-{timestamp}.db` via SQLite's online backup API, where `{N}` is the target schema version and `{timestamp}` is `YYYYMMDDTHHMMSSZ` (UTC). The snapshot is taken before the migration transaction opens. If the copy fails, the migration does not run and the binary exits 1 with a stderr message identifying the failed backup path. The snapshot is retained indefinitely; quest does not auto-prune. This is the only automatic backup quest performs -- ongoing operational backups are the operator's responsibility (see §Backup & Recovery)
 - **Direct access:** the database can be queried with standard SQLite tooling (`sqlite3`, any SQLite client library) for ad-hoc inspection or custom analytics
 - **Human-readable access:** quest data is materialized to human-readable files (per-task JSON, markdown debriefs, JSONL event streams) via `quest export`. The export is the archival and review format; the database is the operational format
 - **Daemon upgrade path:** if concurrent write contention from many agent processes exceeds what SQLite's WAL-mode single-writer lock can sustain -- indicated by a rising rate of exit code 7 (transient failure) returns under normal operation -- the deferred `questd` daemon owns the database connection and serializes access at the application level. The contention threshold depends on write duration and burst patterns, not a fixed agent count; empirical profiling under real agent swarms determines when the upgrade is warranted. WAL mode supports unlimited concurrent readers; the bottleneck is exclusively concurrent writes contending on the write lock
+
+---
+
+## Backup & Recovery
+
+Quest's operational data lives in `.quest/`. Two files matter for recovery:
+
+- `.quest/quest.db` -- the SQLite database. Loss or corruption is unrecoverable without a backup; `quest export` is **not** a valid restore source (there is no `quest import`).
+- `.quest/config.toml` -- records the immutable `id_prefix`. Losing it and recreating the project with a different prefix permanently decouples the new database from any external references (PR descriptions, debriefs, session logs, rite workflows) that captured the old task IDs.
+
+Backups MUST include both files.
+
+### Threat scope
+
+Quest's in-code backup support targets one failure class only: a binary upgrade that runs a schema migration, where a bug in the migration or a data issue discovered after the migration makes the prior-version file the fastest recovery path. For this case, quest ships a pre-migration snapshot (§Storage > Pre-migration snapshot).
+
+All other failure modes -- accidental `rm -rf .quest/`, disk corruption, hardware loss, host compromise, misaimed scripts -- are operator responsibility. Quest does not include a scheduler, retention policy, off-box writer, or integrity verifier for backups. Those are reasoning concerns and belong outside the tool (see `AGENTS.md` > Agent-at-the-top).
+
+### Recommended operator strategy
+
+1. **Periodic hot backups via `quest backup`.** Schedule it (cron, systemd timer, CI job, framework-level scheduler) at whatever cadence your risk tolerance demands. The command is safe to run while agents operate on the workspace.
+2. **Off-box storage.** Write the backup to a path on a different disk, host, or backup service (restic, borg, S3, etc.). A backup on the same disk as the original protects only against accidental deletion, not disk failure.
+3. **Independent verification.** At least once after setup, and periodically thereafter, restore into a throwaway workspace and run `quest version` + `quest list` against it. A backup no one has ever restored is not a backup.
+
+### Restore procedure
+
+Quest does not ship a `quest restore` command; restore is a file swap. Operators:
+
+1. Stop all callers that might write to the workspace (workers, planners, schedulers, `questd` if deployed). If any caller writes during the swap, the restored state will be inconsistent with downstream records.
+2. Remove or move the current `.quest/quest.db`, `.quest/quest.db-wal`, and `.quest/quest.db-shm`. The WAL/SHM sidecars are regenerated on next open; leaving stale copies alongside a restored `.db` can cause SQLite to see a confused state.
+3. Copy the backed-up database file to `.quest/quest.db`.
+4. Copy the backed-up `config.toml` to `.quest/config.toml` only if the current one is missing or damaged. Overwriting a healthy `config.toml` is almost never what you want -- the `id_prefix` there is the one that matches IDs in external references.
+5. Run `quest version` to confirm the installed binary opens the restored database without a schema-version error.
+6. If the restored database was written by a newer binary than the one now installed, the binary exits 1 (per §Storage > Schema versioning). Reinstall a compatible binary or restore from an older snapshot.
+7. Resume callers.
+
+Agents and framework schedulers MUST NOT invoke this procedure; restore is an out-of-band operator action.
+
+### `quest export` is not a restore source
+
+`quest export` remains the archival and audit format -- a one-way materialization for review, long-term storage, version control, and post-hoc analysis. Run it in parallel with `quest backup` if you want both operational recovery and a human-readable durable archive. The two solve different problems: export for humans and auditors, backup for operational continuity.
 
 ---
 
@@ -1403,7 +1445,7 @@ Used by the planning agent to verify graph correctness after batch task creation
 
 ## System & Info Commands
 
-`quest init` and `quest version` are always available regardless of role. `quest export` is an elevated command (it reads every task in the project) and lives in this section because it is a system-level archival tool, not per-task work -- but the role gate still applies.
+`quest init` and `quest version` are always available regardless of role. `quest export` and `quest backup` are elevated commands (they read every task in the project or the whole database) and live in this section because they are system-level archival and recovery tools, not per-task work -- but the role gate still applies.
 
 ```
 quest init --prefix PREFIX
@@ -1471,6 +1513,43 @@ In `--format json` (default), output is a single JSON object with the resolved o
 | `history_entries` | integer | Number of rows written to `history.jsonl` (total events across all tasks, chronological)    |
 
 All four fields are always present. The counts let agents sanity-check that the archive contains what was expected before treating it as a durable backup. In `--format text`, the output is the bare absolute `dir` path followed by a single newline -- matching the `quest init` convention so scripts parsing text mode can read the line directly.
+
+---
+
+```
+quest backup --to PATH
+```
+
+Write a transaction-consistent snapshot of the quest database to `PATH`. Used by operators and operator-scheduled automation to produce restorable backups of the operational store. See §Backup & Recovery for the broader strategy and restore procedure.
+
+Only available to elevated roles. Backup reads the entire database, which is a cross-task operation; per Role Gating, workers do not query beyond their own task. Operators and operator-run schedulers are the intended callers.
+
+| Flag         | Description                                                                                   |
+| ------------ | --------------------------------------------------------------------------------------------- |
+| `--to PATH`  | Output path for the database snapshot. Required. Parent directory must exist; it is not created. If the file already exists, it is overwritten. |
+
+`PATH` is resolved relative to CWD per standard CLI convention.
+
+The snapshot is produced via SQLite's online backup API, which yields a transaction-consistent copy without blocking concurrent readers or interrupting WAL-mode writers. The command does not quiesce the workspace; it is safe to run while agents operate on the database.
+
+Alongside `PATH`, quest writes `PATH.config.toml` -- a copy of `.quest/config.toml` in the same directory. Losing `config.toml` (which records the immutable `id_prefix`) would decouple a restored database from external references to task IDs, so the two files are treated as a unit. If writing the sidecar fails, the whole command fails (exit 1) and any partially written `PATH` is removed.
+
+In `--format json` (default), output is a single JSON object:
+
+```json
+{"db": "/abs/path/to/backup.db", "config": "/abs/path/to/backup.db.config.toml", "schema_version": 2, "bytes": 40960}
+```
+
+| Field            | Type    | Description                                                            |
+| ---------------- | ------- | ---------------------------------------------------------------------- |
+| `db`             | string  | Absolute path to the database snapshot that was written                |
+| `config`         | string  | Absolute path to the config-file sidecar that was written              |
+| `schema_version` | integer | The `schema_version` recorded in the snapshot                          |
+| `bytes`          | integer | Size of the database snapshot in bytes (config sidecar excluded)       |
+
+All four fields are always present. In `--format text`, the output is the bare absolute `db` path followed by a single newline -- matching the `quest init` and `quest export` convention so scripts parsing text mode can read the line directly. The sidecar path, schema version, and size are available only via `--format json`.
+
+**Idempotency.** Each invocation writes a fresh snapshot at `PATH`, overwriting any prior file. Retrying after a failure is safe -- the prior invocation's output is discarded.
 
 ---
 
