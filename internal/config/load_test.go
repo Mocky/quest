@@ -258,12 +258,13 @@ func TestIsElevated(t *testing.T) {
 		elevated []string
 		want     bool
 	}{
-		{"empty role, empty list", "", nil, false},
-		{"empty role, with list", "", []string{"planner"}, false},
+		{"empty role, empty list", "", nil, true},
+		{"empty role, with list", "", []string{"planner"}, true},
 		{"role in list", "planner", []string{"planner"}, true},
 		{"role in multi-list", "lead", []string{"planner", "lead", "admin"}, true},
 		{"role absent", "coder", []string{"planner"}, false},
 		{"role, empty list", "planner", nil, false},
+		{"explicit worker role is gated", "worker", []string{"planner"}, false},
 	}
 
 	for _, tt := range tests {

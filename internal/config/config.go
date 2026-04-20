@@ -136,11 +136,15 @@ func (c Config) Validate() error {
 	return errors.New("configuration errors:\n  " + strings.Join(errs, "\n  "))
 }
 
-// IsElevated reports whether role unlocks the planner surface. Empty
-// role always maps to worker.
+// IsElevated reports whether the caller may invoke elevated commands.
+// Role gating is opt-in restriction: an empty role (typical of humans
+// or any caller outside vigil) passes; an explicit role passes only
+// when listed in elevated. A non-empty role not in elevated is the
+// only state that returns false, which is what produces exit 6 at
+// the dispatcher. See spec §Role Gating > Resolution order.
 func IsElevated(role string, elevated []string) bool {
 	if role == "" {
-		return false
+		return true
 	}
 	for _, e := range elevated {
 		if e == role {
