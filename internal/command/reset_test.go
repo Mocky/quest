@@ -222,9 +222,8 @@ func TestResetCrashRecoveryRoundTrip(t *testing.T) {
 	}
 }
 
-// TestResetMissingIDReturnsUsage: no positional ID, no AGENT_TASK
-// default — reset is an elevated query-style command so it does not
-// read AGENT_TASK.
+// TestResetMissingIDReturnsUsage: no positional ID — reset requires
+// the task ID as a required positional argument.
 func TestResetMissingIDReturnsUsage(t *testing.T) {
 	s, _ := testStore(t)
 	err, _, _ := runReset(t, s, plannerCfg(), "", nil)

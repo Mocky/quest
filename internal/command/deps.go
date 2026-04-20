@@ -15,8 +15,7 @@ import (
 )
 
 // Deps lists a task's outgoing dependency edges with the target's title
-// and status denormalized. Unlike worker commands, `quest deps` does
-// not default to AGENT_TASK — the ID is required positionally.
+// and status denormalized. `ID` is required.
 func Deps(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	_ = stdin
 

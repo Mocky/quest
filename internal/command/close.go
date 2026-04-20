@@ -116,7 +116,7 @@ func closeTask(ctx context.Context, cfg config.Config, s store.Store, args []str
 		return err
 	}
 	positional = append(positional, trailing...)
-	id, err := resolveWorkerTaskID(action.name, cfg, positional)
+	id, err := resolveWorkerTaskID(action.name, positional)
 	if err != nil {
 		return err
 	}

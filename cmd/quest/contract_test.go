@@ -181,7 +181,7 @@ func TestResetTextFormat(t *testing.T) {
 		t.Fatalf("create: %d %s", code, stderr)
 	}
 	worker := []string{"AGENT_ROLE=worker", "AGENT_TASK=tst-01", "AGENT_SESSION=sess-w1"}
-	if _, stderr, code := runWithEnv(t, dir, worker, "accept"); code != 0 {
+	if _, stderr, code := runWithEnv(t, dir, worker, "accept", "tst-01"); code != 0 {
 		t.Fatalf("accept: %d %s", code, stderr)
 	}
 	stdout, stderr, code := runWithEnv(t, dir, planner,
@@ -265,13 +265,13 @@ func TestAtStdinInput(t *testing.T) {
 		t.Fatalf("create: %d %s", code, stderr)
 	}
 	worker := []string{"AGENT_ROLE=worker", "AGENT_TASK=tst-01", "AGENT_SESSION=sess-w1"}
-	if _, stderr, code := runWithEnv(t, dir, worker, "accept"); code != 0 {
+	if _, stderr, code := runWithEnv(t, dir, worker, "accept", "tst-01"); code != 0 {
 		t.Fatalf("accept: %d %s", code, stderr)
 	}
 
 	debrief := "wrote handler, tests pass"
 	stdout, stderr, code := runWithEnvStdin(t, dir, worker, debrief,
-		"complete", "--debrief", "@-")
+		"complete", "tst-01", "--debrief", "@-")
 	if code != 0 {
 		t.Fatalf("complete: exit = %d; stderr=%q", code, stderr)
 	}

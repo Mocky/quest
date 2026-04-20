@@ -126,7 +126,7 @@ func Update(ctx context.Context, cfg config.Config, s store.Store, args []string
 	// Trailing positional (ID after flags) is merged with any leading
 	// ID; resolveWorkerTaskID rejects >1 as usage.
 	positional = append(positional, trailing...)
-	id, err := resolveWorkerTaskID("update", cfg, positional)
+	id, err := resolveWorkerTaskID("update", positional)
 	if err != nil {
 		return err
 	}

@@ -216,31 +216,31 @@ func TestAcceptParentWithTerminalChildrenSucceeds(t *testing.T) {
 	}
 }
 
-// TestAcceptUsesAgentTaskWhenIDOmitted pins AGENT_TASK as the fallback
-// ID. A worker running `quest accept` with no arg picks up its
-// assigned task.
-func TestAcceptUsesAgentTaskWhenIDOmitted(t *testing.T) {
+// TestAcceptMissingIDReturnsUsage enforces the usage-error result
+// when the caller passes no positional task ID.
+func TestAcceptMissingIDReturnsUsage(t *testing.T) {
+	s, _ := testStore(t)
+	err, _, _ := runAccept(t, s, baseCfg(), nil)
+	if err == nil {
+		t.Fatalf("Accept: got nil, want ErrUsage")
+	}
+	if !stderrors.Is(err, errors.ErrUsage) {
+		t.Fatalf("err = %v, want wraps ErrUsage", err)
+	}
+}
+
+// TestAcceptIgnoresAgentTaskWhenIDMissing pins the regression: worker
+// commands do not fall back to AGENT_TASK when the positional ID is
+// omitted. A future refactor that re-introduces the fallback fails
+// this test.
+func TestAcceptIgnoresAgentTaskWhenIDMissing(t *testing.T) {
 	s, _ := testStore(t)
 	seedTaskWithStatus(t, s, "proj-a1", "Alpha", "", "open")
 
 	cfg := baseCfg()
 	cfg.Agent.Task = "proj-a1"
 	cfg.Agent.Session = "sess-w1"
-
-	err, stdout, _ := runAccept(t, s, cfg, nil)
-	if err != nil {
-		t.Fatalf("Accept: %v", err)
-	}
-	if !strings.Contains(stdout, `"status":"accepted"`) {
-		t.Errorf("stdout = %q, want status=accepted", stdout)
-	}
-}
-
-// TestAcceptMissingIDAndAgentTaskReturnsUsage enforces the usage-error
-// fallback when the caller passes nothing and AGENT_TASK is empty.
-func TestAcceptMissingIDAndAgentTaskReturnsUsage(t *testing.T) {
-	s, _ := testStore(t)
-	err, _, _ := runAccept(t, s, baseCfg(), nil)
+	err, _, _ := runAccept(t, s, cfg, nil)
 	if err == nil {
 		t.Fatalf("Accept: got nil, want ErrUsage")
 	}

@@ -54,10 +54,10 @@ type graphResponse struct {
 	Edges []graphEdge `json:"edges"`
 }
 
-// Graph handles `quest graph ID`. ID is required (no AGENT_TASK
-// fallback). Traversal descends from ID through children and follows
-// dependency edges outward; targets outside the subtree appear as
-// unexpanded external nodes per spec.
+// Graph handles `quest graph ID`. `ID` is required. Traversal descends
+// from ID through children and follows dependency edges outward;
+// targets outside the subtree appear as unexpanded external nodes per
+// spec.
 func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	_ = stdin
 

@@ -100,8 +100,8 @@ func TestDepsNotFound(t *testing.T) {
 	}
 }
 
-// TestDepsMissingID: no positional and no AGENT_TASK default — spec
-// requires explicit ID. Must return ErrUsage (exit 2).
+// TestDepsMissingID: no positional task ID — spec requires explicit
+// ID. Must return ErrUsage (exit 2).
 func TestDepsMissingID(t *testing.T) {
 	s, _ := testStore(t)
 	err, _, _ := runDeps(t, s, plannerCfg(), nil)
@@ -116,9 +116,9 @@ func TestDepsMissingID(t *testing.T) {
 	}
 }
 
-// TestDepsDoesNotDefaultToAgentTask: even when AGENT_TASK is set in
-// cfg.Agent.Task, deps requires an explicit ID per spec (elevated
-// query command, not a worker command).
+// TestDepsDoesNotDefaultToAgentTask: AGENT_TASK is identity/telemetry
+// metadata, never a CLI default — deps requires an explicit ID even
+// when AGENT_TASK is set in cfg.Agent.Task.
 func TestDepsDoesNotDefaultToAgentTask(t *testing.T) {
 	s, _ := testStore(t)
 	seedTaskWithStatus(t, s, "proj-a1", "Alpha", "", "open")

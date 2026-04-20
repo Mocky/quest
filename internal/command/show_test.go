@@ -94,32 +94,9 @@ func TestShowMissingTaskReturnsNotFound(t *testing.T) {
 	}
 }
 
-// TestShowDefaultsToAgentTask verifies AGENT_TASK fills in when the
-// positional ID is omitted. Config flows through cfg.Agent.Task.
-func TestShowDefaultsToAgentTask(t *testing.T) {
-	s, _ := testStore(t)
-	seedMinimalTask(t, s, "proj-a1", "Alpha")
-
-	cfg := baseCfg()
-	cfg.Agent.Task = "proj-a1"
-	err, stdout, _ := runShow(t, s, cfg, nil)
-	if err != nil {
-		t.Fatalf("Show: %v", err)
-	}
-	var got struct {
-		ID string `json:"id"`
-	}
-	if jerr := json.Unmarshal([]byte(stdout), &got); jerr != nil {
-		t.Fatalf("stdout not JSON: %v; raw=%q", jerr, stdout)
-	}
-	if got.ID != "proj-a1" {
-		t.Errorf("id = %q, want proj-a1", got.ID)
-	}
-}
-
-// TestShowMissingIDAndNoAgentTask pins the ErrUsage fallback when
-// neither the positional ID nor AGENT_TASK is set.
-func TestShowMissingIDAndNoAgentTask(t *testing.T) {
+// TestShowMissingIDReturnsUsage pins the ErrUsage result when no
+// positional task ID is provided.
+func TestShowMissingIDReturnsUsage(t *testing.T) {
 	s, _ := testStore(t)
 	err, _, _ := runShow(t, s, baseCfg(), nil)
 	if err == nil {
@@ -128,8 +105,24 @@ func TestShowMissingIDAndNoAgentTask(t *testing.T) {
 	if !stderrors.Is(err, errors.ErrUsage) {
 		t.Fatalf("err = %v, want wraps ErrUsage", err)
 	}
-	if !strings.Contains(err.Error(), "AGENT_TASK is unset") {
-		t.Errorf("err = %q, want mentions AGENT_TASK", err.Error())
+}
+
+// TestShowIgnoresAgentTaskWhenIDMissing pins the regression: worker
+// commands do not fall back to AGENT_TASK when the positional ID is
+// omitted. A future refactor that re-introduces the fallback fails
+// this test.
+func TestShowIgnoresAgentTaskWhenIDMissing(t *testing.T) {
+	s, _ := testStore(t)
+	seedMinimalTask(t, s, "proj-a1", "Alpha")
+
+	cfg := baseCfg()
+	cfg.Agent.Task = "proj-a1"
+	err, _, _ := runShow(t, s, cfg, nil)
+	if err == nil {
+		t.Fatalf("Show(): got nil error, want ErrUsage")
+	}
+	if !stderrors.Is(err, errors.ErrUsage) {
+		t.Fatalf("err = %v, want wraps ErrUsage", err)
 	}
 }
 

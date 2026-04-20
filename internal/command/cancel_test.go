@@ -332,7 +332,7 @@ func TestCancelInflightWorkerCoordination(t *testing.T) {
 	}
 }
 
-// TestCancelMissingIDReturnsUsage: no positional, no AGENT_TASK default.
+// TestCancelMissingIDReturnsUsage: no positional task ID.
 func TestCancelMissingIDReturnsUsage(t *testing.T) {
 	s, _ := testStore(t)
 	err, _, _ := runCancel(t, s, plannerCfg(), "", nil)

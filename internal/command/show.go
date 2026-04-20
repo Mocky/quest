@@ -147,10 +147,9 @@ func writeJSONKV(buf *bytes.Buffer, key string, value any, leadingComma bool) er
 	return nil
 }
 
-// Show reads a task and prints its full spec shape. AGENT_TASK is the
-// default ID for workers — when omitted from args and unset in the
-// environment, the handler returns ErrUsage so the caller gets exit 2
-// rather than a silent empty result.
+// Show reads a task and prints its full spec shape. The task ID is a
+// required positional argument; omitting it returns ErrUsage so the
+// caller gets exit 2 rather than a silent empty result.
 func Show(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
 
@@ -168,7 +167,7 @@ func Show(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	// flag.Parse stopped at them) are merged with any leading ID. At
 	// most one positional total.
 	positional = append(positional, fs.Args()...)
-	id, err := resolveWorkerTaskID("show", cfg, positional)
+	id, err := resolveWorkerTaskID("show", positional)
 	if err != nil {
 		return err
 	}

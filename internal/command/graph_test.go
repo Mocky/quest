@@ -58,8 +58,8 @@ func parseGraph(t *testing.T, stdout string) graphRespT {
 	return g
 }
 
-// TestGraphMissingID: quest graph with no positional and no
-// AGENT_TASK fallback returns ErrUsage.
+// TestGraphMissingID: quest graph with no positional task ID returns
+// ErrUsage.
 func TestGraphMissingID(t *testing.T) {
 	s, _ := testStore(t)
 	err, _, _ := runGraph(t, s, plannerCfg(), nil)
@@ -71,8 +71,9 @@ func TestGraphMissingID(t *testing.T) {
 	}
 }
 
-// TestGraphDoesNotDefaultToAgentTask: even with AGENT_TASK set,
-// graph requires an explicit ID.
+// TestGraphDoesNotDefaultToAgentTask: AGENT_TASK is identity/telemetry
+// metadata, never a CLI default — graph requires an explicit ID even
+// when AGENT_TASK is set.
 func TestGraphDoesNotDefaultToAgentTask(t *testing.T) {
 	s, _ := testStore(t)
 	seedListTask(t, s, "proj-a1", "Alpha", "", "open", "", "", "")

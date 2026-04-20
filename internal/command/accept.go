@@ -63,7 +63,7 @@ func Accept(ctx context.Context, cfg config.Config, s store.Store, args []string
 	if len(rest) > 0 {
 		return fmt.Errorf("accept: unexpected arguments: %w", errors.ErrUsage)
 	}
-	id, err := resolveWorkerTaskID("accept", cfg, positional)
+	id, err := resolveWorkerTaskID("accept", positional)
 	if err != nil {
 		return err
 	}
@@ -193,21 +193,19 @@ func formatConflictChildren(children []acceptConflictChild) string {
 	return out
 }
 
-// resolveWorkerTaskID pulls the task ID from args[0] or AGENT_TASK per
-// spec §Worker Commands. Shared by every worker handler (show, accept,
-// update, complete, fail) so the ID-resolution rule has one
-// implementation.
-func resolveWorkerTaskID(command string, cfg config.Config, args []string) (string, error) {
+// resolveWorkerTaskID extracts the required task ID from args[0] for
+// every worker handler (show, accept, update, complete, fail). The ID
+// is a required positional argument — worker commands do not fall back
+// to AGENT_TASK (that env var is identity/telemetry metadata, not a
+// CLI convenience; see spec §Role Gating > Resolution logic).
+func resolveWorkerTaskID(command string, args []string) (string, error) {
 	if len(args) > 1 {
 		return "", fmt.Errorf("%s: unexpected positional arguments: %w", command, errors.ErrUsage)
 	}
 	if len(args) == 1 && args[0] != "" {
 		return args[0], nil
 	}
-	if cfg.Agent.Task != "" {
-		return cfg.Agent.Task, nil
-	}
-	return "", fmt.Errorf("%s: no task ID provided and AGENT_TASK is unset: %w", command, errors.ErrUsage)
+	return "", fmt.Errorf("%s: task ID is required: %w", command, errors.ErrUsage)
 }
 
 // splitLeadingPositional separates a leading positional argument (the

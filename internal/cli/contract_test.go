@@ -89,9 +89,8 @@ func TestUpdateElevatedFlagsDenied(t *testing.T) {
 			// Now switch to worker for the assertion call.
 			workerC := cfg
 			workerC.Agent.Role = "worker"
-			workerC.Agent.Task = "proj-01"
 			workerC.Agent.Session = "sess-w1"
-			exit, _, stderr := runExecute([]string{"update", flag, "value"}, workerC)
+			exit, _, stderr := runExecute([]string{"update", "proj-01", flag, "value"}, workerC)
 			if exit != 6 {
 				t.Errorf("%s: exit = %d; want 6", flag, exit)
 			}
@@ -108,9 +107,8 @@ func TestUpdateElevatedFlagsDenied(t *testing.T) {
 		seedOpenTask(t, cfg)
 		workerC := cfg
 		workerC.Agent.Role = "worker"
-		workerC.Agent.Task = "proj-01"
 		workerC.Agent.Session = "sess-w1"
-		exit, _, _ := runExecute([]string{"update", "--meta", "k=v"}, workerC)
+		exit, _, _ := runExecute([]string{"update", "proj-01", "--meta", "k=v"}, workerC)
 		if exit != 6 {
 			t.Errorf("meta: exit = %d; want 6", exit)
 		}
@@ -271,12 +269,11 @@ func TestIdempotencyGuarantees(t *testing.T) {
 		seedOpenTask(t, cfg)
 		workerC := cfg
 		workerC.Agent.Role = "worker"
-		workerC.Agent.Task = "proj-01"
 		workerC.Agent.Session = "sess-w1"
-		if exit, _, errb := runExecute([]string{"update", "--pr", "https://x/1"}, workerC); exit != 0 {
+		if exit, _, errb := runExecute([]string{"update", "proj-01", "--pr", "https://x/1"}, workerC); exit != 0 {
 			t.Fatalf("first pr exit = %d; stderr=%s", exit, errb)
 		}
-		if exit, _, errb := runExecute([]string{"update", "--pr", "https://x/1"}, workerC); exit != 0 {
+		if exit, _, errb := runExecute([]string{"update", "proj-01", "--pr", "https://x/1"}, workerC); exit != 0 {
 			t.Fatalf("dup pr exit = %d; stderr=%s", exit, errb)
 		}
 	})
@@ -389,8 +386,7 @@ func TestHandlerRecorderWiring(t *testing.T) {
 				seedOpenTask(t, *cfg)
 				cfg.Agent.Role = "worker"
 				cfg.Agent.Session = "sess-w1"
-				cfg.Agent.Task = "proj-01"
-				return []string{"accept"}
+				return []string{"accept", "proj-01"}
 			},
 			wantAttr:   []string{"quest.task.id"},
 			wantStatus: true,
@@ -407,8 +403,7 @@ func TestHandlerRecorderWiring(t *testing.T) {
 				}
 				cfg.Agent.Role = "worker"
 				cfg.Agent.Session = "sess-w1"
-				cfg.Agent.Task = "proj-01"
-				return []string{"complete", "--debrief", "done"}
+				return []string{"complete", "proj-01", "--debrief", "done"}
 			},
 			wantAttr:     []string{"quest.task.id"},
 			wantStatus:   true,
@@ -426,8 +421,7 @@ func TestHandlerRecorderWiring(t *testing.T) {
 				}
 				cfg.Agent.Role = "worker"
 				cfg.Agent.Session = "sess-w1"
-				cfg.Agent.Task = "proj-01"
-				return []string{"fail", "--debrief", "could not"}
+				return []string{"fail", "proj-01", "--debrief", "could not"}
 			},
 			wantAttr:     []string{"quest.task.id"},
 			wantStatus:   true,
