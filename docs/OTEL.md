@@ -363,7 +363,7 @@ Use UTF-8-safe truncation per the framework recommendation. A single `truncate(s
 | `dept.quest.operation.duration`   | Histogram       | `ms`          | `command`                         | Latency distribution per command                                                              |
 | `dept.quest.errors`               | Counter         | `{operation}` | `command`, `error_class`          | Errored invocations by command and error class (from exit code mapping in 4.4)                |
 | `dept.quest.tasks.created`        | Counter         | `{task}`      | `tier`, `role`, `type`            | Tasks created (via `quest create` or `quest batch`)                                           |
-| `dept.quest.tasks.completed`      | Counter         | `{task}`      | `tier`, `role`, `outcome`         | Tasks reaching a terminal state (`complete`, `failed`, `cancelled`)                           |
+| `dept.quest.tasks.completed`      | Counter         | `{task}`      | `tier`, `role`, `outcome`         | Tasks reaching a terminal state (`completed`, `failed`, `cancelled`)                          |
 | `dept.quest.status_transitions`   | Counter         | `{task}`      | `from`, `to`                      | All status transitions -- primary retrospective input for lifecycle analysis                  |
 | `dept.quest.links`                | Counter         | `{link}`      | `link_type`, `action`             | Dependency link additions/removals (`action` = `added` or `removed`)                          |
 | `dept.quest.batch.size`           | Histogram       | `{task}`      | `outcome`                         | Tasks-per-batch distribution (`outcome` = `ok`, `partial`, `rejected`)                        |
@@ -397,7 +397,7 @@ Use UTF-8-safe truncation per the framework recommendation. A single `truncate(s
 - `tier` -- bounded set `T0`-`T6`
 - `role` -- bounded by role templates in the department (empirically small; a cap of ~20 distinct values is the implicit ceiling)
 - `type` -- `task`, `bug`
-- `outcome` -- `complete`, `failed`, `cancelled` (for tasks); `ok`, `partial`, `rejected` (for batches)
+- `outcome` -- `completed`, `failed`, `cancelled` (for tasks); `ok`, `partial`, `rejected` (for batches)
 - `from`, `to` (status transitions) -- bounded enum product
 - `link_type` -- `blocked-by`, `caused-by`, `discovered-from`, `retry-of`
 - `action` -- `added`, `removed`

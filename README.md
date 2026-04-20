@@ -98,7 +98,7 @@ Worker commands (no role required):
 | `show`     | Read a task (defaults to `AGENT_TASK`); `--history`    |
 | `accept`   | Transition `open → accepted` (race-safe, first wins)   |
 | `update`   | Append notes / PRs / handoff; elevated flags gated     |
-| `complete` | Mark as `complete` with `--debrief` (required)         |
+| `complete` | Mark as `completed` with `--debrief` (required)        |
 | `fail`     | Mark as `failed` with `--debrief` (required)           |
 
 Planner commands (require an elevated `AGENT_ROLE`):

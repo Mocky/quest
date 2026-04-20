@@ -270,8 +270,8 @@ Agents may retry commands after transient failures (exit code 7) or session reco
 | `update --pr`      | Yes        | Duplicate PR URLs are silently ignored. Fails with exit 5 on cancelled tasks                                           |
 | `update --meta`    | Yes        | Overwrites the value for an existing key; sets it for a new key. Fails with exit 5 on cancelled tasks                  |
 | `update --handoff` | Yes        | Overwrites previous value. Last write wins. Fails with exit 5 on cancelled tasks                                       |
-| `complete`         | No         | Fails with exit 5 if already in a terminal state (`complete`, `failed`, or `cancelled`). Terminal states are permanent |
-| `fail`             | No         | Fails with exit 5 if already in a terminal state (`complete`, `failed`, or `cancelled`). Terminal states are permanent |
+| `complete`         | No         | Fails with exit 5 if already in a terminal state (`completed`, `failed`, or `cancelled`). Terminal states are permanent |
+| `fail`             | No         | Fails with exit 5 if already in a terminal state (`completed`, `failed`, or `cancelled`). Terminal states are permanent |
 | `cancel`           | Yes        | Returns exit 0 on an already-cancelled task with no state change                                                       |
 | `link`             | Yes        | Duplicate links of the same type between the same pair return exit 0 with no state change                              |
 | `unlink`           | Yes        | Removing a non-existent link returns exit 0 with no state change                                                       |
@@ -285,7 +285,7 @@ Every write command emits a small JSON object on stdout on success. Shapes are t
 | Command            | `--format json` success shape                                                              |
 | ------------------ | ------------------------------------------------------------------------------------------ |
 | `accept`           | `{"id": "...", "status": "accepted"}`                                                      |
-| `complete`         | `{"id": "...", "status": "complete"}`                                                      |
+| `complete`         | `{"id": "...", "status": "completed"}`                                                     |
 | `fail`             | `{"id": "...", "status": "failed"}`                                                        |
 | `reset`            | `{"id": "...", "status": "open"}` -- spec'd above                                           |
 | `create`           | `{"id": "<new-id>"}` -- the only field; callers `show` for the full task                    |
@@ -344,7 +344,7 @@ Text mode (`--format text`) for write commands is a one-liner summarizing the ac
 | -------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `owner_session`      | system | Session ID of the agent that accepted the task. Set automatically on `quest accept` from `AGENT_SESSION`. Only the owning session (or an elevated role) can call `quest update`, `quest complete`, or `quest fail` on the task. Cleared on `quest reset` so a new session can accept. `null` when unset                                     |
 | `started_at`         | system | ISO 8601 timestamp recorded when the task transitions to `accepted`. Cleared on `quest reset`                                                                                                                                                                                                                                               |
-| `completed_at`       | system | ISO 8601 timestamp recorded when the task transitions to `complete` or `failed`. Together with `started_at`, enables duration analysis in retrospectives                                                                                                                                                                                    |
+| `completed_at`       | system | ISO 8601 timestamp recorded when the task transitions to `completed` or `failed`. Together with `started_at`, enables duration analysis in retrospectives                                                                                                                                                                                    |
 | `prs`                | worker | Links to PRs containing task output (append-only, idempotent)                                                                                                                                                                                                                                                                               |
 | `notes`              | worker | Array of timestamped progress notes                                                                                                                                                                                                                                                                                                         |
 | `handoff`            | worker | Context bridge for session continuity -- what the next session needs to know. Dedicated field (not a note) because it represents the current state checkpoint, not a log entry. Overwrites on each update so `quest show` always surfaces the latest. Survives `quest reset` so the recovering session inherits the prior session's context |
@@ -460,23 +460,23 @@ The planning agent assigns a tier to each task to control which model executes i
 ## Status Lifecycle
 
 ```
-All tasks:     open -> accepted -> complete
+All tasks:     open -> accepted -> completed
                                 -> failed
                (at any point)   -> cancelled (planner only)
 
                accepted -> open (via quest reset, planner only)
 
 Parent tasks (additional path):
-               open -> complete (direct-close by lead, no dispatch)
+               open -> completed (direct-close by lead, no dispatch)
 ```
 
 - **open** -- task has been created, may or may not be assigned
 - **accepted** -- worker has acknowledged and begun work
-- **complete** -- worker finished the task and submitted a debrief
+- **completed** -- worker finished the task and submitted a debrief
 - **failed** -- worker could not complete the task
 - **cancelled** -- planner aborted the task before completion
 
-Parent tasks (tasks with children) follow the same lifecycle as leaf tasks, with one addition: the lead can transition a parent directly from `open` to `complete` without dispatching a worker, for cases where inline judgment suffices. Dispatched verification uses the standard `open -> accepted -> complete|failed` path -- a verifier agent evaluates the parent's acceptance criteria and closes the task like any other worker. See the Parent Tasks section for the preconditions that govern parent acceptance.
+Parent tasks (tasks with children) follow the same lifecycle as leaf tasks, with one addition: the lead can transition a parent directly from `open` to `completed` without dispatching a worker, for cases where inline judgment suffices. Dispatched verification uses the standard `open -> accepted -> completed|failed` path -- a verifier agent evaluates the parent's acceptance criteria and closes the task like any other worker. See the Parent Tasks section for the preconditions that govern parent acceptance.
 
 The `open -> accepted` transition is the key diagnostic signal. A task that stays `open` means no agent was dispatched or none started. A task that reaches `accepted` but never completes means the agent started but failed mid-work.
 
@@ -496,15 +496,15 @@ This keeps crash recovery under the lead's judgment -- the lead may choose to re
 
 ## Parent Tasks
 
-Tasks with children are parents. This is a transient property, not a type -- a task becomes a parent the moment a child is created under it. Parents can either be direct-closed by the lead (for cases where inline judgment suffices) or dispatched to a worker (typically a verifier role) whose job is to evaluate the acceptance criteria and transition the parent to `complete` or `failed`.
+Tasks with children are parents. This is a transient property, not a type -- a task becomes a parent the moment a child is created under it. Parents can either be direct-closed by the lead (for cases where inline judgment suffices) or dispatched to a worker (typically a verifier role) whose job is to evaluate the acceptance criteria and transition the parent to `completed` or `failed`.
 
 ### Enforcement rules
 
 Quest enforces three structural constraints on parents:
 
-1. **Accept requires all children in terminal state.** `quest accept` on a parent fails (exit code 5) if any child is not in `complete`, `failed`, or `cancelled`. This precondition ensures that when a verifier accepts a parent, no concurrent child work is in flight -- upholding the one-session-one-task principle. Leaves have no analogous check because they have no children.
-2. **Children must be resolved before parent completion.** `quest complete` on a parent fails if any child is not in a terminal state (exit code 5). This applies to both dispatched verification (`accepted -> complete`) and lead direct-close (`open -> complete`). Quest does not derive parent status from children or auto-complete parents -- the close is always an explicit judgment by an agent (verifier or lead).
-3. **Parent must be `open` to accept new children.** `quest create --parent ID` and `quest move ID --parent NEW_PARENT` fail (exit code 5) if the prospective parent is in any non-`open` status. For `accepted` parents, this prevents changing the scope of verification while it is in flight. For terminal parents (`complete`, `failed`, `cancelled`), adding children would either falsify the recorded outcome or strand new work under a closed group.
+1. **Accept requires all children in terminal state.** `quest accept` on a parent fails (exit code 5) if any child is not in `completed`, `failed`, or `cancelled`. This precondition ensures that when a verifier accepts a parent, no concurrent child work is in flight -- upholding the one-session-one-task principle. Leaves have no analogous check because they have no children.
+2. **Children must be resolved before parent completion.** `quest complete` on a parent fails if any child is not in a terminal state (exit code 5). This applies to both dispatched verification (`accepted -> completed`) and lead direct-close (`open -> completed`). Quest does not derive parent status from children or auto-complete parents -- the close is always an explicit judgment by an agent (verifier or lead).
+3. **Parent must be `open` to accept new children.** `quest create --parent ID` and `quest move ID --parent NEW_PARENT` fail (exit code 5) if the prospective parent is in any non-`open` status. For `accepted` parents, this prevents changing the scope of verification while it is in flight. For terminal parents (`completed`, `failed`, `cancelled`), adding children would either falsify the recorded outcome or strand new work under a closed group.
 
 ### Closing a parent
 
@@ -543,7 +543,7 @@ Dependencies are typed relationships stored on the dependent task. The first arg
 
 | Type              | Stored on | Meaning                                                                |
 | ----------------- | --------- | ---------------------------------------------------------------------- |
-| `blocked-by`      | dependent | This task cannot start until the linked task reaches `complete` status |
+| `blocked-by`      | dependent | This task cannot start until the linked task reaches `completed` status |
 | `caused-by`       | bug       | This bug was caused by work done in the linked task                    |
 | `discovered-from` | bug       | This bug was discovered during testing of the linked task              |
 | `retry-of`        | retry     | This task is a retry of a previously failed task                       |
@@ -575,7 +575,7 @@ These constraints prevent silent graph corruption -- a `blocked-by` link to a ca
 
 **Type vs. relationship classification.** The `type` field and relationship types serve different purposes and are not redundant. `type` classifies what a task _is_ -- a bug-type task is a defect regardless of whether its origin has been traced. Relationship types (`caused-by`, `discovered-from`) classify _where a bug came from_ -- they are analytical metadata for the retrospective phase. A bug-type task without any causal links is valid: the origin may be unknown, external, or not yet traced. The source type constraint on `caused-by` and `discovered-from` prevents relationship misuse (a regular task cannot claim to be "caused by" another task), but the `type` field is not derived from relationships. It is the primary classification primitive, queryable via `quest list --type bug` without joining against relationships.
 
-**`blocked-by` resolution:** Only `complete` status satisfies a `blocked-by` dependency. `failed` and `cancelled` do not unblock dependents. If a blocking task fails, the dependent stays blocked until the lead intervenes -- typically by creating a `retry-of` task, unlinking the dependency, or cancelling the dependent. This keeps dispatch decisions under the lead's judgment rather than auto-unblocking tasks whose upstream work was never finished.
+**`blocked-by` resolution:** Only `completed` status satisfies a `blocked-by` dependency. `failed` and `cancelled` do not unblock dependents. If a blocking task fails, the dependent stays blocked until the lead intervenes -- typically by creating a `retry-of` task, unlinking the dependency, or cancelling the dependent. This keeps dispatch decisions under the lead's judgment rather than auto-unblocking tasks whose upstream work was never finished.
 
 ### Failed Task Retries
 
@@ -634,7 +634,7 @@ History is excluded by default because workers care about current state -- descr
     {
       "id": "proj-01.1",
       "title": "JWT validation",
-      "status": "complete",
+      "status": "completed",
       "type": "task",
       "link_type": "blocked-by"
     },
@@ -662,8 +662,8 @@ All fields are always present in JSON output. Fields with no value are `null` (s
 **`--format text`**:
 
 ```
-proj-01.3 [complete] Auth middleware
-    parent     proj-01 [complete] (bug) Auth regression sweep
+proj-01.3 [completed] Auth middleware
+    parent     proj-01 [completed] (bug) Auth regression sweep
     tags       go, auth
     exec       T3 - coder - sess-d7b
     metadata   priority=high, reviewer=sess-v1a
@@ -682,8 +682,8 @@ Acceptance criteria
     - [x] All endpoints return 2xx on valid tokens
 
 Dependencies
-    blocked-by  proj-01.1 [complete] JWT validation
-    blocked-by  proj-01.2 [complete] Session store
+    blocked-by  proj-01.1 [completed] JWT validation
+    blocked-by  proj-01.2 [completed] Session store
 
 Notes (2)
     2026-04-14 11:15Z  Integration test for /protected passes
@@ -730,7 +730,7 @@ A row is omitted entirely when its condition is not met -- `show` never emits a 
 | `Notes (N)`           | `notes` is non-empty (N is the count)                          | one row per note: `{timestamp}  {note body}`, wrapped with hanging indent to the note column                                                |
 | `PRs`                 | `prs` is non-empty                                             | one row per PR: `{url}  ({added_at timestamp})`                                                                                             |
 | `Handoff`             | `handoff` is non-null                                          | heading includes a parenthesized `(handoff_session, handoff_written_at)` suffix; body is the handoff content, wrapped                        |
-| `Debrief`             | `debrief` is non-null OR `status == "complete"`                | debrief body wrapped; when `status == "complete"` and `debrief` is null the body is the literal `(missing)`                                 |
+| `Debrief`             | `debrief` is non-null OR `status == "completed"`               | debrief body wrapped; when `status == "completed"` and `debrief` is null the body is the literal `(missing)`                                |
 | `History (N)`         | `--history` flag is present (N is the entry count)             | one row per entry (see History layout below)                                                                                                |
 
 Sections whose condition is not met are omitted entirely. No placeholder headings or `(none)` bodies.
@@ -787,8 +787,8 @@ If `ID` is omitted, uses the value of `AGENT_TASK`.
 
 Accept is strict:
 
-- It only succeeds on tasks in `open` status. Calling `quest accept` on a task that is already `accepted`, `complete`, `failed`, or `cancelled` returns exit code 5 (conflict). This is intentional: if a session crashes and a new session is started for the same task, the lead must explicitly `quest reset` the task before the new session can accept it. This keeps crash recovery as a deliberate decision by the lead, not an implicit side effect.
-- On parent tasks, it fails (exit code 5) if any child is not in a terminal state (`complete`, `failed`, or `cancelled`). This precondition ensures a verifier is never accepting a parent while child work is still in flight, upholding the one-session-one-task principle. Leaves have no analogous check.
+- It only succeeds on tasks in `open` status. Calling `quest accept` on a task that is already `accepted`, `completed`, `failed`, or `cancelled` returns exit code 5 (conflict). This is intentional: if a session crashes and a new session is started for the same task, the lead must explicitly `quest reset` the task before the new session can accept it. This keeps crash recovery as a deliberate decision by the lead, not an implicit side effect.
+- On parent tasks, it fails (exit code 5) if any child is not in a terminal state (`completed`, `failed`, or `cancelled`). This precondition ensures a verifier is never accepting a parent while child work is still in flight, upholding the one-session-one-task principle. Leaves have no analogous check.
   **Output shape** for this conflict: stdout carries `{"error": "conflict", "task": "<id>", "non_terminal_children": [{"id": "<child-id>", "status": "<status>"}, ...]}`. The `non_terminal_children` key is a stable contract — agents switch on the field name to extract the blocking IDs. The same key is used on the equivalent `quest complete` conflict body. Stderr carries the standard two-line `quest: conflict: ...` + `quest: exit 5 (conflict)` tail.
 - If two agents race to accept the same task, the first writer wins. The second receives exit code 5 (conflict). The accept runs inside a `BEGIN IMMEDIATE` transaction with a SELECT-then-UPDATE in every case -- a leaf accept, like any other status transition, needs to distinguish "task does not exist" (exit 3) from "task exists but is not in `open` status" (exit 5), which an atomic `UPDATE ... WHERE status='open'` with a `RowsAffected` check cannot do (see §Storage > Atomicity). For parents, the transaction additionally verifies the terminal-children precondition before the UPDATE.
 - On successful accept, `owner_session` is set from `AGENT_SESSION` and `started_at` is recorded. After acceptance, only the owning session (or an elevated role) can call `quest update`, `quest complete`, or `quest fail` on the task. A non-owning, non-elevated session receives exit code 4 (permission denied).
@@ -824,7 +824,7 @@ Write progress information to the task. Workers can update execution fields. Ele
 
 All field changes are recorded in the task's history. Flags listed in Input Conventions support `@file` input.
 
-**Terminal-state gating.** On tasks in `complete` or `failed` status, `quest update` accepts only the append/annotation flags: `--note`, `--pr`, and `--meta`. These are either append-only (`--note`, `--pr`) or free-form annotation (`--meta`) and do not retroactively rewrite execution-time state. Any other flag -- `--title`, `--description`, `--context`, `--type`, `--tier`, `--role`, `--acceptance-criteria`, `--handoff` -- returns exit code 5 (conflict) with a message listing the blocked fields. This applies to both worker and elevated roles. Rationale: fields like `tier`, `role`, and `type` drive retrospective analytics ("which tiers produced bugs?"); retroactive edits would silently falsify the simplest form of those queries. Planning copy (`title`, `description`, etc.) is preserved in the audit history and has no legitimate post-terminal edit case. `--handoff` is a session-continuity field with no meaning on a task that will not be accepted again.
+**Terminal-state gating.** On tasks in `completed` or `failed` status, `quest update` accepts only the append/annotation flags: `--note`, `--pr`, and `--meta`. These are either append-only (`--note`, `--pr`) or free-form annotation (`--meta`) and do not retroactively rewrite execution-time state. Any other flag -- `--title`, `--description`, `--context`, `--type`, `--tier`, `--role`, `--acceptance-criteria`, `--handoff` -- returns exit code 5 (conflict) with a message listing the blocked fields. This applies to both worker and elevated roles. Rationale: fields like `tier`, `role`, and `type` drive retrospective analytics ("which tiers produced bugs?"); retroactive edits would silently falsify the simplest form of those queries. Planning copy (`title`, `description`, etc.) is preserved in the audit history and has no legitimate post-terminal edit case. `--handoff` is a session-continuity field with no meaning on a task that will not be accepted again.
 
 **Cancelled tasks reject every `quest update` variant.** `cancelled` is stricter than the other terminal states: `quest update` on a cancelled task -- including `--note`, `--pr`, `--meta`, and `--handoff` -- returns exit code 5 (conflict) with the structured body defined under *In-flight worker coordination* in `quest cancel`. This applies to worker and elevated roles alike. Rationale: the structured conflict on every worker operation is the framework signal that tells vigil to terminate the in-flight worker session; allowing any update to slip through would defeat that signal and let a terminated-but-unaware worker keep writing to a task the planner has already retired. Planner annotations (`--meta`) and debrief-style context belong on the *replacement* task if follow-up is needed, not on the cancelled one. `quest complete` and `quest fail` on a cancelled task are rejected for the same reason.
 
@@ -838,9 +838,9 @@ All field changes are recorded in the task's history. Flags listed in Input Conv
 quest complete [ID] --debrief "..." [--pr "URL"]
 ```
 
-Mark the task as complete. Debrief is required -- every completed task must leave a record of what was done and what was learned. If `ID` is omitted, uses the value of `AGENT_TASK`.
+Mark the task as completed. Debrief is required -- every completed task must leave a record of what was done and what was learned. If `ID` is omitted, uses the value of `AGENT_TASK`.
 
-For leaf tasks, `quest complete` transitions from `accepted` to `complete`. For parent tasks, `quest complete` transitions from either `accepted` (when a dispatched verifier is closing the parent) or `open` (when the lead is direct-closing without dispatch) to `complete`. Completion of a parent fails if any child is not in a terminal state (`complete`, `failed`, or `cancelled`) -- exit code 5. The error message includes the IDs and current statuses of all non-terminal children in both JSON and text output, so the caller can act immediately without a separate `quest children` query. This is a structural integrity constraint, not derived status: quest does not auto-complete parents when children finish. The agent -- verifier or lead -- makes the judgment call, typically after evaluating the parent's acceptance criteria.
+For leaf tasks, `quest complete` transitions from `accepted` to `completed`. For parent tasks, `quest complete` transitions from either `accepted` (when a dispatched verifier is closing the parent) or `open` (when the lead is direct-closing without dispatch) to `completed`. Completion of a parent fails if any child is not in a terminal state (`completed`, `failed`, or `cancelled`) -- exit code 5. The error message includes the IDs and current statuses of all non-terminal children in both JSON and text output, so the caller can act immediately without a separate `quest children` query. This is a structural integrity constraint, not derived status: quest does not auto-complete parents when children finish. The agent -- verifier or lead -- makes the judgment call, typically after evaluating the parent's acceptance criteria.
 
 On successful completion, `completed_at` is recorded.
 
@@ -1036,9 +1036,9 @@ Cancel a task. Transitions status to `cancelled`. Only available to elevated rol
 
 `--reason` is optional. An empty value (`--reason ""`) is equivalent to omitting the flag; history records `reason: null`. This is an intentional asymmetry with `quest update`'s free-form text flags: `--reason` annotates a state transition rather than attaching data to the task, so empty and absent are the same signal.
 
-Cancelling a task in `complete` or `failed` status fails with exit code 5 (conflict) -- these terminal states are permanent. Cancelling an already-cancelled task is idempotent: returns exit code 0 with no state change. This is friendlier for scripts and retries.
+Cancelling a task in `completed` or `failed` status fails with exit code 5 (conflict) -- these terminal states are permanent. Cancelling an already-cancelled task is idempotent: returns exit code 0 with no state change. This is friendlier for scripts and retries.
 
-Without `-r`, the command also fails if the task has non-terminal children (exit code 5). With `-r`, all descendant tasks in `open` or `accepted` status are cancelled with the same reason. Descendants already in a terminal state (`complete`, `failed`, or `cancelled`) are skipped and included in the `skipped` array with their current status. The output reports which tasks were cancelled and which were skipped.
+Without `-r`, the command also fails if the task has non-terminal children (exit code 5). With `-r`, all descendant tasks in `open` or `accepted` status are cancelled with the same reason. Descendants already in a terminal state (`completed`, `failed`, or `cancelled`) are skipped and included in the `skipped` array with their current status. The output reports which tasks were cancelled and which were skipped.
 
 `-r` on a leaf task (no descendants) is not an error: the target task is cancelled normally, `cancelled` lists just the target, and `skipped` is `[]`. `-r` is a no-op *structurally* when no descendants exist but still governs whether the existence of children would have blocked the cancel.
 
@@ -1048,7 +1048,7 @@ Without `-r`, the command also fails if the task has non-terminal children (exit
 {
   "cancelled": ["proj-a1.3", "proj-a1.3.1"],
   "skipped": [
-    {"id": "proj-a1.3.2", "status": "complete"}
+    {"id": "proj-a1.3.2", "status": "completed"}
   ]
 }
 ```
@@ -1235,8 +1235,8 @@ List tasks with filtering.
 
 | Flag                | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--status STATUSES` | Filter by status. Comma-separated for OR semantics (e.g., `--status failed,cancelled` or `--status open,accepted`). Repeatable; repeated values union. Matches `quest create --tag` convention. **Default when omitted:** `open,accepted,complete,failed` (cancelled tasks excluded). Pass an explicit `--status` that includes `cancelled` to list cancelled tasks                                                                                                                                                               |
-| `--ready`           | Filter to tasks whose next state transition has no unmet preconditions. For leaves: `status == open` AND all `blocked-by` targets are `complete`. For parents: `status == open` AND all `blocked-by` targets are `complete` AND all children are in a terminal state. The result mixes dispatchable leaves and actionable parents (which the lead may dispatch to a verifier or direct-close); the presence of children distinguishes the two. Composes with other filters (e.g., `quest list --ready --role coder --tier T2`) |
+| `--status STATUSES` | Filter by status. Comma-separated for OR semantics (e.g., `--status failed,cancelled` or `--status open,accepted`). Repeatable; repeated values union. Matches `quest create --tag` convention. **Default when omitted:** `open,accepted,completed,failed` (cancelled tasks excluded). Pass an explicit `--status` that includes `cancelled` to list cancelled tasks                                                                                                                                                               |
+| `--ready`           | Filter to tasks whose next state transition has no unmet preconditions. For leaves: `status == open` AND all `blocked-by` targets are `completed`. For parents: `status == open` AND all `blocked-by` targets are `completed` AND all children are in a terminal state. The result mixes dispatchable leaves and actionable parents (which the lead may dispatch to a verifier or direct-close); the presence of children distinguishes the two. Composes with other filters (e.g., `quest list --ready --role coder --tier T2`) |
 | `--parent IDS`      | Filter by parent ID. Comma-separated for OR semantics (e.g., `--parent proj-a1,proj-a2`). Repeatable; repeated values union                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `--tag TAGS`        | Filter by tag(s), comma-separated (AND semantics). Repeatable for additional AND conditions. Matches `quest create --tag` convention                                                                                                                                                                                                                                                                                                                                                                                           |
 | `--role ROLES`      | Filter by role. Comma-separated for OR semantics (e.g., `--role coder,reviewer`). Repeatable; repeated values union                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -1253,20 +1253,20 @@ The `children` column is an array of child task IDs (possibly empty). It is deno
 **`--format text`** (table):
 
 ```
-ID          STATUS    BLOCKED-BY           TITLE
-proj-a1     open                           Auth module
-proj-a1.1   complete                       JWT validation
-proj-a1.2   accepted                       Session store
-proj-a1.3   open      proj-a1.1,proj-a1.2  Auth middleware
+ID          STATUS     BLOCKED-BY           TITLE
+proj-a1     open                            Auth module
+proj-a1.1   completed                       JWT validation
+proj-a1.2   accepted                        Session store
+proj-a1.3   open       proj-a1.1,proj-a1.2  Auth middleware
 ```
 
 **`--format json`** (default): array of row objects, one per matching task.
 
 ```json
 [
-  {"id": "proj-a1",    "status": "open",     "blocked-by": [],                       "title": "Auth module"},
-  {"id": "proj-a1.1",  "status": "complete", "blocked-by": [],                       "title": "JWT validation"},
-  {"id": "proj-a1.3",  "status": "open",     "blocked-by": ["proj-a1.1","proj-a1.2"],"title": "Auth middleware"}
+  {"id": "proj-a1",    "status": "open",      "blocked-by": [],                       "title": "Auth module"},
+  {"id": "proj-a1.1",  "status": "completed", "blocked-by": [],                       "title": "JWT validation"},
+  {"id": "proj-a1.3",  "status": "open",      "blocked-by": ["proj-a1.1","proj-a1.2"],"title": "Auth middleware"}
 ]
 ```
 
@@ -1309,7 +1309,7 @@ Shows parent-child structure, dependency edges with types, and task statuses.
       "id": "proj-a1.1",
       "title": "JWT validation",
       "type": "task",
-      "status": "complete",
+      "status": "completed",
       "tier": "T2",
       "role": "coder",
       "children": []
@@ -1338,7 +1338,7 @@ Shows parent-child structure, dependency edges with types, and task statuses.
       "task": "proj-a1.3",
       "link_type": "blocked-by",
       "target": "proj-a1.1",
-      "target_status": "complete"
+      "target_status": "completed"
     },
     {
       "task": "proj-a1.3",
@@ -1350,7 +1350,7 @@ Shows parent-child structure, dependency edges with types, and task statuses.
 }
 ```
 
-Edge fields mirror the CLI: `task` is the task that holds the link (first arg to `quest link`), `target` is the referenced task. `target_status` is the current status of the target task, denormalized onto the edge so consumers can evaluate dispatch readiness in a single pass without cross-referencing the nodes array. Reads as a sentence: "task proj-a1.3 is blocked-by target proj-a1.1 (which is complete)."
+Edge fields mirror the CLI: `task` is the task that holds the link (first arg to `quest link`), `target` is the referenced task. `target_status` is the current status of the target task, denormalized onto the edge so consumers can evaluate dispatch readiness in a single pass without cross-referencing the nodes array. Reads as a sentence: "task proj-a1.3 is blocked-by target proj-a1.1 (which is completed)."
 
 **Design notes:**
 
@@ -1363,10 +1363,10 @@ Edge fields mirror the CLI: `task` is the task that holds the link (first arg to
 
 ```
 proj-a1 [open] Auth module
-  proj-a1.1 [complete] JWT validation
+  proj-a1.1 [completed] JWT validation
   proj-a1.2 [accepted] Session store
   proj-a1.3 [open] Auth middleware
-    blocked-by  proj-a1.1 [complete] JWT validation
+    blocked-by  proj-a1.1 [completed] JWT validation
     blocked-by  proj-a1.2 [accepted] Session store
 ```
 
@@ -1374,7 +1374,7 @@ proj-a1 [open] Auth module
 
 ```
 proj-a1.3 [open] Auth middleware
-  blocked-by  proj-a1.1 [complete] JWT validation
+  blocked-by  proj-a1.1 [completed] JWT validation
   blocked-by  proj-a1.2 [accepted] Session store
 ```
 
