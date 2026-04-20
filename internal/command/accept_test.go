@@ -150,7 +150,7 @@ func TestAcceptLeafNotFound(t *testing.T) {
 func TestAcceptParentBlockedByNonTerminalChild(t *testing.T) {
 	s, _ := testStore(t)
 	seedTaskWithStatus(t, s, "proj-a1", "Parent", "", "open")
-	seedTaskWithStatus(t, s, "proj-a1.1", "Child-1", "proj-a1", "complete")
+	seedTaskWithStatus(t, s, "proj-a1.1", "Child-1", "proj-a1", "completed")
 	seedTaskWithStatus(t, s, "proj-a1.2", "Child-2", "proj-a1", "accepted") // non-terminal blocker
 	seedTaskWithStatus(t, s, "proj-a1.3", "Child-3", "proj-a1", "open")     // non-terminal blocker
 
@@ -193,7 +193,7 @@ func TestAcceptParentBlockedByNonTerminalChild(t *testing.T) {
 func TestAcceptParentWithTerminalChildrenSucceeds(t *testing.T) {
 	s, _ := testStore(t)
 	seedTaskWithStatus(t, s, "proj-a1", "Parent", "", "open")
-	seedTaskWithStatus(t, s, "proj-a1.1", "Child-1", "proj-a1", "complete")
+	seedTaskWithStatus(t, s, "proj-a1.1", "Child-1", "proj-a1", "completed")
 	seedTaskWithStatus(t, s, "proj-a1.2", "Child-2", "proj-a1", "failed")
 	seedTaskWithStatus(t, s, "proj-a1.3", "Child-3", "proj-a1", "cancelled")
 

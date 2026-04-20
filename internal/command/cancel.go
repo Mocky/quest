@@ -27,7 +27,7 @@ type cancelAck struct {
 }
 
 // cancelSkippedEntry is one row of the skipped array — a descendant
-// that was already in a terminal state (complete/failed/cancelled) at
+// that was already in a terminal state (completed/failed/cancelled) at
 // the time of the call.
 type cancelSkippedEntry struct {
 	ID     string `json:"id"`
@@ -114,9 +114,9 @@ func Cancel(ctx context.Context, cfg config.Config, s store.Store, args []string
 	}
 	telemetry.RecordTaskContext(ctx, id, tier.String, taskT.String)
 
-	// Terminal-state gating. complete / failed reject; cancelled is
+	// Terminal-state gating. completed / failed reject; cancelled is
 	// idempotent (exit 0 with empty arrays, no telemetry side-effects).
-	if status == "complete" || status == "failed" {
+	if status == "completed" || status == "failed" {
 		telemetry.RecordPreconditionFailed(ctx, "from_status", nil)
 		tx.MarkOutcome(store.TxRolledBackPrecondition)
 		return fmt.Errorf("cancel: task is in terminal status (%s): %w", status, errors.ErrConflict)

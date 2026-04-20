@@ -77,7 +77,7 @@ func TestStubsDoNotPanic(t *testing.T) {
 	}
 	telemetry.RecordPreconditionFailed(ctx, "children_terminal", []string{"a", "b"})
 	telemetry.RecordCycleDetected(ctx, []string{"a", "b", "a"})
-	telemetry.RecordTerminalState(ctx, "proj-1", "T2", "coder", "complete")
+	telemetry.RecordTerminalState(ctx, "proj-1", "T2", "coder", "completed")
 	telemetry.RecordTaskCreated(ctx, "proj-1", "T2", "coder", "task")
 	telemetry.RecordStatusTransition(ctx, "proj-1", "open", "accepted")
 	telemetry.RecordLinkAdded(ctx, "a", "b", "blocked-by")

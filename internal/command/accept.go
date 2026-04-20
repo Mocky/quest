@@ -44,7 +44,7 @@ type acceptConflictBody struct {
 // terminalStatuses are the states that satisfy the parent-accept
 // precondition. A child in any other status blocks the parent transition.
 var terminalStatuses = map[string]bool{
-	"complete":  true,
+	"completed": true,
 	"failed":    true,
 	"cancelled": true,
 }

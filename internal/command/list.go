@@ -21,16 +21,16 @@ import (
 // listDefaults mirrors spec §`quest list`:
 //   - default columns: id, status, blocked-by, title.
 //   - default statuses (when --status is omitted): open, accepted,
-//     complete, failed. cancelled is excluded from the default listing.
+//     completed, failed. cancelled is excluded from the default listing.
 var (
 	listDefaultColumns  = []string{"id", "status", "blocked-by", "title"}
-	listDefaultStatuses = []string{"open", "accepted", "complete", "failed"}
+	listDefaultStatuses = []string{"open", "accepted", "completed", "failed"}
 )
 
 // Bounded enums for filter flags — used by the unknown-value rejection
 // checks and the cli.Suggest "did you mean" hint.
 var (
-	validListStatuses = []string{"open", "accepted", "complete", "failed", "cancelled"}
+	validListStatuses = []string{"open", "accepted", "completed", "failed", "cancelled"}
 	validListTypes    = []string{"task", "bug"}
 	validListTiers    = []string{"T0", "T1", "T2", "T3", "T4", "T5", "T6"}
 	validListColumns  = []string{

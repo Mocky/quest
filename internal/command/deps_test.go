@@ -29,7 +29,7 @@ func runDeps(t *testing.T, s store.Store, cfg config.Config, args []string) (err
 // objects with id/type/title/status.
 func TestDepsHappyPath(t *testing.T) {
 	s, _ := testStore(t)
-	seedTaskWithStatus(t, s, "proj-a1", "Upstream-1", "", "complete")
+	seedTaskWithStatus(t, s, "proj-a1", "Upstream-1", "", "completed")
 	seedTaskWithStatus(t, s, "proj-a2", "Upstream-2", "", "accepted")
 	seedTaskWithStatus(t, s, "proj-a3", "Downstream", "", "open")
 	seedDep(t, s, "proj-a3", "proj-a1", "blocked-by")
@@ -52,7 +52,7 @@ func TestDepsHappyPath(t *testing.T) {
 		t.Fatalf("got %d deps, want 2; raw=%q", len(got), stdout)
 	}
 	want := map[string]struct{ typ, title, status string }{
-		"proj-a1": {"blocked-by", "Upstream-1", "complete"},
+		"proj-a1": {"blocked-by", "Upstream-1", "completed"},
 		"proj-a2": {"blocked-by", "Upstream-2", "accepted"},
 	}
 	for _, d := range got {
@@ -134,7 +134,7 @@ func TestDepsDoesNotDefaultToAgentTask(t *testing.T) {
 // per dependency.
 func TestDepsTextFormat(t *testing.T) {
 	s, _ := testStore(t)
-	seedTaskWithStatus(t, s, "proj-a1", "Upstream", "", "complete")
+	seedTaskWithStatus(t, s, "proj-a1", "Upstream", "", "completed")
 	seedTaskWithStatus(t, s, "proj-a2", "Downstream", "", "open")
 	seedDep(t, s, "proj-a2", "proj-a1", "blocked-by")
 

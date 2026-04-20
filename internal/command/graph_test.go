@@ -105,7 +105,7 @@ func TestGraphNotFound(t *testing.T) {
 func TestGraphRootAtEpicFullTree(t *testing.T) {
 	s, _ := testStore(t)
 	seedListTask(t, s, "proj-a1", "Auth module", "", "open", "coder", "T3", "")
-	seedListTask(t, s, "proj-a1.1", "JWT validation", "proj-a1", "complete", "coder", "T2", "")
+	seedListTask(t, s, "proj-a1.1", "JWT validation", "proj-a1", "completed", "coder", "T2", "")
 	seedListTask(t, s, "proj-a1.2", "Session store", "proj-a1", "accepted", "coder", "T2", "")
 	seedListTask(t, s, "proj-a1.3", "Auth middleware", "proj-a1", "open", "coder", "T3", "")
 	seedDep(t, s, "proj-a1.3", "proj-a1.1", "blocked-by")
@@ -148,7 +148,7 @@ func TestGraphRootAtEpicFullTree(t *testing.T) {
 func TestGraphRootAtLeafWithExternals(t *testing.T) {
 	s, _ := testStore(t)
 	seedListTask(t, s, "proj-a1", "Auth module", "", "open", "coder", "T3", "")
-	seedListTask(t, s, "proj-a1.1", "JWT validation", "proj-a1", "complete", "coder", "T2", "")
+	seedListTask(t, s, "proj-a1.1", "JWT validation", "proj-a1", "completed", "coder", "T2", "")
 	seedListTask(t, s, "proj-a1.2", "Session store", "proj-a1", "accepted", "coder", "T2", "")
 	seedListTask(t, s, "proj-a1.3", "Auth middleware", "proj-a1", "open", "coder", "T3", "")
 	seedDep(t, s, "proj-a1.3", "proj-a1.1", "blocked-by")
@@ -212,7 +212,7 @@ func TestGraphLeafNoDeps(t *testing.T) {
 // a different project prefix is external at any root.
 func TestGraphCrossProjectExternal(t *testing.T) {
 	s, _ := testStore(t)
-	seedListTask(t, s, "proj-31", "Crash report", "", "complete", "", "", "bug")
+	seedListTask(t, s, "proj-31", "Crash report", "", "completed", "", "", "bug")
 	seedListTask(t, s, "proj-a1", "Fix follow-up", "", "open", "", "", "task")
 	seedDep(t, s, "proj-a1", "proj-31", "caused-by")
 
@@ -233,8 +233,8 @@ func TestGraphCrossProjectExternal(t *testing.T) {
 	if ext == nil {
 		t.Fatalf("proj-31 not in nodes: %+v", g.Nodes)
 	}
-	if ext.Title != "Crash report" || ext.Type != "bug" || ext.Status != "complete" {
-		t.Errorf("external node = %+v, want crash report/bug/complete", ext)
+	if ext.Title != "Crash report" || ext.Type != "bug" || ext.Status != "completed" {
+		t.Errorf("external node = %+v, want crash report/bug/completed", ext)
 	}
 	if len(g.Edges) != 1 || g.Edges[0].Type != "caused-by" {
 		t.Errorf("edges = %+v, want one caused-by", g.Edges)
@@ -245,7 +245,7 @@ func TestGraphCrossProjectExternal(t *testing.T) {
 func TestGraphTextFormat(t *testing.T) {
 	s, _ := testStore(t)
 	seedListTask(t, s, "proj-a1", "Auth module", "", "open", "", "", "")
-	seedListTask(t, s, "proj-a1.1", "JWT", "proj-a1", "complete", "", "", "")
+	seedListTask(t, s, "proj-a1.1", "JWT", "proj-a1", "completed", "", "", "")
 	seedListTask(t, s, "proj-a1.2", "Middleware", "proj-a1", "open", "", "", "")
 	seedDep(t, s, "proj-a1.2", "proj-a1.1", "blocked-by")
 
@@ -258,13 +258,13 @@ func TestGraphTextFormat(t *testing.T) {
 	if !strings.Contains(stdout, "proj-a1  Auth module [open]") {
 		t.Errorf("missing root line: %q", stdout)
 	}
-	if !strings.Contains(stdout, "  proj-a1.1  JWT [complete]") {
+	if !strings.Contains(stdout, "  proj-a1.1  JWT [completed]") {
 		t.Errorf("missing child line: %q", stdout)
 	}
 	if !strings.Contains(stdout, "  proj-a1.2  Middleware [open]") {
 		t.Errorf("missing second-child line: %q", stdout)
 	}
-	if !strings.Contains(stdout, "    blocked-by  proj-a1.1 [complete]") {
+	if !strings.Contains(stdout, "    blocked-by  proj-a1.1 [completed]") {
 		t.Errorf("missing dep edge under proj-a1.2: %q", stdout)
 	}
 }

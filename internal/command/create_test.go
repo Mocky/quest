@@ -302,10 +302,10 @@ func TestCreateUnknownParentExit3(t *testing.T) {
 	}
 }
 
-// TestCreateParentNotOpenExit5: accepted / complete / failed /
+// TestCreateParentNotOpenExit5: accepted / completed / failed /
 // cancelled parent rejects.
 func TestCreateParentNotOpenExit5(t *testing.T) {
-	statuses := []string{"accepted", "complete", "failed", "cancelled"}
+	statuses := []string{"accepted", "completed", "failed", "cancelled"}
 	for _, st := range statuses {
 		t.Run(st, func(t *testing.T) {
 			s, _ := testStore(t)
@@ -352,7 +352,7 @@ func TestCreateBlockedByCancelledTargetExit5(t *testing.T) {
 // is a source_type_required semantic violation.
 func TestCreateCausedByRequiresBugType(t *testing.T) {
 	s, _ := testStore(t)
-	seedTaskWithStatus(t, s, "proj-a1", "Upstream", "", "complete")
+	seedTaskWithStatus(t, s, "proj-a1", "Upstream", "", "completed")
 
 	err, _, _ := runCreate(t, s, createCfg(), []string{
 		"--title", "Not a bug", "--caused-by", "proj-a1",
@@ -366,7 +366,7 @@ func TestCreateCausedByRequiresBugType(t *testing.T) {
 // validates and the task is created.
 func TestCreateCausedByBugTypeSucceeds(t *testing.T) {
 	s, dbPath := testStore(t)
-	seedTaskWithStatus(t, s, "proj-a1", "Upstream", "", "complete")
+	seedTaskWithStatus(t, s, "proj-a1", "Upstream", "", "completed")
 
 	err, stdout, _ := runCreate(t, s, createCfg(), []string{
 		"--title", "Regression", "--type", "bug", "--caused-by", "proj-a1",
@@ -390,7 +390,7 @@ func TestCreateCausedByBugTypeSucceeds(t *testing.T) {
 // non-failed status rejects.
 func TestCreateRetryOfRequiresFailedTarget(t *testing.T) {
 	s, _ := testStore(t)
-	seedTaskWithStatus(t, s, "proj-a1", "Upstream", "", "complete")
+	seedTaskWithStatus(t, s, "proj-a1", "Upstream", "", "completed")
 
 	err, _, _ := runCreate(t, s, createCfg(), []string{
 		"--title", "Retry", "--retry-of", "proj-a1",

@@ -103,9 +103,9 @@ func TestResetHappyPath(t *testing.T) {
 }
 
 // TestResetNotAcceptedReturnsConflict covers every non-accepted from
-// state per spec §quest reset: open, complete, failed, cancelled.
+// state per spec §quest reset: open, completed, failed, cancelled.
 func TestResetNotAcceptedReturnsConflict(t *testing.T) {
-	for _, from := range []string{"open", "complete", "failed", "cancelled"} {
+	for _, from := range []string{"open", "completed", "failed", "cancelled"} {
 		t.Run(from, func(t *testing.T) {
 			s, _ := testStore(t)
 			seedTaskWithStatus(t, s, "proj-a1", "Alpha", "", from)

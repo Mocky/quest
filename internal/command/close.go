@@ -43,7 +43,7 @@ var (
 		name:          "complete",
 		txKind:        store.TxComplete,
 		historyAction: store.HistoryCompleted,
-		newStatus:     "complete",
+		newStatus:     "completed",
 		acceptsOpen:   true,
 	}
 	closeFail = closeAction{
@@ -192,7 +192,7 @@ func closeTask(ctx context.Context, cfg config.Config, s store.Store, args []str
 			tx.MarkOutcome(store.TxRolledBackPrecondition)
 			return fmt.Errorf("%s: invalid from-status %s: %w", action.name, status, errors.ErrConflict)
 		}
-	default: // complete, failed
+	default: // completed, failed
 		telemetry.RecordPreconditionFailed(ctx, "from_status", nil)
 		tx.MarkOutcome(store.TxRolledBackPrecondition)
 		return fmt.Errorf("%s: task is in terminal status (%s): %w", action.name, status, errors.ErrConflict)
@@ -216,7 +216,7 @@ func closeTask(ctx context.Context, cfg config.Config, s store.Store, args []str
 	}
 
 	// Children-terminal precondition: applies to parents on every
-	// close path (accepted→complete|failed, open→complete).
+	// close path (accepted→completed|failed, open→completed).
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id, status FROM tasks WHERE parent = ? ORDER BY id`, id)
 	if err != nil {

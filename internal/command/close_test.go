@@ -35,7 +35,7 @@ func runFail(t *testing.T, s store.Store, cfg config.Config, stdin string, args 
 }
 
 // TestCompleteLeafHappyPath: a worker owning an accepted leaf calls
-// complete. Status flips to complete, completed_at is recorded,
+// complete. Status flips to completed, completed_at is recorded,
 // debrief stored, history entry lands.
 func TestCompleteLeafHappyPath(t *testing.T) {
 	s, dbPath := testStore(t)
@@ -53,15 +53,15 @@ func TestCompleteLeafHappyPath(t *testing.T) {
 	if jerr := json.Unmarshal([]byte(stdout), &ack); jerr != nil {
 		t.Fatalf("stdout: %v; raw=%q", jerr, stdout)
 	}
-	if ack.ID != "proj-a1" || ack.Status != "complete" {
-		t.Errorf("ack = %+v, want {proj-a1, complete}", ack)
+	if ack.ID != "proj-a1" || ack.Status != "completed" {
+		t.Errorf("ack = %+v, want {proj-a1, completed}", ack)
 	}
 
 	var status, completedAt, debrief sql.NullString
 	queryOne(t, dbPath, "SELECT status, completed_at, debrief FROM tasks WHERE id='proj-a1'").
 		Scan(&status, &completedAt, &debrief)
-	if status.String != "complete" {
-		t.Errorf("status = %v, want complete", status.String)
+	if status.String != "completed" {
+		t.Errorf("status = %v, want completed", status.String)
 	}
 	if completedAt.String == "" {
 		t.Errorf("completed_at empty")
@@ -230,25 +230,25 @@ func TestCompleteOnOpenLeafReturnsExit5(t *testing.T) {
 func TestCompleteParentDirectCloseSucceeds(t *testing.T) {
 	s, _ := testStore(t)
 	seedTaskFull(t, s, "proj-a1", "Parent", "open", "")
-	seedTaskWithStatus(t, s, "proj-a1.1", "Child", "proj-a1", "complete")
+	seedTaskWithStatus(t, s, "proj-a1.1", "Child", "proj-a1", "completed")
 
 	err, stdout, _ := runComplete(t, s, plannerCfg(), "",
 		[]string{"proj-a1", "--debrief", "verified inline"})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if !strings.Contains(stdout, `"status":"complete"`) {
-		t.Errorf("stdout = %q, want status=complete", stdout)
+	if !strings.Contains(stdout, `"status":"completed"`) {
+		t.Errorf("stdout = %q, want status=completed", stdout)
 	}
 }
 
 // TestCompleteParentWithNonTerminalChildrenExit5 pins the shared body
-// shape: children that are not complete/failed/cancelled block parent
+// shape: children that are not completed/failed/cancelled block parent
 // completion.
 func TestCompleteParentWithNonTerminalChildrenExit5(t *testing.T) {
 	s, _ := testStore(t)
 	seedTaskFull(t, s, "proj-a1", "Parent", "accepted", "sess-owner")
-	seedTaskWithStatus(t, s, "proj-a1.1", "Child-1", "proj-a1", "complete")
+	seedTaskWithStatus(t, s, "proj-a1.1", "Child-1", "proj-a1", "completed")
 	seedTaskWithStatus(t, s, "proj-a1.2", "Child-2", "proj-a1", "accepted")
 
 	err, stdout, _ := runComplete(t, s, workerCfg("sess-owner"), "",
@@ -277,10 +277,10 @@ func TestCompleteParentWithNonTerminalChildrenExit5(t *testing.T) {
 	}
 }
 
-// TestCompleteFromTerminalStateExit5: a task already in complete /
+// TestCompleteFromTerminalStateExit5: a task already in completed /
 // failed / cancelled cannot be re-closed.
 func TestCompleteFromTerminalStateExit5(t *testing.T) {
-	cases := []string{"complete", "failed"}
+	cases := []string{"completed", "failed"}
 	for _, from := range cases {
 		t.Run(from, func(t *testing.T) {
 			s, _ := testStore(t)

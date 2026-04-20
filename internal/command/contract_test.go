@@ -116,7 +116,7 @@ func TestAcceptOutputShape(t *testing.T) {
 	}
 }
 
-// TestCompleteOutputShape pins {"id","status":"complete"}.
+// TestCompleteOutputShape pins {"id","status":"completed"}.
 func TestCompleteOutputShape(t *testing.T) {
 	s, _ := testStore(t)
 	seedTaskFull(t, s, "proj-a1", "Alpha", "accepted", "sess-w1")
@@ -131,8 +131,8 @@ func TestCompleteOutputShape(t *testing.T) {
 		ID, Status string
 	}
 	_ = json.Unmarshal([]byte(stdout), &ack)
-	if ack.Status != "complete" {
-		t.Errorf("status = %q, want \"complete\"", ack.Status)
+	if ack.Status != "completed" {
+		t.Errorf("status = %q, want \"completed\"", ack.Status)
 	}
 }
 

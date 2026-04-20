@@ -165,12 +165,12 @@ func (s *sqliteStore) ListTasks(ctx context.Context, filter Filter) ([]Task, err
 			SELECT 1 FROM dependencies d
 			JOIN tasks dt ON dt.id = d.target_id
 			WHERE d.task_id = t.id AND d.link_type = 'blocked-by'
-			  AND dt.status != 'complete'
+			  AND dt.status != 'completed'
 		)`)
 		conds = append(conds, `NOT EXISTS (
 			SELECT 1 FROM tasks c
 			WHERE c.parent = t.id
-			  AND c.status NOT IN ('complete','failed','cancelled')
+			  AND c.status NOT IN ('completed','failed','cancelled')
 		)`)
 	}
 	q := `SELECT ` + selectTaskColumns + ` FROM tasks t`

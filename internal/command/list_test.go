@@ -148,7 +148,7 @@ func TestListStatusOR(t *testing.T) {
 	s, _ := testStore(t)
 	seedListTask(t, s, "proj-a1", "Alpha", "", "open", "", "", "")
 	seedListTask(t, s, "proj-a2", "Beta", "", "failed", "", "", "")
-	seedListTask(t, s, "proj-a3", "Gamma", "", "complete", "", "", "")
+	seedListTask(t, s, "proj-a3", "Gamma", "", "completed", "", "", "")
 
 	err, stdout, _ := runList(t, s, plannerCfg(), []string{"--status", "open,failed"})
 	if err != nil {
@@ -165,7 +165,7 @@ func TestListStatusRepeatableUnion(t *testing.T) {
 	s, _ := testStore(t)
 	seedListTask(t, s, "proj-a1", "Alpha", "", "open", "", "", "")
 	seedListTask(t, s, "proj-a2", "Beta", "", "failed", "", "", "")
-	seedListTask(t, s, "proj-a3", "Gamma", "", "complete", "", "", "")
+	seedListTask(t, s, "proj-a3", "Gamma", "", "completed", "", "", "")
 
 	err, stdout, _ := runList(t, s, plannerCfg(),
 		[]string{"--status", "open", "--status", "failed"})
@@ -292,7 +292,7 @@ func TestListReadyLeafBlocked(t *testing.T) {
 	}
 
 	// Complete the upstream and the downstream becomes ready.
-	if _, err := updateStatus(t, s, "proj-a1", "complete"); err != nil {
+	if _, err := updateStatus(t, s, "proj-a1", "completed"); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	err, stdout, _ = runList(t, s, plannerCfg(), []string{"--ready"})
@@ -310,7 +310,7 @@ func TestListReadyLeafBlocked(t *testing.T) {
 func TestListReadyParent(t *testing.T) {
 	s, _ := testStore(t)
 	seedListTask(t, s, "proj-a1", "Parent", "", "open", "", "", "")
-	seedListTask(t, s, "proj-a1.1", "Child-1", "proj-a1", "complete", "", "", "")
+	seedListTask(t, s, "proj-a1.1", "Child-1", "proj-a1", "completed", "", "", "")
 	seedListTask(t, s, "proj-a1.2", "Child-2", "proj-a1", "accepted", "", "", "")
 
 	// Not ready: one child is not terminal.
@@ -324,7 +324,7 @@ func TestListReadyParent(t *testing.T) {
 		t.Errorf("rows = %+v, want 0 (child-2 not terminal)", rows)
 	}
 
-	if _, err := updateStatus(t, s, "proj-a1.2", "complete"); err != nil {
+	if _, err := updateStatus(t, s, "proj-a1.2", "completed"); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	err, stdout, _ = runList(t, s, plannerCfg(),
@@ -354,8 +354,8 @@ func TestListUnknownStatusRejected(t *testing.T) {
 	if !stderrors.Is(err, errors.ErrUsage) {
 		t.Fatalf("err = %v, want wraps ErrUsage", err)
 	}
-	if !strings.Contains(err.Error(), "complete") {
-		t.Errorf("err = %q, want 'did you mean complete' hint", err.Error())
+	if !strings.Contains(err.Error(), "completed") {
+		t.Errorf("err = %q, want 'did you mean completed' hint", err.Error())
 	}
 }
 

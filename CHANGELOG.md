@@ -7,6 +7,9 @@
 - Enforce the 128-byte cap on task `title` at every write path per spec §Field constraints. `quest create --title` and `quest update --title` exit 2 with a usage error naming the flag and the observed byte count; `quest batch` reports over-limit titles as a per-line `field_too_long` JSONL error in the `semantic` phase, carrying `field`, `limit`, and `observed`. Bytes, not code points — consistent with the `@file` 1 MiB limit.
 
 ### Changed
+
+- Terminal status value renamed from `complete` to `completed` to match the past-participle pattern of the other terminal statuses. The CLI command `quest complete`, the `tx_kind=complete` telemetry attribute, and log event `"quest command complete"` are unchanged. Existing `.quest/quest.db` files migrate automatically on next invocation via schema v2.
+
 ### Deprecated
 ### Removed
 ### Fixed

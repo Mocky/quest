@@ -114,9 +114,9 @@ func TestCancelAlreadyCancelledIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestCancelTerminalStateRejected: complete / failed are permanent.
+// TestCancelTerminalStateRejected: completed / failed are permanent.
 func TestCancelTerminalStateRejected(t *testing.T) {
-	for _, from := range []string{"complete", "failed"} {
+	for _, from := range []string{"completed", "failed"} {
 		t.Run(from, func(t *testing.T) {
 			s, _ := testStore(t)
 			seedTaskWithStatus(t, s, "proj-a1", "Alpha", "", from)
@@ -176,7 +176,7 @@ func TestCancelRecursiveMultiLevel(t *testing.T) {
 	// depth 2
 	seedTaskWithStatus(t, s, "proj-a1.1", "L2a", "proj-a1", "open")
 	seedTaskWithStatus(t, s, "proj-a1.2", "L2b", "proj-a1", "accepted")
-	seedTaskWithStatus(t, s, "proj-a1.3", "L2c-done", "proj-a1", "complete")
+	seedTaskWithStatus(t, s, "proj-a1.3", "L2c-done", "proj-a1", "completed")
 	// depth 3
 	seedTaskWithStatus(t, s, "proj-a1.1.1", "L3a", "proj-a1.1", "open")
 	seedTaskWithStatus(t, s, "proj-a1.2.1", "L3b-failed", "proj-a1.2", "failed")
@@ -203,7 +203,7 @@ func TestCancelRecursiveMultiLevel(t *testing.T) {
 		t.Errorf("cancelled = %v, want %v", ack.Cancelled, wantCancelled)
 	}
 	wantSkipped := map[string]string{
-		"proj-a1.3":   "complete",
+		"proj-a1.3":   "completed",
 		"proj-a1.2.1": "failed",
 	}
 	if len(ack.Skipped) != len(wantSkipped) {
@@ -222,8 +222,8 @@ func TestCancelRecursiveMultiLevel(t *testing.T) {
 			t.Errorf("status(%s) = %q, want cancelled", id, got)
 		}
 	}
-	if got := lookupStatus(t, dbPath, "proj-a1.3"); got != "complete" {
-		t.Errorf("skipped proj-a1.3 status = %q, want complete", got)
+	if got := lookupStatus(t, dbPath, "proj-a1.3"); got != "completed" {
+		t.Errorf("skipped proj-a1.3 status = %q, want completed", got)
 	}
 	if got := lookupStatus(t, dbPath, "proj-a1.2.1"); got != "failed" {
 		t.Errorf("skipped proj-a1.2.1 status = %q, want failed", got)
@@ -351,7 +351,7 @@ func TestCancelTextModeRendersLines(t *testing.T) {
 	s, _ := testStore(t)
 	seedTaskWithStatus(t, s, "proj-a1", "Parent", "", "open")
 	seedTaskWithStatus(t, s, "proj-a1.1", "Child", "proj-a1", "open")
-	seedTaskWithStatus(t, s, "proj-a1.2", "Done", "proj-a1", "complete")
+	seedTaskWithStatus(t, s, "proj-a1.2", "Done", "proj-a1", "completed")
 
 	cfg := plannerCfg()
 	cfg.Output.Format = "text"
@@ -365,7 +365,7 @@ func TestCancelTextModeRendersLines(t *testing.T) {
 	if !strings.Contains(stdout, "cancelled: proj-a1.1\n") {
 		t.Errorf("stdout missing cancelled: proj-a1.1 line; got %q", stdout)
 	}
-	if !strings.Contains(stdout, "skipped: proj-a1.2 (complete)\n") {
+	if !strings.Contains(stdout, "skipped: proj-a1.2 (completed)\n") {
 		t.Errorf("stdout missing skipped line; got %q", stdout)
 	}
 }

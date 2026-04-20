@@ -391,14 +391,14 @@ func TestPhaseSemanticBlockedByCancelled(t *testing.T) {
 // actual_status.
 func TestPhaseSemanticRetryTargetStatus(t *testing.T) {
 	s := testStore(t)
-	seedTask(t, s, "proj-x", "complete", "task")
+	seedTask(t, s, "proj-x", "completed", "task")
 	body := `{"ref":"a","title":"A","dependencies":[{"id":"proj-x","type":"retry-of"}]}` + "\n"
 	_, errs := runPhases(t, s, body)
 	if !hasErr(errs, func(e batch.BatchError) bool {
 		return e.Code == batch.BatchCodeRetryTargetStatus &&
-			e.Target == "proj-x" && e.ActualStatus == "complete"
+			e.Target == "proj-x" && e.ActualStatus == "completed"
 	}) {
-		t.Fatalf("errs = %+v, want retry_target_status {target=proj-x, actual_status=complete}", errs)
+		t.Fatalf("errs = %+v, want retry_target_status {target=proj-x, actual_status=completed}", errs)
 	}
 }
 
@@ -406,7 +406,7 @@ func TestPhaseSemanticRetryTargetStatus(t *testing.T) {
 // source → source_type_required.
 func TestPhaseSemanticSourceTypeRequired(t *testing.T) {
 	s := testStore(t)
-	seedTask(t, s, "proj-x", "complete", "task")
+	seedTask(t, s, "proj-x", "completed", "task")
 	body := `{"ref":"a","title":"A","type":"task","dependencies":[{"id":"proj-x","type":"caused-by"}]}` + "\n"
 	_, errs := runPhases(t, s, body)
 	if !hasErr(errs, func(e batch.BatchError) bool {
@@ -422,7 +422,7 @@ func TestPhaseSemanticSourceTypeRequired(t *testing.T) {
 // Tasks rule 3). The error carries id, actual_status, and
 // field=parent.id.
 func TestPhaseSemanticParentNotOpen(t *testing.T) {
-	for _, st := range []string{"accepted", "complete", "failed", "cancelled"} {
+	for _, st := range []string{"accepted", "completed", "failed", "cancelled"} {
 		t.Run(st, func(t *testing.T) {
 			s := testStore(t)
 			seedTask(t, s, "proj-p", st, "task")
@@ -593,7 +593,7 @@ func TestBatchStderrShape(t *testing.T) {
 		},
 		{
 			name: "retry_target_status",
-			err:  batch.BatchError{Line: 1, Phase: "semantic", Code: "retry_target_status", Target: "proj-x", ActualStatus: "complete", Message: "m"},
+			err:  batch.BatchError{Line: 1, Phase: "semantic", Code: "retry_target_status", Target: "proj-x", ActualStatus: "completed", Message: "m"},
 			keys: []string{"line", "phase", "code", "target", "actual_status", "message"},
 		},
 		{

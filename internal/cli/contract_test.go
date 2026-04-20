@@ -412,7 +412,7 @@ func TestHandlerRecorderWiring(t *testing.T) {
 			},
 			wantAttr:     []string{"quest.task.id"},
 			wantStatus:   true,
-			wantTerminal: "complete",
+			wantTerminal: "completed",
 		},
 		{
 			name: "fail",

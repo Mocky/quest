@@ -360,7 +360,7 @@ func TestMoveRejectsNewParentNotOpen(t *testing.T) {
 	s, _ := testStore(t)
 	seedTaskWithStatus(t, s, "proj-a1", "A1", "", "open")
 	seedTaskWithStatus(t, s, "proj-a1.3", "Sub", "proj-a1", "open")
-	seedTaskWithStatus(t, s, "proj-b2", "B2", "", "complete")
+	seedTaskWithStatus(t, s, "proj-b2", "B2", "", "completed")
 
 	err, _, _ := runMove(t, s, plannerCfg(), []string{"proj-a1.3", "--parent", "proj-b2"})
 	if err == nil {

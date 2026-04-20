@@ -401,10 +401,10 @@ func TestUpdateOwningWorkerOnAcceptedAllowed(t *testing.T) {
 // TestUpdateOwnershipCheckFiresOnTerminal: per spec §accept ("After
 // acceptance, only the owning session ... can call quest update") the
 // ownership check must cover post-accept statuses, not just accepted.
-// A non-owning worker adding a --note to a complete task owned by a
+// A non-owning worker adding a --note to a completed task owned by a
 // different session returns exit 4 (permission), not a silent success.
 func TestUpdateOwnershipCheckFiresOnTerminal(t *testing.T) {
-	cases := []string{"complete", "failed", "cancelled"}
+	cases := []string{"completed", "failed", "cancelled"}
 	for _, status := range cases {
 		t.Run(status, func(t *testing.T) {
 			s, _ := testStore(t)
@@ -474,19 +474,19 @@ func TestUpdateCancelledRejectsEverything(t *testing.T) {
 }
 
 // TestUpdateTerminalStateAllowsNoteAndPR: --note/--pr/--meta survive
-// on complete/failed tasks; other flags are rejected.
+// on completed/failed tasks; other flags are rejected.
 func TestUpdateTerminalStateAllowsNoteAndPR(t *testing.T) {
 	s, _ := testStore(t)
-	seedTaskFull(t, s, "proj-a1", "Alpha", "complete", "sess-owner")
+	seedTaskFull(t, s, "proj-a1", "Alpha", "completed", "sess-owner")
 
 	// --note allowed.
 	if err, _, _ := runUpdate(t, s, plannerCfg(), "", []string{"proj-a1", "--note", "post-mortem"}); err != nil {
-		t.Errorf("--note on complete: %v", err)
+		t.Errorf("--note on completed: %v", err)
 	}
 	// --title blocked.
 	err, _, _ := runUpdate(t, s, plannerCfg(), "", []string{"proj-a1", "--title", "new"})
 	if err == nil {
-		t.Fatalf("--title on complete: got nil, want ErrConflict")
+		t.Fatalf("--title on completed: got nil, want ErrConflict")
 	}
 	if !stderrors.Is(err, errors.ErrConflict) {
 		t.Fatalf("err = %v, want wraps ErrConflict", err)

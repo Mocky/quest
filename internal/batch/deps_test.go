@@ -136,11 +136,11 @@ func TestValidateSemanticBlockedByCancelled(t *testing.T) {
 }
 
 // TestValidateSemanticBlockedByNonCancelled sweeps the non-cancelled
-// statuses — open, accepted, complete, failed — and confirms each
+// statuses — open, accepted, completed, failed — and confirms each
 // produces no error for blocked-by.
 func TestValidateSemanticBlockedByNonCancelled(t *testing.T) {
 	s := testStore(t)
-	statuses := []string{"open", "accepted", "complete", "failed"}
+	statuses := []string{"open", "accepted", "completed", "failed"}
 	for i, st := range statuses {
 		id := "proj-a" + string(rune('1'+i))
 		seedTask(t, s, id, st, "task")
@@ -164,7 +164,7 @@ func TestValidateSemanticRetryOfTargetStatus(t *testing.T) {
 	}{
 		{"open", false},
 		{"accepted", false},
-		{"complete", false},
+		{"completed", false},
 		{"cancelled", false},
 		{"failed", true},
 	}
@@ -196,7 +196,7 @@ func TestValidateSemanticRetryOfTargetStatus(t *testing.T) {
 // discovered-from require source.Type=bug.
 func TestValidateSemanticSourceTypeRequired(t *testing.T) {
 	s := testStore(t)
-	seedTask(t, s, "proj-src1", "complete", "task")
+	seedTask(t, s, "proj-src1", "completed", "task")
 
 	cases := []struct {
 		linkType   string
@@ -335,7 +335,7 @@ func TestValidateSemanticSelfLoop(t *testing.T) {
 func TestValidateSemanticCollectsAllErrors(t *testing.T) {
 	s := testStore(t)
 	seedTask(t, s, "proj-cxl", "cancelled", "task")
-	seedTask(t, s, "proj-ok", "complete", "task")
+	seedTask(t, s, "proj-ok", "completed", "task")
 
 	edges := []batch.Edge{
 		{Target: "proj-cxl", LinkType: batch.LinkBlockedBy},
