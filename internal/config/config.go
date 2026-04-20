@@ -21,13 +21,14 @@ type Flags struct {
 }
 
 // WorkspaceConfig captures the project-level facts. Root and DBPath are
-// computed by Load; IDPrefix and ElevatedRoles come from
-// .quest/config.toml.
+// computed by Load; IDPrefix, ElevatedRoles, and EnforceSessionOwnership
+// come from .quest/config.toml.
 type WorkspaceConfig struct {
-	Root          string
-	DBPath        string
-	IDPrefix      string
-	ElevatedRoles []string
+	Root                    string
+	DBPath                  string
+	IDPrefix                string
+	ElevatedRoles           []string
+	EnforceSessionOwnership bool
 }
 
 // AgentConfig holds resolved values from AGENT_* and TRACE* env vars.
@@ -79,10 +80,11 @@ func Load(flags Flags) Config {
 
 	return Config{
 		Workspace: WorkspaceConfig{
-			Root:          root,
-			DBPath:        dbPath(root),
-			IDPrefix:      file.IDPrefix,
-			ElevatedRoles: file.ElevatedRoles,
+			Root:                    root,
+			DBPath:                  dbPath(root),
+			IDPrefix:                file.IDPrefix,
+			ElevatedRoles:           file.ElevatedRoles,
+			EnforceSessionOwnership: file.EnforceSessionOwnership,
 		},
 		Agent: AgentConfig{
 			Role:        os.Getenv("AGENT_ROLE"),

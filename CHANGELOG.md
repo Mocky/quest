@@ -9,6 +9,7 @@
 ### Changed
 
 - Terminal status value renamed from `complete` to `completed` to match the past-participle pattern of the other terminal statuses. The CLI command `quest complete`, the `tx_kind=complete` telemetry attribute, and log event `"quest command complete"` are unchanged. Existing `.quest/quest.db` files migrate automatically on next invocation via schema v2.
+- Session-ownership enforcement on `quest update` / `complete` / `fail` is now controlled by `enforce_session_ownership` in `.quest/config.toml` and defaults to `false` (spec §Role Gating > Session ownership). Previously the check was unconditional after `quest accept`; on upgrade, projects that omit the field load with enforcement off and no longer need `AGENT_SESSION` coordination between cooperating callers. Operators who want the old strict behavior set `enforce_session_ownership = true`. `owner_session`, `handoff_session`, and history `session` are recorded identically in both modes, so telemetry and retrospectives are unaffected.
 
 ### Deprecated
 ### Removed

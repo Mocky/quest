@@ -182,4 +182,29 @@ future_field = "someday"
 			t.Errorf("no WARN record for unknown field; records: %v", rec.records())
 		}
 	})
+
+	t.Run("enforce_session_ownership", func(t *testing.T) {
+		cases := []struct {
+			name string
+			body string
+			want bool
+		}{
+			{"absent defaults false", `id_prefix = "proj"` + "\n", false},
+			{"explicit false", `id_prefix = "proj"` + "\nenforce_session_ownership = false\n", false},
+			{"explicit true", `id_prefix = "proj"` + "\nenforce_session_ownership = true\n", true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				root := t.TempDir()
+				writeConfig(t, root, tc.body)
+				got, err := ReadFile(root)
+				if err != nil {
+					t.Fatalf("ReadFile: %v", err)
+				}
+				if got.EnforceSessionOwnership != tc.want {
+					t.Errorf("EnforceSessionOwnership = %v, want %v", got.EnforceSessionOwnership, tc.want)
+				}
+			})
+		}
+	})
 }

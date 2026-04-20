@@ -58,6 +58,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Workspace.IDPrefix != "proj" {
 		t.Errorf("IDPrefix = %q, want proj", cfg.Workspace.IDPrefix)
 	}
+	if cfg.Workspace.EnforceSessionOwnership {
+		t.Errorf("EnforceSessionOwnership = true, want false by default")
+	}
 	if cfg.Log.Level != "warn" {
 		t.Errorf("Log.Level default = %q, want warn", cfg.Log.Level)
 	}
@@ -72,6 +75,32 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate() unexpected error: %v", err)
+	}
+}
+
+func TestLoadEnforceSessionOwnership(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"absent defaults false", `id_prefix = "proj"` + "\n", false},
+		{"explicit true", `id_prefix = "proj"` + "\nenforce_session_ownership = true\n", true},
+		{"explicit false", `id_prefix = "proj"` + "\nenforce_session_ownership = false\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t)
+			root := t.TempDir()
+			writeConfig(t, root, tc.body)
+			chdir(t, root)
+
+			cfg := Load(Flags{})
+			if cfg.Workspace.EnforceSessionOwnership != tc.want {
+				t.Errorf("EnforceSessionOwnership = %v, want %v",
+					cfg.Workspace.EnforceSessionOwnership, tc.want)
+			}
+		})
 	}
 }
 

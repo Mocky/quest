@@ -532,3 +532,83 @@ func TestCompleteAcceptedLeafByNonOwningWorkerStillGated(t *testing.T) {
 		t.Fatalf("err = %v, want wraps ErrPermission", err)
 	}
 }
+
+// TestCompleteCrossSessionAllowedWhenDisabled pins the relaxed-mode
+// contract (spec §Role Gating > Session ownership,
+// enforce_session_ownership = false): a non-owning, non-elevated
+// worker can close an accepted task. owner_session is still recorded
+// from accept but is not enforced here.
+func TestCompleteCrossSessionAllowedWhenDisabled(t *testing.T) {
+	s, dbPath := testStore(t)
+	seedTaskFull(t, s, "proj-a1", "Alpha", "accepted", "sess-owner")
+
+	err, _, _ := runComplete(t, s, workerCfgRelaxed("sess-stranger"), "",
+		[]string{"proj-a1", "--debrief", "done"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	var status, owner sql.NullString
+	queryOne(t, dbPath, "SELECT status, owner_session FROM tasks WHERE id='proj-a1'").
+		Scan(&status, &owner)
+	if status.String != "completed" {
+		t.Errorf("status = %q, want completed", status.String)
+	}
+	if owner.String != "sess-owner" {
+		t.Errorf("owner_session = %q, want sess-owner (recorded regardless of mode)", owner.String)
+	}
+	var historySess sql.NullString
+	queryOne(t, dbPath, "SELECT session FROM history WHERE task_id='proj-a1' AND action='completed'").
+		Scan(&historySess)
+	if historySess.String != "sess-stranger" {
+		t.Errorf("history session = %q, want sess-stranger (actual caller)", historySess.String)
+	}
+}
+
+// TestFailCrossSessionAllowedWhenDisabled is the fail counterpart.
+func TestFailCrossSessionAllowedWhenDisabled(t *testing.T) {
+	s, dbPath := testStore(t)
+	seedTaskFull(t, s, "proj-a1", "Alpha", "accepted", "sess-owner")
+
+	err, _, _ := runFail(t, s, workerCfgRelaxed("sess-stranger"), "",
+		[]string{"proj-a1", "--debrief", "dropped"})
+	if err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+	var status sql.NullString
+	queryOne(t, dbPath, "SELECT status FROM tasks WHERE id='proj-a1'").Scan(&status)
+	if status.String != "failed" {
+		t.Errorf("status = %q, want failed", status.String)
+	}
+}
+
+// TestPrecondenceOrderingStateBeatsUsageWhenOwnershipDisabled pins the
+// Error Precedence change: with enforce_session_ownership=false, step 3
+// is skipped so a non-owning worker on a cancelled task receives exit 5
+// (state) rather than exit 4. Regression test for the "ladder proceeds
+// from Existence directly to State" wording in the spec.
+func TestPrecondenceOrderingStateBeatsUsageWhenOwnershipDisabled(t *testing.T) {
+	s, _ := testStore(t)
+	seedTaskFull(t, s, "proj-a1", "Alpha", "cancelled", "sess-owner")
+
+	err, stdout, _ := runComplete(t, s, workerCfgRelaxed("sess-stranger"), "",
+		[]string{"proj-a1"})
+	if err == nil {
+		t.Fatalf("got nil, want ErrConflict")
+	}
+	if stderrors.Is(err, errors.ErrPermission) {
+		t.Fatalf("err = %v, want ErrConflict (step 3 must be skipped)", err)
+	}
+	if !stderrors.Is(err, errors.ErrConflict) {
+		t.Fatalf("err = %v, want wraps ErrConflict", err)
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if jerr := json.Unmarshal([]byte(stdout), &body); jerr != nil {
+		t.Fatalf("stdout: %v; raw=%q", jerr, stdout)
+	}
+	if body.Status != "cancelled" {
+		t.Errorf("body.status = %q, want cancelled", body.Status)
+	}
+}

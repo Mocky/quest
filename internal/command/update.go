@@ -164,8 +164,10 @@ func Update(ctx context.Context, cfg config.Config, s store.Store, args []string
 	// That covers accepted + terminal (completed/failed/cancelled); only
 	// `open` has no owner yet and is skipped. Fires before the cancelled
 	// and terminal-state gates so a non-owner learns exit 4, not 5 —
-	// spec §Error precedence (permission before state).
-	if cur.status != "open" && !isElevated {
+	// spec §Error precedence (permission before state). Skipped entirely
+	// when enforce_session_ownership is false (spec §Role Gating >
+	// Session ownership); owner_session is still recorded for audit.
+	if cfg.Workspace.EnforceSessionOwnership && cur.status != "open" && !isElevated {
 		if cur.ownerSession != cfg.Agent.Session {
 			telemetry.RecordPreconditionFailed(ctx, "ownership", nil)
 			tx.MarkOutcome(store.TxRolledBackPrecondition)

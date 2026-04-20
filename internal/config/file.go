@@ -23,6 +23,13 @@ type FileConfig struct {
 	// (spec §quest init), so a freshly-initialized project has "planner"
 	// elevated, but a config that drops the line falls back to [].
 	ElevatedRoles []string `toml:"elevated_roles"`
+	// EnforceSessionOwnership gates whether writes to an accepted task
+	// require AGENT_SESSION to match the task's owner_session. Default
+	// when omitted from .quest/config.toml: false, per spec §Role Gating
+	// > Session ownership. When true, non-owning non-elevated callers
+	// get exit 4 on update/complete/fail; owner_session is recorded
+	// identically in both modes.
+	EnforceSessionOwnership bool `toml:"enforce_session_ownership"`
 }
 
 // ReadFile parses .quest/config.toml under root. A missing file returns

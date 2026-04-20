@@ -57,21 +57,38 @@ func seedTaskFull(t *testing.T, s store.Store, id, title, status, ownerSession s
 }
 
 // plannerCfg is a cfg tuned for elevated tests: role=planner, roles
-// list includes "planner", session set.
+// list includes "planner", session set. Session-ownership enforcement
+// is on so the existing ownership-path assertions remain strict-mode
+// tests; relaxed-mode variants use plannerCfgRelaxed / workerCfgRelaxed.
 func plannerCfg() config.Config {
 	return config.Config{
-		Workspace: config.WorkspaceConfig{ElevatedRoles: []string{"planner"}},
-		Agent:     config.AgentConfig{Role: "planner", Session: "sess-p1"},
-		Output:    config.OutputConfig{Format: "json"},
+		Workspace: config.WorkspaceConfig{
+			ElevatedRoles:           []string{"planner"},
+			EnforceSessionOwnership: true,
+		},
+		Agent:  config.AgentConfig{Role: "planner", Session: "sess-p1"},
+		Output: config.OutputConfig{Format: "json"},
 	}
 }
 
 func workerCfg(session string) config.Config {
 	return config.Config{
-		Workspace: config.WorkspaceConfig{ElevatedRoles: []string{"planner"}},
-		Agent:     config.AgentConfig{Role: "worker", Session: session},
-		Output:    config.OutputConfig{Format: "json"},
+		Workspace: config.WorkspaceConfig{
+			ElevatedRoles:           []string{"planner"},
+			EnforceSessionOwnership: true,
+		},
+		Agent:  config.AgentConfig{Role: "worker", Session: session},
+		Output: config.OutputConfig{Format: "json"},
 	}
+}
+
+// workerCfgRelaxed matches workerCfg but with session-ownership
+// enforcement off (spec default). Used by the cross-session-allowed
+// tests that pin the relaxed-mode contract.
+func workerCfgRelaxed(session string) config.Config {
+	cfg := workerCfg(session)
+	cfg.Workspace.EnforceSessionOwnership = false
+	return cfg
 }
 
 // TestUpdateNoteHappyPath pins the simplest worker path: --note on an
@@ -430,6 +447,40 @@ func TestUpdateElevatedOnAcceptedBypassesOwnership(t *testing.T) {
 	err, _, _ := runUpdate(t, s, plannerCfg(), "", []string{"proj-a1", "--tier", "T3"})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
+	}
+}
+
+// TestUpdateCrossSessionAllowedWhenDisabled pins the relaxed-mode
+// contract (spec §Role Gating > Session ownership,
+// enforce_session_ownership = false): a non-owning, non-elevated
+// worker can --note / --pr / --handoff an accepted task. handoff_session
+// records the caller's session, not the owner's — matching the spec's
+// "recorded identically in both modes" guarantee (the session fields
+// always reflect the actual caller).
+func TestUpdateCrossSessionAllowedWhenDisabled(t *testing.T) {
+	s, dbPath := testStore(t)
+	seedTaskFull(t, s, "proj-a1", "Alpha", "accepted", "sess-owner")
+
+	err, _, _ := runUpdate(t, s, workerCfgRelaxed("sess-stranger"), "",
+		[]string{"proj-a1", "--note", "helpful stranger", "--handoff", "see note"})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	var noteBody string
+	queryOne(t, dbPath, "SELECT body FROM notes WHERE task_id='proj-a1'").Scan(&noteBody)
+	if noteBody != "helpful stranger" {
+		t.Errorf("note body = %q, want 'helpful stranger'", noteBody)
+	}
+
+	var owner, handoffSess sql.NullString
+	queryOne(t, dbPath, "SELECT owner_session, handoff_session FROM tasks WHERE id='proj-a1'").
+		Scan(&owner, &handoffSess)
+	if owner.String != "sess-owner" {
+		t.Errorf("owner_session = %q, want sess-owner (unchanged)", owner.String)
+	}
+	if handoffSess.String != "sess-stranger" {
+		t.Errorf("handoff_session = %q, want sess-stranger (caller)", handoffSess.String)
 	}
 }
 
