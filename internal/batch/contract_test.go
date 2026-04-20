@@ -83,4 +83,8 @@ func TestBatchInvalidLinkTypeCodeRecognized(t *testing.T) {
 		t.Errorf("BatchCodeInvalidTier = %q, want %q",
 			batch.BatchCodeInvalidTier, "invalid_tier")
 	}
+	if batch.BatchCodeFieldTooLong != "field_too_long" {
+		t.Errorf("BatchCodeFieldTooLong = %q, want %q",
+			batch.BatchCodeFieldTooLong, "field_too_long")
+	}
 }

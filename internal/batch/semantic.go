@@ -25,6 +25,10 @@ var validLinkTypes = map[string]bool{
 //   - link-type enum (invalid_link_type, field `dependencies[n].type`)
 //   - type enum (invalid_type, field `type`) against spec §Core fields
 //   - tier enum (invalid_tier, field `tier`) against spec §Model tiers
+//   - title byte cap (field_too_long, field `title`) — see spec
+//     §Field constraints; mirrors the `--title` cap on `quest create`
+//     and `quest update`, expressed in the batch surface as a
+//     per-line JSONL semantic-phase error.
 //   - external-ID parent status (parent_not_open, field `parent.id`)
 //     mirroring `quest create --parent` / `quest move --parent`
 //     enforcement — a batch-internal ref parent is always `open` at
@@ -49,10 +53,33 @@ func PhaseSemantic(ctx context.Context, s store.Store, lines []BatchLine, valid 
 		errs = append(errs, linkTypeErrors(line)...)
 		errs = append(errs, typeEnumErrors(line)...)
 		errs = append(errs, tierEnumErrors(line)...)
+		errs = append(errs, titleTooLongErrors(line)...)
 		errs = append(errs, parentNotOpenErrors(ctx, s, line, parentStatusCache)...)
 		errs = append(errs, semanticDepErrors(ctx, s, line)...)
 	}
 	return errs
+}
+
+// titleTooLongErrors enforces the spec §Field constraints 128-byte
+// cap on `title`. Empty titles are reported as missing_field at
+// phase 1; here we only flag lines whose title exceeds the cap. The
+// check counts UTF-8 bytes (len(s)), not code points or graphemes —
+// consistent with the `@file` 1 MiB byte-based limit.
+func titleTooLongErrors(line BatchLine) []BatchError {
+	observed := len(line.Title)
+	if observed <= MaxTitleBytes {
+		return nil
+	}
+	return []BatchError{{
+		Line:     line.LineNo,
+		Phase:    PhaseNameSemantic,
+		Code:     BatchCodeFieldTooLong,
+		Field:    "title",
+		Limit:    MaxTitleBytes,
+		Observed: observed,
+		Message: fmt.Sprintf("field %q exceeds %d-byte limit (observed %d bytes)",
+			"title", MaxTitleBytes, observed),
+	}}
 }
 
 // typeEnumErrors checks line.Type against the spec §Core fields enum.

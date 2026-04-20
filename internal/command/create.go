@@ -146,6 +146,12 @@ func validateCreateArgs(a createArgs) error {
 	if err := checkNonEmpty("--title", a.Title); err != nil {
 		return err
 	}
+	if a.Title != nil {
+		if n := len(*a.Title); n > batch.MaxTitleBytes {
+			return fmt.Errorf("create: --title: exceeds %d-byte limit (observed %d bytes): %w",
+				batch.MaxTitleBytes, n, errors.ErrUsage)
+		}
+	}
 	if err := checkNonEmpty("--description", a.Description); err != nil {
 		return err
 	}

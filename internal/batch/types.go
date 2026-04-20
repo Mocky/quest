@@ -49,7 +49,8 @@ type DepEntry struct {
 // presence is driven by Code per spec §Batch error output. All
 // integer fields use omitempty so the zero value is absent from
 // output (intentional for `empty_file` where `line` is omitted; safe
-// for `first_line` and `depth` because both are strictly positive).
+// for `first_line`, `depth`, `limit`, and `observed` because all are
+// strictly positive whenever their code emits them).
 type BatchError struct {
 	Line         int      `json:"line,omitempty"`
 	Phase        string   `json:"phase"`
@@ -66,6 +67,8 @@ type BatchError struct {
 	LinkType     string   `json:"link_type,omitempty"`
 	RequiredType string   `json:"required_type,omitempty"`
 	Value        string   `json:"value,omitempty"`
+	Limit        int      `json:"limit,omitempty"`
+	Observed     int      `json:"observed,omitempty"`
 }
 
 // Phase constants used in BatchError.Phase. Spec §Batch error output
@@ -103,6 +106,7 @@ const (
 	BatchCodeInvalidLinkType    = "invalid_link_type"
 	BatchCodeInvalidType        = "invalid_type"
 	BatchCodeInvalidTier        = "invalid_tier"
+	BatchCodeFieldTooLong       = "field_too_long"
 	BatchCodeParentNotOpen      = "parent_not_open"
 )
 

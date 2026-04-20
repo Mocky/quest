@@ -199,6 +199,104 @@ func TestBatchWithExternalParent(t *testing.T) {
 	}
 }
 
+// TestBatchTitleTooLongIsAtomic: a 129-byte title on any line is a
+// phase-4 field_too_long semantic error; without --partial-ok the
+// entire batch rolls back atomically (no tasks created) and exits 2.
+// The JSONL stderr carries the full documented shape: line, phase,
+// code, field, limit, observed, message. Pins spec §Field constraints
+// and the field_too_long row in §Batch error output.
+func TestBatchTitleTooLongIsAtomic(t *testing.T) {
+	s, dbPath := testStore(t)
+	longTitle := strings.Repeat("a", 129)
+	path := writeBatchFile(t,
+		`{"ref":"ok","title":"Fine"}`+"\n"+
+			`{"ref":"bad","title":"`+longTitle+`"}`+"\n")
+
+	err, stdout, stderr := runBatch(t, s, createCfg(), []string{path})
+	if err == nil || !stderrors.Is(err, errors.ErrUsage) {
+		t.Fatalf("err = %v, want ErrUsage", err)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty (atomic rollback)", stdout)
+	}
+	// Find the field_too_long JSONL entry.
+	var found map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(stderr), "\n") {
+		var m map[string]any
+		if jerr := json.Unmarshal([]byte(line), &m); jerr != nil {
+			continue
+		}
+		if m["code"] == "field_too_long" {
+			found = m
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("stderr missing field_too_long; got %q", stderr)
+	}
+	if found["phase"] != "semantic" {
+		t.Errorf("phase = %v, want semantic", found["phase"])
+	}
+	if found["field"] != "title" {
+		t.Errorf("field = %v, want title", found["field"])
+	}
+	if v, _ := found["limit"].(float64); int(v) != 128 {
+		t.Errorf("limit = %v, want 128", found["limit"])
+	}
+	if v, _ := found["observed"].(float64); int(v) != 129 {
+		t.Errorf("observed = %v, want 129", found["observed"])
+	}
+	if v, _ := found["line"].(float64); int(v) != 2 {
+		t.Errorf("line = %v, want 2", found["line"])
+	}
+	var c int
+	if err := queryOne(t, dbPath, "SELECT COUNT(*) FROM tasks").Scan(&c); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if c != 0 {
+		t.Errorf("tasks = %d, want 0 (atomic rollback)", c)
+	}
+}
+
+// TestBatchTitleBoundaryAccepts: an exactly-128-byte title on a
+// batch line commits successfully; a 64-character 2-byte-rune title
+// (128 bytes) also commits. Byte-based boundary, not code-point.
+func TestBatchTitleBoundaryAccepts(t *testing.T) {
+	cases := []struct {
+		name  string
+		title string
+	}{
+		{"128 ASCII bytes", strings.Repeat("a", 128)},
+		{"64 two-byte runes", strings.Repeat("é", 64)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, dbPath := testStore(t)
+			path := writeBatchFile(t,
+				`{"ref":"ok","title":`+jsonStringLiteral(tc.title)+`}`+"\n")
+			err, _, stderr := runBatch(t, s, createCfg(), []string{path})
+			if err != nil {
+				t.Fatalf("Batch: %v (stderr=%q)", err, stderr)
+			}
+			var c int
+			if err := queryOne(t, dbPath, "SELECT COUNT(*) FROM tasks").Scan(&c); err != nil {
+				t.Fatalf("count tasks: %v", err)
+			}
+			if c != 1 {
+				t.Errorf("tasks = %d, want 1", c)
+			}
+		})
+	}
+}
+
+// jsonStringLiteral encodes s as a JSON string literal for inline
+// JSONL fixtures — avoids fragile manual quoting when the title
+// carries multi-byte UTF-8 runes.
+func jsonStringLiteral(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 // TestBatchDepthExceededIsAtomic: one line whose depth would be 4
 // blocks the entire batch in atomic mode.
 func TestBatchDepthExceededIsAtomic(t *testing.T) {

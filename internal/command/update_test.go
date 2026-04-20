@@ -144,6 +144,54 @@ func TestUpdateElevatedFlagByPlannerAllowed(t *testing.T) {
 	}
 }
 
+// TestUpdateTitleBoundary mirrors TestCreateTitleBoundary for the
+// update path: exactly 128 bytes accepts; 129 bytes rejects with
+// exit 2; a 64-character 2-byte-rune title (128 bytes) accepts while
+// 65 of the same rune (130 bytes) rejects. Pins byte-counting
+// semantics on the `--title` flag at the update entry point per spec
+// §Field constraints.
+func TestUpdateTitleBoundary(t *testing.T) {
+	cases := []struct {
+		name    string
+		title   string
+		wantErr bool
+	}{
+		{"exactly 128 ASCII bytes", strings.Repeat("a", 128), false},
+		{"129 ASCII bytes", strings.Repeat("a", 129), true},
+		{"64 two-byte runes = 128 bytes", strings.Repeat("é", 64), false},
+		{"65 two-byte runes = 130 bytes", strings.Repeat("é", 65), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := testStore(t)
+			seedTaskFull(t, s, "proj-a1", "Alpha", "open", "")
+			err, _, _ := runUpdate(t, s, plannerCfg(), "",
+				[]string{"proj-a1", "--title", tc.title})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("got nil, want ErrUsage for %d-byte title", len(tc.title))
+				}
+				if !stderrors.Is(err, errors.ErrUsage) {
+					t.Fatalf("err = %v, want wraps ErrUsage", err)
+				}
+				if !strings.Contains(err.Error(), "--title") {
+					t.Errorf("err = %q, want mentions --title", err.Error())
+				}
+				if !strings.Contains(err.Error(), "128") {
+					t.Errorf("err = %q, want mentions 128 (byte limit)", err.Error())
+				}
+				if !strings.Contains(err.Error(), "observed") {
+					t.Errorf("err = %q, want mentions observed byte size", err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("Update: %v (title was %d bytes)", err, len(tc.title))
+				}
+			}
+		})
+	}
+}
+
 // TestUpdateEmptyValueRejected pins every flag listed in spec §update
 // as rejecting empty strings with exit 2. Table-driven — one case per
 // flag.

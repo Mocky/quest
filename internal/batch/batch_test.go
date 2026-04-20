@@ -309,6 +309,69 @@ func TestPhaseSemanticInvalidTier(t *testing.T) {
 	}
 }
 
+// TestPhaseSemanticTitleTooLong pins the 128-byte title cap as a
+// phase-4 field_too_long error. The error carries field=title,
+// limit=128, and the exact observed byte count so agents can repair
+// the line without recomputing len. An exactly-128-byte title (ASCII
+// or multi-byte UTF-8 summing to 128 bytes) passes the cap.
+func TestPhaseSemanticTitleTooLong(t *testing.T) {
+	s := testStore(t)
+	long := strings.Repeat("a", 129)
+	body := `{"ref":"a","title":"` + long + `"}` + "\n"
+	_, errs := runPhases(t, s, body)
+	tooLong := withCode(errs, batch.BatchCodeFieldTooLong)
+	if len(tooLong) != 1 {
+		t.Fatalf("errs = %+v, want 1 field_too_long", tooLong)
+	}
+	got := tooLong[0]
+	if got.Phase != batch.PhaseNameSemantic {
+		t.Errorf("phase = %q, want semantic", got.Phase)
+	}
+	if got.Field != "title" {
+		t.Errorf("field = %q, want title", got.Field)
+	}
+	if got.Limit != batch.MaxTitleBytes {
+		t.Errorf("limit = %d, want %d", got.Limit, batch.MaxTitleBytes)
+	}
+	if got.Observed != 129 {
+		t.Errorf("observed = %d, want 129", got.Observed)
+	}
+	if got.Line != 1 {
+		t.Errorf("line = %d, want 1", got.Line)
+	}
+}
+
+// TestPhaseSemanticTitleAtBoundary: a title of exactly 128 bytes
+// must accept (128 is inclusive). Pins the boundary on the phase-4
+// check so a tightening refactor would fail immediately.
+func TestPhaseSemanticTitleAtBoundary(t *testing.T) {
+	s := testStore(t)
+	cases := []struct {
+		name  string
+		title string
+	}{
+		{"128 ASCII bytes", strings.Repeat("a", 128)},
+		{"64 two-byte runes = 128 bytes", strings.Repeat("é", 64)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"ref":"a","title":` + fixtureJSONString(tc.title) + `}` + "\n"
+			_, errs := runPhases(t, s, body)
+			if len(withCode(errs, batch.BatchCodeFieldTooLong)) != 0 {
+				t.Errorf("errs = %+v, want no field_too_long for %d-byte title", errs, len(tc.title))
+			}
+		})
+	}
+}
+
+// fixtureJSONString wraps a string literal as a JSON-safe value for
+// inline JSONL batch fixtures — avoids manual escaping when the
+// payload contains multi-byte runes.
+func fixtureJSONString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 // TestPhaseSemanticBlockedByCancelled: dep target is an existing
 // cancelled task → blocked_by_cancelled.
 func TestPhaseSemanticBlockedByCancelled(t *testing.T) {
@@ -562,6 +625,11 @@ func TestBatchStderrShape(t *testing.T) {
 			name: "invalid_tier",
 			err:  batch.BatchError{Line: 1, Phase: "semantic", Code: "invalid_tier", Field: "tier", Value: "T9", Message: "m"},
 			keys: []string{"line", "phase", "code", "field", "value", "message"},
+		},
+		{
+			name: "field_too_long",
+			err:  batch.BatchError{Line: 1, Phase: "semantic", Code: "field_too_long", Field: "title", Limit: 128, Observed: 129, Message: "m"},
+			keys: []string{"line", "phase", "code", "field", "limit", "observed", "message"},
 		},
 		{
 			name: "parent_not_open carries id + actual_status",

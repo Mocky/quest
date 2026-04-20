@@ -370,6 +370,12 @@ func validateUpdateUsage(a updateArgs) error {
 	if err := check("--title", a.Title); err != nil {
 		return err
 	}
+	if a.Title != nil {
+		if n := len(*a.Title); n > batch.MaxTitleBytes {
+			return fmt.Errorf("update: --title: exceeds %d-byte limit (observed %d bytes): %w",
+				batch.MaxTitleBytes, n, errors.ErrUsage)
+		}
+	}
 	if err := check("--description", a.Description); err != nil {
 		return err
 	}

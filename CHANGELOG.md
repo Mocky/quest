@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Added
+
+- Enforce the 128-byte cap on task `title` at every write path per spec §Field constraints. `quest create --title` and `quest update --title` exit 2 with a usage error naming the flag and the observed byte count; `quest batch` reports over-limit titles as a per-line `field_too_long` JSONL error in the `semantic` phase, carrying `field`, `limit`, and `observed`. Bytes, not code points — consistent with the `@file` 1 MiB limit.
+
 ### Changed
 ### Deprecated
 ### Removed

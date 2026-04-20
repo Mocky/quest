@@ -53,3 +53,11 @@ func ValidateTier(t string) error {
 	return fmt.Errorf("unknown tier %q (want one of %s): %w",
 		t, strings.Join(ValidTiers, ", "), errors.ErrUsage)
 }
+
+// MaxTitleBytes is the spec §Field constraints cap on `title` —
+// 128 bytes of UTF-8. Applies at every title-write entry point
+// (`quest create --title`, `quest update --title`, and the `title`
+// field in a batch line). The batch surface reports a violation as
+// phase-4 field_too_long; the CLI entry points exit 2 with a usage
+// error naming the flag and observed byte count.
+const MaxTitleBytes = 128

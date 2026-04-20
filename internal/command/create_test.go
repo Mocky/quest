@@ -122,6 +122,56 @@ func TestCreateEmptyTitle(t *testing.T) {
 	}
 }
 
+// TestCreateTitleBoundary: the 128-byte cap is inclusive — a title of
+// exactly 128 ASCII bytes accepts, and a 129-byte title rejects with
+// exit 2 before any DB I/O. A 128-byte UTF-8 title built from 64
+// 2-byte runes also accepts (pinning byte-counting semantics, not
+// code-point counting); 65 of the same rune produces 130 bytes and
+// rejects. Spec §Field constraints.
+func TestCreateTitleBoundary(t *testing.T) {
+	cases := []struct {
+		name    string
+		title   string
+		wantErr bool
+	}{
+		{"exactly 128 ASCII bytes", strings.Repeat("a", 128), false},
+		{"129 ASCII bytes", strings.Repeat("a", 129), true},
+		{"64 two-byte runes = 128 bytes", strings.Repeat("é", 64), false},
+		{"65 two-byte runes = 130 bytes", strings.Repeat("é", 65), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := testStore(t)
+			err, _, errout := runCreate(t, s, createCfg(), []string{"--title", tc.title})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("got nil, want ErrUsage for %d-byte title", len(tc.title))
+				}
+				if !stderrors.Is(err, errors.ErrUsage) {
+					t.Fatalf("err = %v, want wraps ErrUsage", err)
+				}
+				if !strings.Contains(err.Error(), "--title") {
+					t.Errorf("err = %q, want mentions --title", err.Error())
+				}
+				if !strings.Contains(err.Error(), "128") {
+					t.Errorf("err = %q, want mentions 128 (byte limit)", err.Error())
+				}
+				// The observed byte count belongs in the error too so
+				// agents can tell how much they overshot without
+				// recomputing len(s).
+				if !strings.Contains(err.Error(), "observed") {
+					t.Errorf("err = %q, want mentions observed byte size", err.Error())
+				}
+				_ = errout
+			} else {
+				if err != nil {
+					t.Fatalf("Create: %v (title was %d bytes)", err, len(tc.title))
+				}
+			}
+		})
+	}
+}
+
 // TestCreateInvalidType: --type must be task or bug.
 func TestCreateInvalidType(t *testing.T) {
 	s, _ := testStore(t)
