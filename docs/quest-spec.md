@@ -290,8 +290,8 @@ Every write command emits a small JSON object on stdout on success. Shapes are t
 | `reset`            | `{"id": "...", "status": "open"}` -- spec'd above                                           |
 | `create`           | `{"id": "<new-id>"}` -- the only field; callers `show` for the full task                    |
 | `update`           | `{"id": "..."}` -- no echo of which fields changed; callers `show` for post-state          |
-| `link`             | `{"task": "...", "target": "...", "type": "..."}` -- the edge that was added               |
-| `unlink`           | `{"task": "...", "target": "...", "type": "..."}` -- the edge that was removed             |
+| `link`             | `{"task": "...", "target": "...", "link_type": "..."}` -- the edge that was added          |
+| `unlink`           | `{"task": "...", "target": "...", "link_type": "..."}` -- the edge that was removed        |
 | `tag`              | `{"id": "...", "tags": [...]}` -- full post-state tag list (sorted, lowercase)              |
 | `untag`            | `{"id": "...", "tags": [...]}` -- full post-state tag list (sorted, lowercase)              |
 | `cancel`           | `{"cancelled": [...], "skipped": [...]}` -- spec'd above                                   |
@@ -305,7 +305,7 @@ Rules common to the action-ack shapes (`accept`/`complete`/`fail`/`reset`/`creat
 - `id` is the task affected (never `null`).
 - `status` on state-transition commands is the post-transition status as a literal string.
 
-For idempotent no-ops, the action-ack still emits the current state: `tag` on an already-tagged task returns `{"id": "...", "tags": [...]}` with the unchanged list, `link` on an already-linked edge returns `{"task": "...", "target": "...", "type": "..."}` identifying the existing edge. Agents cannot distinguish "added now" from "already present" from the success body; they can tell from the absence of a history entry if they care.
+For idempotent no-ops, the action-ack still emits the current state: `tag` on an already-tagged task returns `{"id": "...", "tags": [...]}` with the unchanged list, `link` on an already-linked edge returns `{"task": "...", "target": "...", "link_type": "..."}` identifying the existing edge. Agents cannot distinguish "added now" from "already present" from the success body; they can tell from the absence of a history entry if they care.
 
 `deps` and `show` and query commands are not listed here -- they are read commands whose shapes are spec'd per-command under their own section.
 
