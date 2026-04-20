@@ -100,6 +100,14 @@ func (d *InstrumentedStore) CurrentSchemaVersion(ctx context.Context) (int, erro
 	return d.inner.CurrentSchemaVersion(ctx)
 }
 
+// Snapshot is a pass-through. The snapshot primitive is cross-cutting
+// (used by quest backup and by the dispatcher's pre-migration path)
+// and its telemetry span is opened by the caller, not by this
+// decorator — see the §4.4 snapshot-span follow-up in the backup plan.
+func (d *InstrumentedStore) Snapshot(ctx context.Context, dstPath string) (int64, error) {
+	return d.inner.Snapshot(ctx, dstPath)
+}
+
 // Unwrap exposes the inner store so store.Migrate can drill through
 // the decorator and reach the *sqliteStore for its embedded.SQL
 // migration runner. Migration runs from the bare store directly so

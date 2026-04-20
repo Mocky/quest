@@ -26,6 +26,7 @@ type Store interface {
 	Close() error
 	BeginImmediate(ctx context.Context, kind TxKind) (*Tx, error)
 	CurrentSchemaVersion(ctx context.Context) (int, error)
+	Snapshot(ctx context.Context, dstPath string) (int64, error)
 }
 
 // TxKind labels a BEGIN IMMEDIATE transaction for the quest.store.tx
