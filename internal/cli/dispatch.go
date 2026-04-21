@@ -2,13 +2,11 @@ package cli
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"sort"
 
 	"github.com/mocky/quest/internal/command"
 	"github.com/mocky/quest/internal/config"
-	"github.com/mocky/quest/internal/errors"
 	"github.com/mocky/quest/internal/store"
 )
 
@@ -34,10 +32,7 @@ type commandDescriptor struct {
 }
 
 // descriptors is the authoritative dispatch table. Adding a command
-// means adding a row here; Task 13.1's TestRoleGateDenials iterates
-// this slice. Phase 4 ships with real handlers for `version` only;
-// every other row points at a notImplemented placeholder that Phase
-// 5-11 swaps out for the real `internal/command/<name>.go` handler.
+// means adding a row here; TestRoleGateDenials iterates this slice.
 var descriptors = []commandDescriptor{
 	{Name: "version", Handler: command.Version, Elevated: false, RequiresWorkspace: false, SuppressTelemetry: true},
 	{Name: "init", Handler: command.Init, Elevated: false, RequiresWorkspace: false, SuppressTelemetry: false},
@@ -101,22 +96,4 @@ func availableCommands(cfg config.Config) []string {
 	}
 	sort.Strings(worker)
 	return worker
-}
-
-// notImplemented returns a Handler that wraps ErrGeneral with a
-// "not implemented" message. Replaced row-by-row as Phases 5-11
-// land the real command handlers. Until then, elevated-role callers
-// who bypass the role gate and reach the handler get a stable
-// exit-1 stderr instead of a nil-deref panic.
-func notImplemented(name string) Handler {
-	return func(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-		_ = ctx
-		_ = cfg
-		_ = s
-		_ = args
-		_ = stdin
-		_ = stdout
-		_ = stderr
-		return fmt.Errorf("%w: command %q is not implemented yet", errors.ErrGeneral, name)
-	}
 }
