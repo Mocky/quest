@@ -735,7 +735,9 @@ func TestShowTextPipedWraps80(t *testing.T) {
 
 // TestShowTextHistoryBlock pins the --history section: heading carries
 // the count, each row shows `{ts}  {role}/{session}  {action}` with
-// action-specific detail when applicable.
+// action-specific detail when applicable. Covers `created`, `accepted`,
+// `tagged`/`untagged` (multi-tag array rendering), `linked`, and
+// `pr_added` so a renderer regression in any one lights up here.
 func TestShowTextHistoryBlock(t *testing.T) {
 	s, _ := testStore(t)
 	seedMinimalTask(t, s, "proj-a1", "Alpha")
@@ -763,6 +765,46 @@ func TestShowTextHistoryBlock(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("append accepted: %v", err)
 	}
+	if err := store.AppendHistory(context.Background(), tx, store.History{
+		TaskID:    "proj-a1",
+		Timestamp: "2026-04-18T10:10:00Z",
+		Action:    store.HistoryTagged,
+		Role:      "coder",
+		Session:   "sess-c1",
+		Payload:   map[string]any{"tags": []any{"security", "review"}},
+	}); err != nil {
+		t.Fatalf("append tagged: %v", err)
+	}
+	if err := store.AppendHistory(context.Background(), tx, store.History{
+		TaskID:    "proj-a1",
+		Timestamp: "2026-04-18T10:11:00Z",
+		Action:    store.HistoryUntagged,
+		Role:      "coder",
+		Session:   "sess-c1",
+		Payload:   map[string]any{"tags": []any{"review"}},
+	}); err != nil {
+		t.Fatalf("append untagged: %v", err)
+	}
+	if err := store.AppendHistory(context.Background(), tx, store.History{
+		TaskID:    "proj-a1",
+		Timestamp: "2026-04-18T10:15:00Z",
+		Action:    store.HistoryLinked,
+		Role:      "coder",
+		Session:   "sess-c1",
+		Payload:   map[string]any{"link_type": "blocked-by", "target": "proj-a2"},
+	}); err != nil {
+		t.Fatalf("append linked: %v", err)
+	}
+	if err := store.AppendHistory(context.Background(), tx, store.History{
+		TaskID:    "proj-a1",
+		Timestamp: "2026-04-18T10:20:00Z",
+		Action:    store.HistoryPRAdded,
+		Role:      "coder",
+		Session:   "sess-c1",
+		Payload:   map[string]any{"url": "https://example.test/pr/1"},
+	}); err != nil {
+		t.Fatalf("append pr_added: %v", err)
+	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -773,7 +815,7 @@ func TestShowTextHistoryBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Show: %v", err)
 	}
-	if !strings.Contains(stdout, "\nHistory (2)\n") {
+	if !strings.Contains(stdout, "\nHistory (6)\n") {
 		t.Errorf("missing History heading with count: %q", stdout)
 	}
 	// `created` detail: key=value with list rendering for tags.
@@ -786,6 +828,24 @@ func TestShowTextHistoryBlock(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "coder/sess-c1") {
 		t.Errorf("missing role/session for accepted row: %q", stdout)
+	}
+	// `tagged` detail: joined tag list (regression guard for the
+	// payload-key mismatch where the renderer read "tag" but the
+	// writer emitted "tags").
+	if !strings.Contains(stdout, "tagged    security, review") {
+		t.Errorf("missing tagged detail with joined tags: %q", stdout)
+	}
+	// `untagged` detail: single-entry list still renders the value.
+	if !strings.Contains(stdout, "untagged  review") {
+		t.Errorf("missing untagged detail: %q", stdout)
+	}
+	// `linked` detail: `{link_type} {target}`.
+	if !strings.Contains(stdout, "linked    blocked-by proj-a2") {
+		t.Errorf("missing linked detail: %q", stdout)
+	}
+	// `pr_added` detail: the URL.
+	if !strings.Contains(stdout, "pr_added  https://example.test/pr/1") {
+		t.Errorf("missing pr_added detail: %q", stdout)
 	}
 }
 

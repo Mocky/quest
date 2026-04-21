@@ -488,10 +488,17 @@ func historyDetail(h historyEntry) string {
 		}
 		return lt + " " + t
 	case "tagged", "untagged":
-		if tag, _ := h.Payload["tag"].(string); tag != "" {
-			return tag
+		tags, ok := h.Payload["tags"].([]any)
+		if !ok || len(tags) == 0 {
+			return ""
 		}
-		return ""
+		items := make([]string, 0, len(tags))
+		for _, t := range tags {
+			if s, ok := t.(string); ok && s != "" {
+				items = append(items, s)
+			}
+		}
+		return strings.Join(items, ", ")
 	}
 	return ""
 }
