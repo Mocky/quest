@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mocky/quest/internal/buildinfo"
@@ -240,6 +242,113 @@ func rebuildDescriptorIndex() {
 	for _, d := range descriptors {
 		descriptorIndex[d.Name] = d
 	}
+}
+
+// Panic recovery writes exit_code=1 to the "quest command complete"
+// slog record (qst-0s). The recovery defer must run before the
+// observability defer so the record sees the corrected exitCode.
+func TestExecutePanicRecordsExitCodeInCompleteLog(t *testing.T) {
+	orig := descriptors
+	descriptors = []commandDescriptor{{
+		Name: "boom",
+		Handler: func(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+			panic("kaboom")
+		},
+		SuppressTelemetry: true,
+	}}
+	rebuildDescriptorIndex()
+	defer func() {
+		descriptors = orig
+		rebuildDescriptorIndex()
+	}()
+
+	rec := captureSlog(t)
+	exit, _, _ := runExecute([]string{"boom"}, baseCfg())
+	if exit != 1 {
+		t.Fatalf("exit = %d, want 1", exit)
+	}
+
+	complete := rec.find("quest command complete")
+	if complete == nil {
+		t.Fatalf("no 'quest command complete' slog record; got: %v", rec.messages())
+	}
+	got, ok := attrInt(complete, "exit_code")
+	if !ok {
+		t.Fatalf("'quest command complete' record missing exit_code attr; attrs: %v", attrMap(complete))
+	}
+	if got != 1 {
+		t.Errorf("exit_code in complete log = %d, want 1", got)
+	}
+}
+
+// slogRecorder captures every slog.Record for later inspection. Level
+// is Debug so the DEBUG "quest command start/complete" pair survives.
+type slogRecorder struct {
+	mu   sync.Mutex
+	recs []slog.Record
+}
+
+func (r *slogRecorder) Enabled(context.Context, slog.Level) bool { return true }
+func (r *slogRecorder) WithAttrs([]slog.Attr) slog.Handler       { return r }
+func (r *slogRecorder) WithGroup(string) slog.Handler            { return r }
+func (r *slogRecorder) Handle(_ context.Context, rec slog.Record) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recs = append(r.recs, rec)
+	return nil
+}
+
+func (r *slogRecorder) find(msg string) *slog.Record {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.recs {
+		if r.recs[i].Message == msg {
+			return &r.recs[i]
+		}
+	}
+	return nil
+}
+
+func (r *slogRecorder) messages() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.recs))
+	for i, rec := range r.recs {
+		out[i] = rec.Message
+	}
+	return out
+}
+
+func captureSlog(t *testing.T) *slogRecorder {
+	t.Helper()
+	prev := slog.Default()
+	rec := &slogRecorder{}
+	slog.SetDefault(slog.New(rec))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return rec
+}
+
+func attrInt(rec *slog.Record, key string) (int, bool) {
+	var got int
+	var found bool
+	rec.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			got = int(a.Value.Int64())
+			found = true
+			return false
+		}
+		return true
+	})
+	return got, found
+}
+
+func attrMap(rec *slog.Record) map[string]string {
+	m := map[string]string{}
+	rec.Attrs(func(a slog.Attr) bool {
+		m[a.Key] = a.Value.String()
+		return true
+	})
+	return m
 }
 
 // Sanity: exit code mapping on a handler-returned error flows through

@@ -30,29 +30,6 @@ func Execute(ctx context.Context, cfg config.Config, args []string, stdin io.Rea
 	start := time.Now()
 	parentCtx := ctx
 
-	// Top-level panic recovery wraps the entire dispatch body so a
-	// panic in any phase (pre-handler checks, SuppressTelemetry path,
-	// WrapCommand path) is translated into ErrGeneral exit 1 with an
-	// ERROR slog record per OTEL.md §3.2. origin="handler" is the
-	// best single classification; Phase 12 can refine if dispatcher
-	// panics need to be distinguished from handler panics.
-	defer func() {
-		if r := recover(); r != nil {
-			stack := string(debug.Stack())
-			if len(stack) > 2048 {
-				stack = stack[:2048]
-			}
-			err := fmt.Errorf("%w: panic: %v", errors.ErrGeneral, r)
-			slog.ErrorContext(ctx, "internal error",
-				"err", telemetry.Truncate(err.Error(), 256),
-				"stack", stack,
-				"origin", "handler",
-			)
-			errors.EmitStderr(err, stderr)
-			exitCode = errors.ExitCode(err)
-		}
-	}()
-
 	// Step 1 — identify the command. No args or bare --help prints the
 	// role-filtered banner and exits 0; unknown tokens are exit 2
 	// usage errors. Per-command --help is handled later by each
@@ -88,6 +65,34 @@ func Execute(ctx context.Context, cfg config.Config, args []string, stdin io.Rea
 	slog.DebugContext(ctx, "quest command start", startAttrs(cfg, desc.Name)...)
 	defer func() {
 		slog.DebugContext(ctx, "quest command complete", completeAttrs(cfg, desc.Name, exitCode, time.Since(start))...)
+	}()
+
+	// Panic recovery. Registered *after* the span-end and "quest
+	// command complete" slog defers so that on a panic it fires first
+	// (LIFO), sets exitCode, and the observability defers read the
+	// corrected value — keeping the "quest command complete" record,
+	// the span, and the process exit all in agreement. Earlier
+	// placement left exit_code=0 in logs on every panic (qst-0s).
+	// Phases above this point (command identification, span open)
+	// are quest's own straight-line code and are not wrapped by this
+	// defer; a panic there is a bug that should surface. Classifies
+	// every recovered panic as origin="handler"; Phase 12 can refine
+	// if dispatcher panics need to be distinguished.
+	defer func() {
+		if r := recover(); r != nil {
+			stack := string(debug.Stack())
+			if len(stack) > 2048 {
+				stack = stack[:2048]
+			}
+			err := fmt.Errorf("%w: panic: %v", errors.ErrGeneral, r)
+			slog.ErrorContext(ctx, "internal error",
+				"err", telemetry.Truncate(err.Error(), 256),
+				"stack", stack,
+				"origin", "handler",
+			)
+			errors.EmitStderr(err, stderr)
+			exitCode = errors.ExitCode(err)
+		}
 	}()
 
 	// Step 3 — role gate (elevated commands only). Runs before
