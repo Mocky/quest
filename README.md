@@ -188,11 +188,10 @@ All configuration flows through `internal/config/`; no other package reads envir
 
 ### Global flags
 
-| Flag              | Purpose                                          |
-| ----------------- | ------------------------------------------------ |
-| `--format json`   | Default. Machine-readable output on stdout.      |
-| `--format text`   | Human-readable rendering (not a contract).       |
-| `--log-level`     | Override `QUEST_LOG_LEVEL` for one invocation.   |
+| Flag              | Purpose                                                              |
+| ----------------- | -------------------------------------------------------------------- |
+| `--text`          | Render human-readable output (not a contract). JSON is the default.  |
+| `--log-level`     | Override `QUEST_LOG_LEVEL` for one invocation.                       |
 
 ## How quest fits in Grove
 

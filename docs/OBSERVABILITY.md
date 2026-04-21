@@ -131,11 +131,11 @@ Missing values are not an error; they surface as nulls in history and as empty/`
 
 ### Stdout: Data Channel
 
-- Every command writes its result to **stdout** in the format dictated by `--format` (default: `json`).
+- Every command writes its result to **stdout** in JSON by default; `--text` selects a human-friendly rendering.
 - On success, stdout is the only channel the caller needs to parse.
 - On failure, stdout MAY be empty (e.g., a usage error caught before the handler runs) or MAY carry structured error content (e.g., a `quest batch` partial failure that still lists the created tasks and failed lines). The contract for which commands write structured data on failure is fixed in `quest-spec.md`.
 - JSON output is compact, one object or array per logical response. JSONL (one JSON object per line) is used for streaming responses — currently `quest batch` output and `quest export history.jsonl`.
-- Text-mode output (`--format text`) is a human-friendly rendering. **Agents MUST NOT parse text-mode output.** It is not a contract.
+- Text-mode output (`--text`) is a human-friendly rendering. **Agents MUST NOT parse text-mode output.** It is not a contract.
 
 ### Stderr: Diagnostic Channel
 
@@ -157,7 +157,7 @@ The `quest` prefix on plain-text error lines is what distinguishes them from slo
 Example success invocation:
 
 ```
-$ quest show proj-a1.3 --format json
+$ quest show proj-a1.3
 # stderr: empty (log level defaults to warn; no warnings fired)
 # stdout:
 {"id": "proj-a1.3", "title": "Auth middleware", ...}
@@ -412,11 +412,11 @@ Plain-text stderr output is reserved for the final `quest: <class>: <message>` e
 ### 2. `fmt.Println` for command results
 
 ```go
-// WRONG — bypasses --format, skips json/text branching
+// WRONG — bypasses --text, skips json/text branching
 fmt.Println(taskJSON)
 
 // CORRECT — every command output path goes through internal/output
-output.Emit(cfg.Format, result)
+output.Emit(cfg.Text, result)
 ```
 
 ### 3. Unstructured logging

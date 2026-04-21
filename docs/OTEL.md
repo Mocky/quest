@@ -164,7 +164,7 @@ When quest is called outside a vigil session (human running `quest list` from a 
 
 **Child-span naming carve-out (intentional deviation from guide §3.2).** The guide prescribes `{operation} {target}` for all spans (e.g., `execute_tool quest.create`). Root command spans follow this. Child spans (`quest.store.tx`, `quest.batch.parse`, `quest.role.gate`, `quest.db.migrate`, etc.) do **not** follow `{operation} {target}` and do **not** carry any of the `gen_ai.*` attributes (`gen_ai.tool.name`, `gen_ai.operation.name`, `gen_ai.agent.name`). They are internal subsystem spans, not tool-level operations, and forcing them into the GenAI pattern would misrepresent them (they are not `execute_tool` calls). This carve-out is deliberate and consistent across the quest child-span inventory; do not mix naming styles. Root spans remain the canonical GenAI-convention touchpoint for cross-tool queries. `TestChildSpansOmitGenAIAttributes` iterates every non-root span the exporter captures and asserts the full `gen_ai.*` set is absent — the test is robust against new child span additions and new `gen_ai.*` attributes.
 
-**Depth vs. noise tradeoff.** Store-level spans are created only when the operation has independent diagnostic value -- a slow `quest create` is usually a slow `quest.store.tx`, not a slow argument parse. Pure in-memory work (argument parsing, `--format` rendering, JSONL serialization) is not instrumented with spans; its cost is rolled into the parent command span's duration.
+**Depth vs. noise tradeoff.** Store-level spans are created only when the operation has independent diagnostic value -- a slow `quest create` is usually a slow `quest.store.tx`, not a slow argument parse. Pure in-memory work (argument parsing, `--text` rendering, JSONL serialization) is not instrumented with spans; its cost is rolled into the parent command span's duration.
 
 **Excluded from span instrumentation.**
 
@@ -481,12 +481,13 @@ func main() {
 }
 
 func run() int {
-    // Parse global flags (--format, --log-level) from os.Args[1:] and produce
+    // Parse global flags (--text, --log-level) from os.Args[1:] and produce
     // the stripped subcommand args + a config.Flags value. Done inside
     // internal/cli/flags.go so telemetry / logging can be built with resolved
     // values before cli.Execute runs. cli.Execute does not re-parse globals.
-    // A trailing valueless --format/--log-level short-circuits with a
-    // wrapped ErrUsage (exit 2) before any telemetry is wired up.
+    // A trailing valueless --log-level short-circuits with a wrapped ErrUsage
+    // (exit 2) before any telemetry is wired up. --text is a bool and does
+    // not take a value, so the valueless-trailing check does not apply to it.
     flags, remainingArgs, err := cli.ParseGlobals(os.Args[1:])
     if err != nil {
         errors.EmitStderr(err, os.Stderr)

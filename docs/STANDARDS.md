@@ -124,13 +124,16 @@ type TelemetryConfig struct {
 }
 
 type OutputConfig struct {
-    // Format controls stdout rendering for command results.
-    // Default: "json"
-    // Env: (none)
-    // Flag: --format
-    // Valid values: "json" | "text". Text mode is a human-friendly rendering,
-    // not a contract; agents always read json.
-    Format string
+    // Text, when true, selects the human-friendly rendering; otherwise
+    // quest emits the agent-contract JSON. The type is a bool because the
+    // knob is binary in practice -- JSON is the agent contract and is never
+    // typed; text is the human-only alternative.
+    // Default: false (JSON)
+    // Env: (none -- intentionally omitted; Claude Code and other agents
+    // inherit shell env across many terminals, and a QUEST_TEXT default
+    // would silently corrupt agent output)
+    // Flag: --text
+    Text bool
 }
 ```
 
@@ -230,7 +233,7 @@ func Load(flags Flags) Config {
             CaptureContent: envBool("OTEL_GENAI_CAPTURE_CONTENT"),
         },
         Output: OutputConfig{
-            Format: firstNonEmpty(flags.Format, "json"),
+            Text: flags.Text,
         },
     }
 
@@ -268,10 +271,12 @@ Flag names use kebab-case and mirror the environment variable name without the `
 
 ```
 QUEST_LOG_LEVEL  → --log-level
---format (no env equivalent, defaults to "json")
+--text (no env equivalent; JSON is emitted when the flag is absent)
 ```
 
-Global flags (`--format`, `--log-level`) MUST be position-independent — they can appear before or after the command name. The CLI extracts them in a first parsing pass before dispatching the command.
+`--text` has no env-var equivalent on purpose. Output mode is the one knob where a persistent default would silently corrupt agent output: Claude Code sessions (and other agents) inherit shell env across many terminals, and a process-wide `QUEST_TEXT=true` would break every agent running in that shell without anyone noticing until the parser fails. The choice is per-invocation only, and the config struct reflects that by carrying a `bool` rather than a string.
+
+Global flags (`--text`, `--log-level`) MUST be position-independent — they can appear before or after the command name. The CLI extracts them in a first parsing pass before dispatching the command.
 
 A `--color` flag is deliberately not defined. Text-mode output is plain; humans who want colored rendering pipe through a colorizer. Revisit when a concrete agent workflow needs color and specific color rules are pinned in the spec.
 
@@ -309,7 +314,7 @@ Usage of cancel:
 
 STANDARDS.md does not (yet) document a policy for when a short flag should exist — today only `quest cancel` exposes one. If a short-flag policy is added later, the renderer inherits it: whichever name a flag is declared with dictates its dash prefix, so new short flags pick up the single-dash rendering automatically.
 
-**Out of scope:** error messages from flag parsing (e.g., `flag provided but not defined: -text`). Go's stdlib renders these independently of the `Usage` function, so the shared helper does not affect them. Fixing them requires a separate effort and is deferred to a follow-up if it becomes a pain point.
+**Out of scope:** error messages from flag parsing (e.g., `flag provided but not defined: -nosuchflag`). Go's stdlib renders these independently of the `Usage` function, so the shared helper does not affect them. Fixing them requires a separate effort and is deferred to a follow-up if it becomes a pain point.
 
 ### Validation
 
@@ -477,12 +482,12 @@ if cfg.Log.Level == "" {
 
 For quest, "the API" is the agent-callable surface. It has four layers, all of which are contracts:
 
-1. **Command and flag names** — `quest accept`, `quest batch --partial-ok`, `--format json`.
+1. **Command and flag names** — `quest accept`, `quest batch --partial-ok`, `--text`.
 2. **JSON output on stdout** — field names, types, and presence guarantees (see spec: "All fields are always present in JSON output").
 3. **Exit codes (1-7)** — defined in the spec's Output & Error Conventions and mapped 1:1 to OTEL error classes.
 4. **Environment variables quest reads** — `AGENT_ROLE`, `AGENT_TASK`, `AGENT_SESSION`, `TRACEPARENT`, `QUEST_*`.
 
-Text-mode output (`--format text`) is a human-friendly rendering, not a contract. Its shape can change between versions; agents must not parse it.
+Text-mode output (`--text`) is a human-friendly rendering, not a contract. Its shape can change between versions; agents must not parse it.
 
 History entries and export format are also contracts — retrospective tooling depends on them. Treat them like JSON output.
 
@@ -611,7 +616,7 @@ Maintain a `CHANGELOG.md` in the repo root. Every user-visible change gets an en
 - Default log level lowered from `info` to `warn` to match lore.
 
 ### Deprecated
-- `quest show --json` alias for `--format json`. Removed in v0.3.
+- Legacy `quest rm` alias for `quest cancel`. Removed in v0.3.
 
 ### Removed
 - Nothing in this release.
@@ -663,10 +668,10 @@ type TaskJSON struct {
 #### 3. Making a previously optional flag required
 
 ```go
-// WRONG — agents that don't pass --format now fail
-// quest show now requires --format
+// WRONG — agents that don't pass --history now fail
+// quest show now requires --history
 
-// CORRECT — the default stays "json"; agents that omit --format keep working.
+// CORRECT — the default stays off; agents that omit --history keep working.
 ```
 
 #### 4. Repurposing an exit code

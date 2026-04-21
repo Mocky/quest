@@ -9,7 +9,7 @@ Quest is a task tracking CLI for AI agent workflows. It is a core component of a
 Quest has an **agent-first design**: its command surface, output format, and data model are optimized for programmatic use by LLM-based agents, with human usability as a secondary concern. Key design decisions follow from this:
 
 - Worker agents see only the commands they need, minimizing context window usage
-- Output format is controlled by `--format json|text` (default: `json`)
+- Output is JSON on stdout by default -- the agent contract -- and `--text` selects a human-readable rendering
 - Env var defaults eliminate repetitive arguments in agent tool calls
 - The task schema carries exactly the information an agent needs to do its work
 
@@ -277,9 +277,10 @@ Each `@file` (or `@-` stdin) argument is capped at 1 MiB (1,048,576 bytes) of re
 
 ## Output & Error Conventions
 
-- Output format is controlled by `--format json|text` (default: `json`)
-- `json` -- structured JSON to stdout, suitable for agent consumption
-- `text` -- human-readable formatted output to stdout
+- Output mode is controlled by `--text`; JSON (the agent contract) is the default, `--text` selects a human-readable rendering
+- JSON (default) -- structured JSON to stdout, suitable for agent consumption
+- Text (`--text`) -- human-readable formatted output to stdout
+- No env-var toggle for output mode: Claude Code sessions (and other agents) inherit shell env across many terminals, and a process-wide default would silently corrupt agent output. The choice is per-invocation only
 - Warnings and errors always go to stderr regardless of format
 - Flat JSON structures preferred over deeply nested
 - Consistent types across all commands (durations in seconds, timestamps in ISO 8601)
@@ -288,7 +289,7 @@ Each `@file` (or `@-` stdin) argument is capped at 1 MiB (1,048,576 bytes) of re
 
 ### Text-mode formatting
 
-Text mode (`--format text`) is a human-friendly rendering, not a contract -- see STANDARDS.md §CLI Surface Versioning. The rules below describe the current rendering intent and may evolve without a deprecation cycle; agents MUST NOT parse text output.
+Text mode (`--text`) is a human-friendly rendering, not a contract -- see STANDARDS.md §CLI Surface Versioning. The rules below describe the current rendering intent and may evolve without a deprecation cycle; agents MUST NOT parse text output.
 
 - No ANSI colors. Humans who want colored rendering pipe quest output through a colorizer. A `--color` flag is deferred until a concrete agent workflow needs it and color rules are pinned here.
 - **Helper columns (every column except `title`) use content-aware widths.** Each helper column's width is `max(header_label_width, longest_cell_value_width_in_that_column across the rows being printed)`. The header label length is a floor so headers are never truncated.
@@ -350,7 +351,7 @@ Agents may retry commands after transient failures (exit code 7) or session reco
 
 Every write command emits a small JSON object on stdout on success. Shapes are the agent-facing contract; once pinned here they are governed by `STANDARDS.md` §CLI Surface Versioning. Rich per-command data (full task, history, dependencies) is fetched separately via `quest show`.
 
-| Command            | `--format json` success shape                                                              |
+| Command            | JSON success shape                                                                         |
 | ------------------ | ------------------------------------------------------------------------------------------ |
 | `accept`           | `{"id": "...", "status": "accepted"}`                                                      |
 | `complete`         | `{"id": "...", "status": "completed"}`                                                     |
@@ -377,7 +378,7 @@ For idempotent no-ops, the action-ack still emits the current state: `tag` on an
 
 `deps` and `show` and query commands are not listed here -- they are read commands whose shapes are spec'd per-command under their own section.
 
-Text mode (`--format text`) for write commands is a one-liner summarizing the action (e.g., `proj-a1.3 accepted`, `linked proj-a1.3 blocked-by proj-a1.1`). Text mode is not a contract; agents parse JSON.
+Text mode (`--text`) for write commands is a one-liner summarizing the action (e.g., `proj-a1.3 accepted`, `linked proj-a1.3 blocked-by proj-a1.1`). Text mode is not a contract; agents parse JSON.
 
 ---
 
@@ -679,7 +680,7 @@ History is excluded by default because workers care about current state -- descr
 
 **Field-presence carve-out.** This is the one documented exception to the "all fields always present" rule below: without `--history`, the `history` field is *absent* from the returned object, not serialized as `[]`. The cost argument (skipping history reads entirely) is load-bearing for worker-side command budgets, so the field is omitted rather than fetched-and-emptied.
 
-**`--format json`** (default):
+**JSON output** (default):
 
 ```json
 {
@@ -727,7 +728,7 @@ All fields are always present in JSON output. Fields with no value are `null` (s
 
 `parent` is denormalized to `{id, title, status, type}` when the task has a parent, `null` on root tasks. Dependency objects carry the same four-field task-reference cluster plus a `link_type` naming the relationship (`blocked-by`, `caused-by`, `discovered-from`, `retry-of`). The quartet `{id, title, status, type}` is the canonical shape anywhere a task reference appears in quest output (parent, dependencies, graph edge targets); consumers can treat it as a reusable mini-schema. The `link_type` field is named distinctly from task `type` so the classification primitive (`task`/`bug`) stays separate from the relationship primitive.
 
-**`--format text`**:
+**Text output (`--text`)**:
 
 ```
 proj-01.3 [completed] Auth middleware
@@ -803,7 +804,7 @@ A row is omitted entirely when its condition is not met -- `show` never emits a 
 
 Sections whose condition is not met are omitted entirely. No placeholder headings or `(none)` bodies.
 
-**Type marker consistency.** Every task reference in the output (header, `parent` row, `Dependencies` rows, and the corresponding rows in `quest graph --format text`) renders `type` identically: a ` (bug)` marker between the status bracket and the title when the referenced task is a bug, nothing otherwise. The default is the common case; the marker is a strong visual signal in mixed output.
+**Type marker consistency.** Every task reference in the output (header, `parent` row, `Dependencies` rows, and the corresponding rows in `quest graph --text`) renders `type` identically: a ` (bug)` marker between the status bracket and the title when the referenced task is a bug, nothing otherwise. The default is the common case; the marker is a strong visual signal in mixed output.
 
 **Timestamp format.** Minute precision, UTC, `Z`-terminated: `YYYY-MM-DD HH:MMZ`. JSON output retains second precision per the data-type rules; text mode drops seconds because the display-side precision gain does not justify the column width. The `started` and `completed` rows append a parenthesized relative suffix computed against wall clock (`(1d ago)`, `(23h ago)`, `(5m ago)`, `(just now)`). Note, PR, handoff, and history timestamps render absolute only.
 
@@ -1077,7 +1078,7 @@ Example stderr for a batch with three errors:
 
 ### Batch output
 
-Batch output respects `--format json|text`. In json mode (default), quest outputs a JSONL mapping of batch `ref` values to generated task IDs. In text mode, the same mapping is rendered as a table. Either way, the planner can verify the graph and reference tasks going forward.
+Batch output respects the `--text` toggle. In JSON mode (default), quest outputs a JSONL mapping of batch `ref` values to generated task IDs. In `--text` mode, the same mapping is rendered as a table. Either way, the planner can verify the graph and reference tasks going forward.
 
 ```json
 {"ref": "epic-1", "id": "proj-a1"}
@@ -1110,7 +1111,7 @@ Without `-r`, the command also fails if the task has non-terminal children (exit
 
 `-r` on a leaf task (no descendants) is not an error: the target task is cancelled normally, `cancelled` lists just the target, and `skipped` is `[]`. `-r` is a no-op *structurally* when no descendants exist but still governs whether the existence of children would have blocked the cancel.
 
-**Output.** In `--format json` (default), output is a single JSON object:
+**Output.** In JSON mode (default), output is a single JSON object:
 
 ```json
 {
@@ -1126,7 +1127,7 @@ Without `-r`, the command also fails if the task has non-terminal children (exit
 | `cancelled` | array of strings | IDs of tasks that transitioned to `cancelled` by this call. Always includes the target task when it was cancelled. Order is stable: target first, then descendants by ID |
 | `skipped`   | array of objects | Descendants that were not cancelled because they were already in a terminal state. Each object has `id` (string) and `status` (string). Empty array without `-r` or when no descendants were skipped |
 
-Both fields are always present (empty arrays allowed). For an idempotent no-op (cancelling an already-cancelled task), `cancelled` is an empty array and `skipped` is an empty array. In `--format text`, the output is `cancelled: <id>` per cancelled task followed by `skipped: <id> (<status>)` per skipped task.
+Both fields are always present (empty arrays allowed). For an idempotent no-op (cancelling an already-cancelled task), `cancelled` is an empty array and `skipped` is an empty array. In `--text` mode, the output is `cancelled: <id>` per cancelled task followed by `skipped: <id> (<status>)` per skipped task.
 
 ### In-flight worker coordination
 
@@ -1161,7 +1162,7 @@ Reset a task from `accepted` back to `open` for reassignment. Only available to 
 
 The task retains its handoff, notes, and full history. The reset is recorded as a `reset` history entry with the lead's reason. `owner_session` and `started_at` are cleared. Fails if the task is not in `accepted` status (exit code 5).
 
-**Output.** In `--format json` (default), output is a single JSON object:
+**Output.** In JSON mode (default), output is a single JSON object:
 
 ```json
 {"id": "proj-a1.3", "status": "open"}
@@ -1172,7 +1173,7 @@ The task retains its handoff, notes, and full history. The reset is recorded as 
 | `id`     | string | The task ID that was reset                                      |
 | `status` | string | The post-reset status; always the literal `"open"` on success   |
 
-Both fields are always present. In `--format text`, the output is `<id> reset to open`.
+Both fields are always present. In `--text` mode, the output is `<id> reset to open`.
 
 ---
 
@@ -1199,7 +1200,7 @@ Move is scoped to the planning-and-verification window — after tasks are creat
 
 This command exists to recover from structural errors caught during planning verification — typically immediately after `quest batch` or a series of individual `quest create` calls — without the cancel-and-recreate workflow, which is prohibitively expensive for large sub-graphs. After dispatch begins, structural errors are handled by cancel-and-recreate; the pre-dispatch scope keeps IDs trustworthy for the external systems that capture them.
 
-**Output.** In `--format json` (default), output is a single JSON object containing the new root ID and a complete rename map:
+**Output.** In JSON mode (default), output is a single JSON object containing the new root ID and a complete rename map:
 
 ```json
 {
@@ -1217,7 +1218,7 @@ This command exists to recover from structural errors caught during planning ver
 | `id`      | string           | New ID of the task that was moved (the root of the moved sub-graph)                     |
 | `renames` | array of objects | Every old→new ID pair, including the moved task and all descendants. Ordered by old ID  |
 
-`renames` is always present and contains at least one entry (the moved task itself). All fields are always present. In `--format text`, the output is one `OLD → NEW` line per rename, ordered by old ID.
+`renames` is always present and contains at least one entry (the moved task itself). All fields are always present. In `--text` mode, the output is one `OLD → NEW` line per rename, ordered by old ID.
 
 ---
 
@@ -1318,7 +1319,7 @@ Available columns: `id`, `title`, `status`, `type`, `tier`, `role`, `tags`, `par
 
 The `children` column is an array of child task IDs (possibly empty). It is denormalized onto the row so `--ready` consumers can distinguish leaves (empty array) from parents (non-empty) in a single pass, matching the same denormalization used for `blocked-by`.
 
-**`--format text`** (table):
+**Text output (`--text`)** (table):
 
 ```
 ID          STATUS     BLOCKED-BY           TITLE
@@ -1328,7 +1329,7 @@ proj-a1.2   accepted                        Session store
 proj-a1.3   open       proj-a1.1,proj-a1.2  Auth middleware
 ```
 
-**`--format json`** (default): array of row objects, one per matching task.
+**JSON output** (default): array of row objects, one per matching task.
 
 ```json
 [
@@ -1359,7 +1360,7 @@ Display the dependency graph rooted at a task. `ID` is required; a missing ID re
 
 Shows parent-child structure, dependency edges with types, and task statuses.
 
-**`--format json`** (default): structured adjacency list.
+**JSON output** (default): structured adjacency list.
 
 ```json
 {
@@ -1427,7 +1428,7 @@ Edge fields mirror the CLI: `task` is the task that holds the link (first arg to
 - **Edge field naming.** `task` and `target` use quest-specific terminology rather than generic graph terms (e.g., `source`/`target`) to maintain consistency with the CLI surface (`quest link TASK --blocked-by TARGET`).
 - **Node fields are structural.** Graph output exists for verifying dependency structure and status, not for displaying full task metadata. Fields like `tags` are intentionally excluded -- they don't contribute to structural verification and are available via `quest list` and `quest show`.
 
-**`--format text`**: human-readable tree. Parent-child structure is conveyed by indentation. Dependency edges are listed under the task that holds the link, matching the JSON model. Every task reference -- node or edge target -- uses the same `{id} [{status}] (bug?) {title}` shape as `quest show`, so the same scan pattern applies across commands. A ` (bug)` marker is inserted between the status bracket and the title when the referenced task's `type` is `bug`; it is omitted for the default `task` type.
+**Text output (`--text`)**: human-readable tree. Parent-child structure is conveyed by indentation. Dependency edges are listed under the task that holds the link, matching the JSON model. Every task reference -- node or edge target -- uses the same `{id} [{status}] (bug?) {title}` shape as `quest show`, so the same scan pattern applies across commands. A ` (bug)` marker is inserted between the status bracket and the title when the referenced task's `type` is `bug`; it is omitted for the default `task` type.
 
 ```
 proj-a1 [open] Auth module
@@ -1460,7 +1461,7 @@ quest init --prefix PREFIX
 
 Initialize a quest project in the current directory. Creates `.quest/` directory and `.quest/config.toml`. Requires `--prefix` to set the ID prefix for this project -- see Prefix validation for the allowed format. Fails with exit code 2 (usage error) if `--prefix` is missing or invalid. Fails with exit code 5 (conflict) if `.quest/` already exists in the current directory or any parent.
 
-In `--format json` (default), output is a single JSON object with the resolved workspace path and prefix:
+In JSON mode (default), output is a single JSON object with the resolved workspace path and prefix:
 
 ```json
 {"workspace": "/abs/path/to/project/.quest", "id_prefix": "proj"}
@@ -1471,7 +1472,7 @@ In `--format json` (default), output is a single JSON object with the resolved w
 | `workspace` | string | Absolute path to the `.quest/` directory that was created |
 | `id_prefix` | string | The prefix recorded in `.quest/config.toml`              |
 
-Both fields are always present and non-empty. In `--format text`, the output is the bare absolute workspace path followed by a single newline -- no prefix, no framing, no prefix echo. Scripts parsing text mode can read the line directly.
+Both fields are always present and non-empty. In `--text` mode, the output is the bare absolute workspace path followed by a single newline -- no prefix, no framing, no prefix echo. Scripts parsing text mode can read the line directly.
 
 ---
 
@@ -1506,7 +1507,7 @@ Each task JSON file contains the complete task entity (same schema as `quest sho
 
 The export is the archival and review format; the database is the operational format. Exports are idempotent -- re-running overwrites the output directory.
 
-In `--format json` (default), output is a single JSON object with the resolved output directory and archive counts:
+In JSON mode (default), output is a single JSON object with the resolved output directory and archive counts:
 
 ```json
 {"dir": "/abs/path/to/quest-export", "tasks": 42, "debriefs": 8, "history_entries": 173}
@@ -1519,7 +1520,7 @@ In `--format json` (default), output is a single JSON object with the resolved o
 | `debriefs`        | integer | Number of debrief markdown files written to `debriefs/` (tasks with a non-empty debrief)    |
 | `history_entries` | integer | Number of rows written to `history.jsonl` (total events across all tasks, chronological)    |
 
-All four fields are always present. The counts let agents sanity-check that the archive contains what was expected before treating it as a durable backup. In `--format text`, the output is the bare absolute `dir` path followed by a single newline -- matching the `quest init` convention so scripts parsing text mode can read the line directly.
+All four fields are always present. The counts let agents sanity-check that the archive contains what was expected before treating it as a durable backup. In `--text` mode, the output is the bare absolute `dir` path followed by a single newline -- matching the `quest init` convention so scripts parsing text mode can read the line directly.
 
 ---
 
@@ -1541,7 +1542,7 @@ The snapshot is produced via SQLite's online backup API, which yields a transact
 
 Alongside `PATH`, quest writes `PATH.config.toml` -- a copy of `.quest/config.toml` in the same directory. Losing `config.toml` (which records the immutable `id_prefix`) would decouple a restored database from external references to task IDs, so the two files are treated as a unit. If writing the sidecar fails, the whole command fails (exit 1) and any partially written `PATH` is removed.
 
-In `--format json` (default), output is a single JSON object:
+In JSON mode (default), output is a single JSON object:
 
 ```json
 {"db": "/abs/path/to/backup.db", "config": "/abs/path/to/backup.db.config.toml", "schema_version": 2, "bytes": 40960}
@@ -1554,7 +1555,7 @@ In `--format json` (default), output is a single JSON object:
 | `schema_version` | integer | The `schema_version` recorded in the snapshot                          |
 | `bytes`          | integer | Size of the database snapshot in bytes (config sidecar excluded)       |
 
-All four fields are always present. In `--format text`, the output is the bare absolute `db` path followed by a single newline -- matching the `quest init` and `quest export` convention so scripts parsing text mode can read the line directly. The sidecar path, schema version, and size are available only via `--format json`.
+All four fields are always present. In `--text` mode, the output is the bare absolute `db` path followed by a single newline -- matching the `quest init` and `quest export` convention so scripts parsing text mode can read the line directly. The sidecar path, schema version, and size are available only in JSON mode (default).
 
 **Idempotency.** Each invocation writes a fresh snapshot at `PATH`, overwriting any prior file. Retrying after a failure is safe -- the prior invocation's output is discarded.
 
@@ -1566,7 +1567,7 @@ quest version
 
 Print version information.
 
-In `--format json` (default), output is a single JSON object:
+In JSON mode (default), output is a single JSON object:
 
 ```json
 {"version": "0.1.0"}
@@ -1578,9 +1579,9 @@ The object has exactly one field:
 | --------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `version` | string | The binary's version string. Matches the `CHANGELOG.md` entry when built from a release tag; otherwise a `git describe`-style identifier (e.g., `0.1.0-3-gabcdef1-dirty`) or the literal `"dev"` for untagged local builds |
 
-Per the repeated "all fields always present" rule in this spec, the `version` field is always present and is always a non-empty string. Agents parsing `quest version --format json` may rely on that.
+Per the repeated "all fields always present" rule in this spec, the `version` field is always present and is always a non-empty string. Agents parsing `quest version` JSON output may rely on that.
 
-In `--format text`, the output is the bare version string followed by a newline (no surrounding whitespace, no prefix). Examples:
+In `--text` mode, the output is the bare version string followed by a newline (no surrounding whitespace, no prefix). Examples:
 
 ```
 0.1.0
