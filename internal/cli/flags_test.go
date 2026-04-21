@@ -2,11 +2,95 @@ package cli
 
 import (
 	stderrors "errors"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/mocky/quest/internal/config"
 	"github.com/mocky/quest/internal/errors"
 )
+
+// TestParseGlobals pins STANDARDS.md §Flag Overrides: global flags are
+// position-independent — `--format json version` and `version --format
+// json` parse identically — and unknown flags pass through untouched so
+// the subcommand parser can reject or accept them.
+func TestParseGlobals(t *testing.T) {
+	cases := []struct {
+		name      string
+		args      []string
+		want      config.Flags
+		remaining []string
+	}{
+		{
+			name:      "format before command",
+			args:      []string{"--format", "json", "version"},
+			want:      config.Flags{Format: "json"},
+			remaining: []string{"version"},
+		},
+		{
+			name:      "format after command",
+			args:      []string{"version", "--format", "json"},
+			want:      config.Flags{Format: "json"},
+			remaining: []string{"version"},
+		},
+		{
+			name:      "format inline equals",
+			args:      []string{"--format=json", "version"},
+			want:      config.Flags{Format: "json"},
+			remaining: []string{"version"},
+		},
+		{
+			name:      "log-level before command with subflags",
+			args:      []string{"--log-level", "debug", "create", "--title", "X"},
+			want:      config.Flags{LogLevel: "debug"},
+			remaining: []string{"create", "--title", "X"},
+		},
+		{
+			name:      "log-level inline equals after command",
+			args:      []string{"create", "--log-level=info", "--title", "X"},
+			want:      config.Flags{LogLevel: "info"},
+			remaining: []string{"create", "--title", "X"},
+		},
+		{
+			name:      "both globals in mixed positions",
+			args:      []string{"show", "--format", "json", "qst-01", "--log-level=debug"},
+			want:      config.Flags{Format: "json", LogLevel: "debug"},
+			remaining: []string{"show", "qst-01"},
+		},
+		{
+			name:      "unknown global flag flows through as positional",
+			args:      []string{"--garbage", "version"},
+			want:      config.Flags{},
+			remaining: []string{"--garbage", "version"},
+		},
+		{
+			name:      "no flags leaves args untouched",
+			args:      []string{"list", "-ready"},
+			want:      config.Flags{},
+			remaining: []string{"list", "-ready"},
+		},
+		{
+			name:      "empty args returns empty",
+			args:      []string{},
+			want:      config.Flags{},
+			remaining: []string{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, remaining, err := ParseGlobals(tc.args)
+			if err != nil {
+				t.Fatalf("ParseGlobals(%v) unexpected error: %v", tc.args, err)
+			}
+			if got != tc.want {
+				t.Errorf("flags = %+v, want %+v", got, tc.want)
+			}
+			if !reflect.DeepEqual(remaining, tc.remaining) {
+				t.Errorf("remaining = %v, want %v", remaining, tc.remaining)
+			}
+		})
+	}
+}
 
 // TestParseGlobalsTrailingValuelessFlag pins the qst-0u fix: a trailing
 // --format or --log-level with no value returns a wrapped ErrUsage so
