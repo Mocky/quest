@@ -262,7 +262,7 @@ func Update(ctx context.Context, cfg config.Config, s store.Store, args []string
 // map to exit 2 before any DB I/O per the plan preamble.
 func parseUpdateArgs(cfg config.Config, stdin io.Reader, stderr io.Writer, args []string) (updateArgs, []string, error) {
 	_ = cfg
-	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	fs := newFlagSet("update")
 	fs.SetOutput(stderr)
 
 	var parsed updateArgs

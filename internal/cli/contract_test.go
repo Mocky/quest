@@ -337,6 +337,57 @@ func TestIdempotencyGuarantees(t *testing.T) {
 	})
 }
 
+// TestHelpRendersDoubleDashLongFlags pins the STANDARDS.md §Help
+// Rendering convention end-to-end: invoking a subcommand with --help
+// writes a usage block whose long-flag names are prefixed with "--"
+// and whose single-character names are prefixed with "-". The test
+// exercises one elevated command (`list`) and one worker command
+// (`show`) so the shared helper is proven wired on both sides of the
+// role gate. `--help` short-circuits flag.Parse with ErrHelp, which
+// handlers catch and return as exit 0; the usage text lands on
+// stderr per the existing fs.SetOutput(stderr) pattern.
+func TestHelpRendersDoubleDashLongFlags(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		want    []string
+		wantNot []string
+	}{
+		{
+			name:    "list",
+			args:    []string{"list", "--help"},
+			want:    []string{"--columns", "--status", "--ready", "Usage of list:"},
+			wantNot: []string{" -columns ", " -status ", " -ready\t", " -ready\n"},
+		},
+		{
+			name:    "show",
+			args:    []string{"show", "proj-01", "--help"},
+			want:    []string{"--history", "Usage of show:"},
+			wantNot: []string{" -history\t", " -history\n"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := setupWorkspace(t, "proj", "planner")
+			exit, _, stderr := runExecute(tt.args, cfg)
+			if exit != 0 {
+				t.Fatalf("exit = %d; stderr=%s", exit, stderr)
+			}
+			for _, s := range tt.want {
+				if !strings.Contains(stderr, s) {
+					t.Errorf("stderr missing %q; got:\n%s", s, stderr)
+				}
+			}
+			for _, s := range tt.wantNot {
+				if strings.Contains(stderr, s) {
+					t.Errorf("stderr unexpectedly contains %q; got:\n%s", s, stderr)
+				}
+			}
+		})
+	}
+}
+
 // TestExportLayout pins the spec §quest export on-disk layout:
 // tasks/{id}.json (one per task), debriefs/{id}.md (one per task with
 // a non-empty debrief), history.jsonl at the archive root.

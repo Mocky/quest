@@ -33,7 +33,7 @@ type batchArgs struct {
 func parseBatchArgs(stderr io.Writer, args []string) (batchArgs, error) {
 	// Pull off a leading non-flag arg if present (the FILE).
 	positional, rest := splitLeadingPositional(args)
-	fs := flag.NewFlagSet("batch", flag.ContinueOnError)
+	fs := newFlagSet("batch")
 	fs.SetOutput(stderr)
 	partialOK := fs.Bool("partial-ok", false, "create tasks that passed validation even when other lines failed")
 	if err := fs.Parse(rest); err != nil {

@@ -91,7 +91,7 @@ func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, er
 		columnsFlagRaw  []string
 		columnsProvided bool
 	)
-	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	fs := newFlagSet("list")
 	fs.SetOutput(stderr)
 
 	addCSV := func(into *[]string, markSet *bool) func(string) error {

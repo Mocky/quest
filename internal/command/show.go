@@ -154,7 +154,7 @@ func Show(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	_ = stdin
 
 	positional, flagArgs := splitLeadingPositional(args)
-	fs := flag.NewFlagSet("show", flag.ContinueOnError)
+	fs := newFlagSet("show")
 	fs.SetOutput(stderr)
 	historyFlag := fs.Bool("history", false, "include the full mutation history")
 	if err := fs.Parse(flagArgs); err != nil {

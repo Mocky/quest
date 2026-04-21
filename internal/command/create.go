@@ -56,7 +56,7 @@ type createArgs struct {
 // resolution runs through the per-invocation Resolver so errors
 // (missing file, >1 MiB, second `@-`) exit 2 before any DB I/O.
 func parseCreateArgs(stdin io.Reader, stderr io.Writer, args []string) (createArgs, []string, error) {
-	fs := flag.NewFlagSet("create", flag.ContinueOnError)
+	fs := newFlagSet("create")
 	fs.SetOutput(stderr)
 
 	var parsed createArgs

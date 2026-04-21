@@ -61,7 +61,7 @@ func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string,
 	_ = stdin
 
 	positional, flagArgs := splitLeadingPositional(args)
-	fs := flag.NewFlagSet("graph", flag.ContinueOnError)
+	fs := newFlagSet("graph")
 	fs.SetOutput(stderr)
 	if perr := fs.Parse(flagArgs); perr != nil {
 		if stderrors.Is(perr, flag.ErrHelp) {

@@ -30,7 +30,7 @@ type resetArgs struct {
 }
 
 func parseResetArgs(stdin io.Reader, stderr io.Writer, args []string) (resetArgs, []string, error) {
-	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
+	fs := newFlagSet("reset")
 	fs.SetOutput(stderr)
 
 	var parsed resetArgs

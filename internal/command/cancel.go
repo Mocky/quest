@@ -43,7 +43,7 @@ type cancelArgs struct {
 }
 
 func parseCancelArgs(stdin io.Reader, stderr io.Writer, args []string) (cancelArgs, []string, error) {
-	fs := flag.NewFlagSet("cancel", flag.ContinueOnError)
+	fs := newFlagSet("cancel")
 	fs.SetOutput(stderr)
 
 	var parsed cancelArgs

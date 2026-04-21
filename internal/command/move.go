@@ -41,7 +41,7 @@ type moveArgs struct {
 }
 
 func parseMoveArgs(stderr io.Writer, args []string) (moveArgs, []string, error) {
-	fs := flag.NewFlagSet("move", flag.ContinueOnError)
+	fs := newFlagSet("move")
 	fs.SetOutput(stderr)
 
 	var parsed moveArgs

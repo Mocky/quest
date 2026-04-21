@@ -69,7 +69,7 @@ type closeArgs struct {
 // I/O.
 func parseCloseArgs(action closeAction, cfg config.Config, stdin io.Reader, stderr io.Writer, args []string) (closeArgs, []string, error) {
 	_ = cfg
-	fs := flag.NewFlagSet(action.name, flag.ContinueOnError)
+	fs := newFlagSet(action.name)
 	fs.SetOutput(stderr)
 
 	var parsed closeArgs

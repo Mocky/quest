@@ -39,7 +39,7 @@ type linkArgs struct {
 }
 
 func parseLinkArgs(stderr io.Writer, name string, args []string) (linkArgs, []string, error) {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs := newFlagSet(name)
 	fs.SetOutput(stderr)
 
 	var parsed linkArgs
