@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -62,7 +63,12 @@ func (s *sqliteStore) Snapshot(ctx context.Context, dstPath string) (int64, erro
 		for {
 			more, sErr := b.Step(-1)
 			if sErr != nil {
-				_ = b.Finish()
+				if fErr := b.Finish(); fErr != nil {
+					slog.WarnContext(ctx, "snapshot finish after step failure",
+						"path", dstPath,
+						"err", fErr.Error(),
+					)
+				}
 				return sErr
 			}
 			if !more {
