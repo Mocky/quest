@@ -44,7 +44,7 @@ Workers only see worker-level commands. They cannot create, cancel, or modify ta
 
 ### 3. Review & Testing
 
-After execution, the deliverable undergoes review and testing. Issues discovered during this phase are tracked as bug-type tasks linked back to the originating work:
+After execution, the deliverable undergoes review and testing. Issues discovered during this phase are tracked as bug-tagged tasks linked back to the originating work:
 
 - `caused-by` links trace a bug to the task whose work introduced it
 - `discovered-from` links trace a bug to the task whose testing revealed it
@@ -260,7 +260,7 @@ Quest reads the file contents and stores them inline in the task data. The file 
 
 This convention applies to: `--debrief`, `--description`, `--context`, `--handoff`, `--note`, `--reason`, `--acceptance-criteria`.
 
-`--title` is excluded because titles are short by design. `--meta` is excluded because its `KEY=VALUE` form is structurally ambiguous for file input (unclear whether `@file` would resolve the value only or the whole pair). ID and enum flags (`--parent`, `--type`, `--tier`, `--role`, `--tag`, dependency flags) do not take free-form text and are not eligible.
+`--title` is excluded because titles are short by design. `--meta` is excluded because its `KEY=VALUE` form is structurally ambiguous for file input (unclear whether `@file` would resolve the value only or the whole pair). ID and enum flags (`--parent`, `--tier`, `--role`, `--tag`, dependency flags) do not take free-form text and are not eligible.
 
 ### Path resolution
 
@@ -397,11 +397,10 @@ Text mode (`--text`) for write commands is a one-liner summarizing the action (e
 | `title`               | planner | Short description of the task                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `description`         | planner | Full description -- the decomposed unit of work                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `context`             | planner | Background information for the worker, injected into the prompt                                                                                                                                                                                                                                                                                                                                                                                    |
-| `type`                | planner | `task` (default) or `bug`                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `status`              | system  | Current state (see lifecycle below)                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `role`                | planner | Which role is assigned to execute the task. Required for dispatch. Optional on parent tasks -- a roleless parent signals the lead plans to direct-close it; a role can be added later via `quest update --role` if the lead decides to dispatch verification                                                                                                                                                                                       |
 | `tier`                | planner | Model tier assignment (see tier list below)                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `severity`            | planner | Optional triage severity; one of `critical`, `high`, `medium`, `low`; `null` when unset. Applies to every task regardless of `type` -- a task fixing a known problem may carry severity without being typed as a `bug`. Values are case-sensitive lowercase, matching the casing of `type` and `status`; `tier` is uppercase because it is an ID-style label, severity is a word and reads naturally lowercase. Severity is planning metadata parallel to `tier` and `role`: worker-accessible setters (`--note`, `--pr`, `--handoff`) do not include severity, and `quest update --severity` is elevated-only. The enum is enforced at the storage layer via a `CHECK` constraint, matching the precedent set by schema v3 for `status`, `type`, `link_type`, and `history.action`           |
+| `severity`            | planner | Optional triage severity; one of `critical`, `high`, `medium`, `low`; `null` when unset. Applies to every task. Values are case-sensitive lowercase, matching the casing of `status`; `tier` is uppercase because it is an ID-style label, severity is a word and reads naturally lowercase. Severity is planning metadata parallel to `tier` and `role`: worker-accessible setters (`--note`, `--pr`, `--handoff`) do not include severity, and `quest update --severity` is elevated-only. The enum is enforced at the storage layer via a `CHECK` constraint, matching the precedent set by schema v3 for `status`, `link_type`, and `history.action`           |
 | `tags`                | planner | Free-form tags (e.g., `go`, `sql`, `auth`, `concurrency`)                                                                                                                                                                                                                                                                                                                                                                                          |
 | `acceptance_criteria` | planner | What must be true for this task to be considered complete. Primarily used on parent tasks to define verification conditions the lead evaluates before closing the group. Convention: use a markdown checklist format (e.g., `- [ ] Integration tests pass\n- [ ] All endpoints return 2xx`) so items are individually addressable in debriefs and retrospectives. Free-form prose is accepted but checklists are preferred for machine-parsability |
 | `metadata`            | planner | Arbitrary JSON for planner-defined extensions. The retrospective phase reviews metadata usage across deliveries to identify candidates for promotion to first-class fields                                                                                                                                                                                                                                                                         |
@@ -506,7 +505,7 @@ The one carve-out is referential bookkeeping during `quest move`: when a task's 
 - `old_id` and `new_id` are present for `moved` -- the task's ID before and after reparenting
 - `url` is present for `pr_added` -- the PR URL that was added
 - `branch` and `hash` are present for `commit_added` -- the two halves of the commit reference, stored as separate fields rather than a combined `BRANCH@HASH` string so retrospective queries can filter on branch or hash without re-parsing
-- For `created`, the payload captures non-default values of the planning fields set at create time: `tier`, `role`, `severity`, `type` (when not the default `task`), `parent`, `tags`, and any initial `dependencies`. Fields left at their defaults are omitted from the payload, not serialized as `null`. This is the retrospective input -- "which tier/role/severity choices produced which outcomes?" -- without requiring a join against the current `tasks` row (which may have been edited after creation)
+- For `created`, the payload captures non-default values of the planning fields set at create time: `tier`, `role`, `severity`, `parent`, `tags`, and any initial `dependencies`. Fields left at their defaults are omitted from the payload, not serialized as `null`. This is the retrospective input -- "which tier/role/severity choices produced which outcomes?" -- without requiring a join against the current `tasks` row (which may have been edited after creation)
 
 ### Field constraints
 
@@ -621,15 +620,15 @@ Dependencies are typed relationships stored on the dependent task. The first arg
 | Type              | Stored on | Meaning                                                                |
 | ----------------- | --------- | ---------------------------------------------------------------------- |
 | `blocked-by`      | dependent | This task cannot start until the linked task reaches `completed` status |
-| `caused-by`       | bug       | This bug was caused by work done in the linked task                    |
-| `discovered-from` | bug       | This bug was discovered during testing of the linked task              |
+| `caused-by`       | dependent | This task was caused by work done in the linked task                   |
+| `discovered-from` | dependent | This task was discovered during testing of the linked task             |
 | `retry-of`        | retry     | This task is a retry of a previously failed task                       |
 
 `blocked-by` is the default type when linking.
 
 ### Multi-type links
 
-Multiple links of different types between the same (task, target) pair are permitted. The primary use case is a bug task that is both `caused-by` and `discovered-from` the same target -- the upstream task both introduced the bug and was being tested when the bug was found. These are distinct retrospective signals: `caused-by` identifies the source of the defect, `discovered-from` identifies the testing context that surfaced it. Collapsing them into a single link loses analytical signal that the retrospective phase depends on.
+Multiple links of different types between the same (task, target) pair are permitted. The primary use case is a task that is both `caused-by` and `discovered-from` the same target -- the upstream task both introduced the defect and was being tested when the defect was found. These are distinct retrospective signals: `caused-by` identifies the source of the defect, `discovered-from` identifies the testing context that surfaced it. Collapsing them into a single link loses analytical signal that the retrospective phase depends on.
 
 Duplicate links of the _same_ type between the same pair are silently ignored: the command returns exit code 0 with no state change. This makes `quest link` safe to retry without error handling, which matters for agents that may re-execute a linking sequence after a transient failure. The uniqueness constraint is on (task, target, type), not (task, target).
 
@@ -641,16 +640,14 @@ All dependency links are validated on both `quest create` (with dependency flags
 
 **Semantic constraints:**
 
-| Relationship type | Target status constraint       | Source type constraint            |
-| ----------------- | ------------------------------ | --------------------------------- |
-| `blocked-by`      | Target must not be `cancelled` | None                              |
-| `retry-of`        | Target must be `failed`        | None                              |
-| `caused-by`       | None                           | Source task must have `type: bug` |
-| `discovered-from` | None                           | Source task must have `type: bug` |
+| Relationship type | Target status constraint       |
+| ----------------- | ------------------------------ |
+| `blocked-by`      | Target must not be `cancelled` |
+| `retry-of`        | Target must be `failed`        |
+| `caused-by`       | None                           |
+| `discovered-from` | None                           |
 
 These constraints prevent silent graph corruption -- a `blocked-by` link to a cancelled task would block the dependent forever, and `retry-of` on a non-failed task is semantically meaningless.
-
-**Type vs. relationship classification.** The `type` field and relationship types serve different purposes and are not redundant. `type` classifies what a task _is_ -- a bug-type task is a defect regardless of whether its origin has been traced. Relationship types (`caused-by`, `discovered-from`) classify _where a bug came from_ -- they are analytical metadata for the retrospective phase. A bug-type task without any causal links is valid: the origin may be unknown, external, or not yet traced. The source type constraint on `caused-by` and `discovered-from` prevents relationship misuse (a regular task cannot claim to be "caused by" another task), but the `type` field is not derived from relationships. It is the primary classification primitive, queryable via `quest list --type bug` without joining against relationships.
 
 **`blocked-by` resolution:** Only `completed` status satisfies a `blocked-by` dependency. `failed` and `cancelled` do not unblock dependents. If a blocking task fails, the dependent stays blocked until the lead intervenes -- typically by creating a `retry-of` task, unlinking the dependency, or cancelling the dependent. This keeps dispatch decisions under the lead's judgment rather than auto-unblocking tasks whose upstream work was never finished.
 
@@ -696,13 +693,12 @@ History is excluded by default because workers care about current state -- descr
   "title": "Auth middleware",
   "description": "Implement the auth middleware that validates JWT tokens on protected routes...",
   "context": "The JWT validation module (proj-01.1) exposes a Validate(token string) function...",
-  "type": "task",
   "status": "open",
   "role": "coder",
   "tier": "T3",
   "severity": null,
   "tags": ["go", "auth"],
-  "parent": {"id": "proj-01", "title": "Auth module", "status": "open", "type": "task"},
+  "parent": {"id": "proj-01", "title": "Auth module", "status": "open"},
   "acceptance_criteria": null,
   "metadata": {},
   "owner_session": null,
@@ -713,14 +709,12 @@ History is excluded by default because workers care about current state -- descr
       "id": "proj-01.1",
       "title": "JWT validation",
       "status": "completed",
-      "type": "task",
       "link_type": "blocked-by"
     },
     {
       "id": "proj-01.2",
       "title": "Session store",
       "status": "accepted",
-      "type": "task",
       "link_type": "blocked-by"
     }
   ],
@@ -736,13 +730,13 @@ History is excluded by default because workers care about current state -- descr
 
 All fields are always present in JSON output. Fields with no value are `null` (scalars) or `[]` (arrays) / `{}` (objects) -- never omitted. This guarantees a predictable schema for agent parsing. Fields are ordered as shown above: identity, then planning fields, then relationships, then execution fields.
 
-`parent` is denormalized to `{id, title, status, type}` when the task has a parent, `null` on root tasks. Dependency objects carry the same four-field task-reference cluster plus a `link_type` naming the relationship (`blocked-by`, `caused-by`, `discovered-from`, `retry-of`). The quartet `{id, title, status, type}` is the canonical shape anywhere a task reference appears in quest output (parent, dependencies, graph edge targets); consumers can treat it as a reusable mini-schema. The `link_type` field is named distinctly from task `type` so the classification primitive (`task`/`bug`) stays separate from the relationship primitive.
+`parent` is denormalized to `{id, title, status}` when the task has a parent, `null` on root tasks. Dependency objects carry the same three-field task-reference cluster plus a `link_type` naming the relationship (`blocked-by`, `caused-by`, `discovered-from`, `retry-of`). The trio `{id, title, status}` is the canonical shape anywhere a task reference appears in quest output (parent, dependencies, graph edge targets); consumers can treat it as a reusable mini-schema.
 
 **Text output (`--text`)**:
 
 ```
 proj-01.3 [completed] Auth middleware
-    parent     proj-01 [completed] (bug) Auth regression sweep
+    parent     proj-01 [completed] Auth regression sweep
     tags       go, auth
     exec       T3 - coder - sess-d7b
     metadata   priority=high, reviewer=sess-v1a
@@ -786,13 +780,13 @@ Debrief
 
 Text mode is human-facing and is not a contract -- agents parse JSON. The format is governed by the rules below; any deviation is a renderer bug.
 
-**Header.** The first line is `{id} [{status}] {title}`. When `type == "bug"` a ` (bug) ` marker is inserted between the status bracket and the title: `{id} [{status}] (bug) {title}`. No marker is rendered for the default `type == "task"`. The title is emitted verbatim (the 128-byte title cap keeps it within a single reasonable terminal width).
+**Header.** The first line is `{id} [{status}] {title}`. The title is emitted verbatim (the 128-byte title cap keeps it within a single reasonable terminal width).
 
 **Metadata cluster.** The header is followed immediately (no blank line) by the metadata rows, indented 4 spaces so they align with every section body below. Keys left-align; values start at the widest-key length + 2 spaces.
 
 | Row         | Rendered when                          | Value                                                                                                          |
 | ----------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `parent`    | `parent` is non-null                   | `{id} [{status}] (bug?) {title}` -- the task-reference shape                                                   |
+| `parent`    | `parent` is non-null                   | `{id} [{status}] {title}` -- the task-reference shape                                                          |
 | `tags`      | `tags` is non-empty                    | comma-separated, joined with `, `                                                                              |
 | `severity`  | `severity` is non-null                 | the literal severity value (`critical`, `high`, `medium`, or `low`)                                            |
 | `exec`      | always (`tier` is always set)          | `{tier} - {role} - {session}`, joined with ` - `; trailing nulls drop entirely; mid-string nulls render as `—` |
@@ -809,7 +803,7 @@ A row is omitted entirely when its condition is not met -- `show` never emits a 
 | `Description`         | `description` is non-empty                                     | verbatim, wrapped                                                                                                                           |
 | `Context`             | `context` is non-empty                                         | verbatim, wrapped                                                                                                                           |
 | `Acceptance criteria` | `acceptance_criteria` is non-empty                             | verbatim, wrapped                                                                                                                           |
-| `Dependencies`        | `dependencies` is non-empty                                    | one row per dependency: `{link_type}  {id} [{status}] (bug?) {title}`                                                                       |
+| `Dependencies`        | `dependencies` is non-empty                                    | one row per dependency: `{link_type}  {id} [{status}] {title}`                                                                              |
 | `Notes (N)`           | `notes` is non-empty (N is the count)                          | one row per note: `{timestamp}  {note body}`, wrapped with hanging indent to the note column                                                |
 | `PRs`                 | `prs` is non-empty                                             | one row per PR: `{url}  ({added_at timestamp})`                                                                                             |
 | `Commits`             | `commits` is non-empty                                         | one row per commit: `{branch}@{hash}  ({added_at timestamp})` -- parallel to the `PRs` section                                              |
@@ -819,7 +813,7 @@ A row is omitted entirely when its condition is not met -- `show` never emits a 
 
 Sections whose condition is not met are omitted entirely. No placeholder headings or `(none)` bodies.
 
-**Type marker consistency.** Every task reference in the output (header, `parent` row, `Dependencies` rows, and the corresponding rows in `quest graph --text`) renders `type` identically: a ` (bug)` marker between the status bracket and the title when the referenced task is a bug, nothing otherwise. The default is the common case; the marker is a strong visual signal in mixed output.
+**Tag rendering.** Tags render only in the `tags` metadata row on `quest show`. Quest does not promote any tag to an inline rendering convention: `quest graph --text` and dependency rows do not display tags alongside task references, and no tag (including `bug`) earns a dedicated marker in the header or reference rows. Planners choose tag conventions; the renderer stays out.
 
 **Timestamp format.** Minute precision, UTC, `Z`-terminated: `YYYY-MM-DD HH:MMZ`. JSON output retains second precision per the data-type rules; text mode drops seconds because the display-side precision gain does not justify the column width. The `started` and `completed` rows append a parenthesized relative suffix computed against wall clock (`(1d ago)`, `(23h ago)`, `(5m ago)`, `(just now)`). Note, PR, commit, handoff, and history timestamps render absolute only.
 
@@ -903,7 +897,6 @@ Write progress information to the task. Workers can update execution fields. Ele
 | `--title "..."`               | Update the task title                                    |
 | `--description "..."`         | Update the full description                              |
 | `--context "..."`             | Update the worker context                                |
-| `--type TYPE`                 | Change the task type                                     |
 | `--tier TIER`                 | Change the model tier                                    |
 | `--role ROLE`                 | Change the assigned role                                 |
 | `--severity VALUE`            | Set triage severity: `critical`, `high`, `medium`, or `low` |
@@ -912,7 +905,7 @@ Write progress information to the task. Workers can update execution fields. Ele
 
 All field changes are recorded in the task's history. Flags listed in Input Conventions support `@file` input.
 
-**Terminal-state gating.** On tasks in `completed` or `failed` status, `quest update` accepts only the append/annotation flags: `--note`, `--pr`, `--commit`, and `--meta`. These are either append-only (`--note`, `--pr`, `--commit`) or free-form annotation (`--meta`) and do not retroactively rewrite execution-time state. Any other flag -- `--title`, `--description`, `--context`, `--type`, `--tier`, `--role`, `--severity`, `--acceptance-criteria`, `--handoff` -- returns exit code 5 (conflict) with a message listing the blocked fields. This applies to both worker and elevated roles. Rationale: fields like `tier`, `role`, `type`, and `severity` drive retrospective analytics ("which tiers produced bugs?", "how often do critical-severity tasks fail at T2?"); retroactive edits would silently falsify the simplest form of those queries. Planning copy (`title`, `description`, etc.) is preserved in the audit history and has no legitimate post-terminal edit case. `--handoff` is a session-continuity field with no meaning on a task that will not be accepted again. `--pr` and `--commit` are specifically expected after the terminal transition: a worker may land a PR or push a follow-up commit after completion or failure, and those references must be recordable.
+**Terminal-state gating.** On tasks in `completed` or `failed` status, `quest update` accepts only the append/annotation flags: `--note`, `--pr`, `--commit`, and `--meta`. These are either append-only (`--note`, `--pr`, `--commit`) or free-form annotation (`--meta`) and do not retroactively rewrite execution-time state. Any other flag -- `--title`, `--description`, `--context`, `--tier`, `--role`, `--severity`, `--acceptance-criteria`, `--handoff` -- returns exit code 5 (conflict) with a message listing the blocked fields. This applies to both worker and elevated roles. Rationale: fields like `tier`, `role`, and `severity` drive retrospective analytics ("which tiers produced which outcomes?", "how often do critical-severity tasks fail at T2?"); retroactive edits would silently falsify the simplest form of those queries. Planning copy (`title`, `description`, etc.) is preserved in the audit history and has no legitimate post-terminal edit case. `--handoff` is a session-continuity field with no meaning on a task that will not be accepted again. `--pr` and `--commit` are specifically expected after the terminal transition: a worker may land a PR or push a follow-up commit after completion or failure, and those references must be recordable.
 
 **Cancelled tasks reject every `quest update` variant.** `cancelled` is stricter than the other terminal states: `quest update` on a cancelled task -- including `--note`, `--pr`, `--commit`, `--meta`, and `--handoff` -- returns exit code 5 (conflict) with the structured body defined under *In-flight worker coordination* in `quest cancel`. This applies to worker and elevated roles alike. Rationale: the structured conflict on every worker operation is the framework signal that tells vigil to terminate the in-flight worker session; allowing any update to slip through would defeat that signal and let a terminated-but-unaware worker keep writing to a task the planner has already retired. Planner annotations (`--meta`) and debrief-style context belong on the *replacement* task if follow-up is needed, not on the cancelled one. `quest complete` and `quest fail` on a cancelled task are rejected for the same reason.
 
@@ -929,8 +922,6 @@ All field changes are recorded in the task's history. Flags listed in Input Conv
 - **Dedup for idempotency.** Two `--commit` values on the same task are duplicates when, after lowercasing the hash, they compare byte-equal to an existing record. The branch is compared case-sensitive; the hash comparison is case-insensitive because the hash is already constrained to lowercase hex on write, so the only way a "duplicate with different casing" can arise is across two binaries with drifting validators -- the dedup rule future-proofs against that. Duplicates are silently ignored and produce no `commit_added` history entry, matching the `--pr` idempotency model.
 - **Terminal-state gating.** Same rules as `--pr`: accepted on `completed` and `failed` tasks (via `quest update --commit` or the terminal-transition commands themselves), rejected on `cancelled` tasks per the cancelled-rejects-every-variant rule above.
 - **Storage.** `commits` is stored durably -- each row carries `branch` and `hash` as separate columns alongside the `added_at` timestamp so retrospective queries can filter on either half without re-parsing. The natural layout is a dedicated `commits` table parallel to however `prs` are stored, with a foreign key back to the task row and an index supporting the dedup lookup on `(task_id, lower(hash), branch)`. The exact schema belongs to the implementation task, not this spec; the note here is that the data is not a JSON blob on the task row, and `commit_added` history rows reference the underlying storage by FK so export can materialize both halves without an ad-hoc parse. Adding `commits` requires a numbered forward-only migration and a `schema_version` bump per STANDARDS.md §Schema Migration Rules; the pre-migration snapshot (§Storage > Pre-migration snapshot) fires as usual.
-
-**Type transitions respect existing links.** `--type task` on a task that has **outgoing** `caused-by` or `discovered-from` links returns exit code 5 (`conflict`) with a message listing the blocking links. These relationship types require the *source* to be `type: bug` (see §Dependency validation); retyping the source would silently falsify the invariant. Incoming links (where the task is the target of another task's `caused-by`/`discovered-from`) do not block retyping -- the invariant applies to the source, and the source's type is unchanged. The planner must `quest unlink` the outgoing links first, then retry the type transition. `--type bug` has no similar restriction -- additional link types become available, not fewer. The check runs inside the same transaction as the UPDATE so races cannot slip a link through.
 
 ---
 
@@ -990,7 +981,6 @@ Create a new task.
 | `--description "..."`         | Full description of the work                  |
 | `--context "..."`             | Background information for the worker         |
 | `--parent ID`                 | Link to parent task/epic                      |
-| `--type TYPE`                 | `task` (default) or `bug`                     |
 | `--tier TIER`                 | Model tier: T0-T6                             |
 | `--role ROLE`                 | Assigned role                                 |
 | `--severity VALUE`            | Triage severity: `critical`, `high`, `medium`, or `low` (optional; null when omitted) |
@@ -1034,11 +1024,11 @@ A bare string in `parent` (e.g., `"parent": "epic-1"`) is shorthand for `{"ref":
 ### Batch file format
 
 ```jsonl
-{"ref": "epic-1", "title": "Auth module", "type": "task", "tier": "T3", "acceptance_criteria": "Integration tests pass, all endpoints return correct status codes"}
+{"ref": "epic-1", "title": "Auth module", "tier": "T3", "acceptance_criteria": "Integration tests pass, all endpoints return correct status codes"}
 {"ref": "task-1", "title": "JWT validation", "parent": "epic-1", "tier": "T2", "role": "coder", "tags": ["go", "auth"]}
 {"ref": "task-2", "title": "Session store", "parent": {"ref": "epic-1"}, "tier": "T2", "role": "coder", "tags": ["go"]}
 {"ref": "task-3", "title": "Auth middleware", "parent": "epic-1", "tier": "T3", "role": "coder", "dependencies": [{"ref": "task-1", "link_type": "blocked-by"}, {"ref": "task-2", "link_type": "blocked-by"}]}
-{"ref": "task-4", "title": "Fix token leak", "type": "bug", "parent": {"id": "proj-a1"}, "tier": "T2", "dependencies": [{"id": "proj-31", "link_type": "caused-by"}]}
+{"ref": "task-4", "title": "Fix token leak", "tags": ["bug"], "parent": {"id": "proj-a1"}, "tier": "T2", "dependencies": [{"id": "proj-31", "link_type": "caused-by"}]}
 ```
 
 The first `task-2` line uses the explicit `{"ref": ...}` form; `task-1` and `task-3` use the bare-string shorthand. `task-4` parents under an external pre-existing task via `{"id": ...}`.
@@ -1050,7 +1040,7 @@ Every line in the batch is validated through four phases before any tasks are cr
 1. **Parse** -- line is valid JSON with required fields
 2. **Reference** -- `ref` values are unique across the batch; all `ref` and `id` references in `parent` and `dependencies` resolve (batch refs to earlier lines, external IDs to pre-existing tasks)
 3. **Graph** -- no cycles in `blocked-by` edges (within the batch or against the pre-existing graph); no task exceeds depth 3
-4. **Semantic** -- per-type target and source constraints (see Dependency validation)
+4. **Semantic** -- per-type target constraints (see Dependency validation)
 
 Validation collects every error it can detect across all lines and all phases, then emits them together. A batch with three malformed lines reports all three parse errors in one response; a batch with a parse error on line 3 and a semantic error on line 7 reports both. The planner fixes everything in one edit rather than discovering errors one round-trip at a time.
 
@@ -1092,10 +1082,8 @@ Additional fields depend on `code`:
 | `depth_exceeded`       | graph     | `depth` (the depth that would result)                      |
 | `retry_target_status`  | semantic  | `target`, `actual_status`                                  |
 | `blocked_by_cancelled` | semantic  | `target`                                                   |
-| `source_type_required` | semantic  | `link_type`, `required_type`                               |
 | `invalid_tag`          | semantic  | `field` (e.g., `tags[2]`), `value` (offending tag)         |
 | `invalid_link_type`    | semantic  | `field` (e.g., `dependencies[0].link_type`), `value` (offending string) |
-| `invalid_type`         | semantic  | `field` (`type`), `value` (offending string)               |
 | `invalid_tier`         | semantic  | `field` (`tier`), `value` (offending string)               |
 | `invalid_severity`     | semantic  | `field` (`severity`), `value` (offending string)           |
 | `field_too_long`       | semantic  | `field` (e.g., `title`), `limit` (byte cap), `observed` (byte count of the offending value) |
@@ -1265,7 +1253,7 @@ This command exists to recover from structural errors caught during planning ver
 quest link TASK --blocked-by|--caused-by|--discovered-from|--retry-of TARGET
 ```
 
-Add a typed dependency link to TASK referencing TARGET. The link is stored on TASK. The first argument is always the task being updated. All dependency validation rules apply (see Dependency validation section): cycle detection for `blocked-by`, semantic constraints on target status and source type for all relationship types.
+Add a typed dependency link to TASK referencing TARGET. The link is stored on TASK. The first argument is always the task being updated. All dependency validation rules apply (see Dependency validation section): cycle detection for `blocked-by`, semantic constraints on target status for all relationship types.
 
 | Flag                       | Description                         |
 | -------------------------- | ----------------------------------- |
@@ -1346,14 +1334,13 @@ List tasks with filtering.
 | `--parent IDS`      | Filter by parent ID. Comma-separated for OR semantics (e.g., `--parent proj-a1,proj-a2`). Repeatable; repeated values union                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `--tag TAGS`        | Filter by tag(s), comma-separated (AND semantics). Repeatable for additional AND conditions. Matches `quest create --tag` convention                                                                                                                                                                                                                                                                                                                                                                                           |
 | `--role ROLES`      | Filter by role. Comma-separated for OR semantics (e.g., `--role coder,reviewer`). Repeatable; repeated values union                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `--type TYPES`      | Filter by type. Comma-separated for OR semantics (e.g., `--type task,bug`). Repeatable; repeated values union                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `--tier TIERS`      | Filter by tier. Comma-separated for OR semantics (e.g., `--tier T2,T3`). Repeatable; repeated values union                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `--severity VALUES` | Filter by severity. Comma-separated for OR semantics (e.g., `--severity critical,high`). Repeatable; repeated values union. Accepts only the four enum values (`critical`, `high`, `medium`, `low`); unknown values are rejected with exit code 2 via the same `rejectUnknown` path as the other enum filters. Tasks where `severity IS NULL` are **excluded** from filter matches -- consistent with how `--role coder` excludes null-role tasks. A dedicated flag to query untriaged (null-severity) tasks is deliberately not provided; the need can be revisited when it concretely appears |
 | `--columns COLS`    | Comma-separated list of columns to display                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 Default columns: `id`, `status`, `blocked-by`, `title`.
 
-Available columns: `id`, `title`, `status`, `type`, `tier`, `role`, `severity`, `tags`, `parent`, `blocked-by`, `children`.
+Available columns: `id`, `title`, `status`, `tier`, `role`, `severity`, `tags`, `parent`, `blocked-by`, `children`.
 
 `severity` is opt-in via `--columns` rather than part of the defaults. The default column set is deliberately narrow to keep the table readable; callers doing triage work add it explicitly (e.g., `--columns id,severity,status,blocked-by,title`). JSON rows emit `severity` as the literal enum value or JSON `null`, matching the rule that enum/planning scalars (`role`, `tier`, `parent`) are never rendered as empty strings.
 
@@ -1387,7 +1374,7 @@ Row shape rules:
 
 - Keys are exactly the requested columns (or the defaults when `--columns` is omitted), with no extra fields. Agents relying on `quest list` should pin `--columns` to the set they consume
 - Field order in each row matches the order of `--columns` (or the default-columns order). JSON object key order is preserved on output
-- Scalar columns (`id`, `title`, `status`, `type`, `tier`, `role`, `parent`) are strings. `role`, `tier`, and `parent` are emitted as JSON `null` when unset, never as the empty string
+- Scalar columns (`id`, `title`, `status`, `tier`, `role`, `parent`) are strings. `role`, `tier`, and `parent` are emitted as JSON `null` when unset, never as the empty string
 - `tags` is always a JSON array of strings (possibly empty), never a comma-joined string. The array mirrors the text-mode comma-joined rendering
 - `blocked-by` is always a JSON array of task ID strings (possibly empty) -- just IDs, not denormalized `{id,status,title}` objects. The richer edge shape lives in `quest graph`, which is the right tool for structural inspection
 - When no tasks match, the output is an empty array `[]` (not `null` and not a missing key). Empty output with exit code 0 is not an error
@@ -1412,7 +1399,6 @@ Shows parent-child structure, dependency edges with types, and task statuses.
     {
       "id": "proj-a1",
       "title": "Auth module",
-      "type": "task",
       "status": "open",
       "tier": "T3",
       "role": "coder",
@@ -1422,7 +1408,6 @@ Shows parent-child structure, dependency edges with types, and task statuses.
     {
       "id": "proj-a1.1",
       "title": "JWT validation",
-      "type": "task",
       "status": "completed",
       "tier": "T2",
       "role": "coder",
@@ -1432,7 +1417,6 @@ Shows parent-child structure, dependency edges with types, and task statuses.
     {
       "id": "proj-a1.2",
       "title": "Session store",
-      "type": "task",
       "status": "accepted",
       "tier": "T2",
       "role": "coder",
@@ -1442,7 +1426,6 @@ Shows parent-child structure, dependency edges with types, and task statuses.
     {
       "id": "proj-a1.3",
       "title": "Auth middleware",
-      "type": "task",
       "status": "open",
       "tier": "T3",
       "role": "coder",
@@ -1476,7 +1459,7 @@ Edge fields mirror the CLI: `task` is the task that holds the link (first arg to
 - **Edge field naming.** `task` and `target` use quest-specific terminology rather than generic graph terms (e.g., `source`/`target`) to maintain consistency with the CLI surface (`quest link TASK --blocked-by TARGET`).
 - **Node fields are structural.** Graph output exists for verifying dependency structure and status, not for displaying full task metadata. Fields like `tags` are intentionally excluded -- they don't contribute to structural verification and are available via `quest list` and `quest show`. `severity` is included on nodes because it is a triage signal a planner reads alongside the graph view (e.g., "what's blocking the one high-severity task in this subtree?"), and is emitted as the literal enum value or JSON `null` per the "all fields always present" rule for JSON output.
 
-**Text output (`--text`)**: human-readable tree. Parent-child structure is conveyed by indentation. Dependency edges are listed under the task that holds the link, matching the JSON model. Every task reference -- node or edge target -- uses the same `{id} [{status}] (bug?) {title}` shape as `quest show`, so the same scan pattern applies across commands. A ` (bug)` marker is inserted between the status bracket and the title when the referenced task's `type` is `bug`; it is omitted for the default `task` type. `severity`, `tier`, and `role` appear on nodes in JSON output but are not rendered in the text tree -- the text tree is intentionally terse for structural scanning, and triage-by-severity views are better served by `quest list --columns id,severity,status,blocked-by,title`.
+**Text output (`--text`)**: human-readable tree. Parent-child structure is conveyed by indentation. Dependency edges are listed under the task that holds the link, matching the JSON model. Every task reference -- node or edge target -- uses the same `{id} [{status}] {title}` shape as `quest show`, so the same scan pattern applies across commands. `severity`, `tier`, and `role` appear on nodes in JSON output but are not rendered in the text tree -- the text tree is intentionally terse for structural scanning, and triage-by-severity views are better served by `quest list --columns id,severity,status,blocked-by,title`.
 
 ```
 proj-a1 [open] Auth module
@@ -1685,7 +1668,6 @@ Implementers: see `docs/OTEL.md` for span inventory, metric definitions, attribu
 - **`quest close-all`** -- batch status transitions, if scripting `quest list | quest complete` becomes cumbersome
 - **Snapshots / branching** -- tagging and branching the task store for rollback or experimentation
 - **`quest diff` / `quest log`** -- history exploration commands for audit and debugging
-- **Expanded type taxonomy** -- additional task types beyond `task` and `bug` if query patterns demand it
 - **Analytics CLI** -- queries like "tasks at T2 tier fail 3x more on concurrency work" belong in a separate analytics tool that reads quest's data store
 - **Debrief processing workflow** -- dedicated commands for marking debriefs as reviewed, if note-based tracking proves insufficient
 - **Estimate field** -- first-class effort estimation if the framework develops scheduling/budgeting capabilities that consume it

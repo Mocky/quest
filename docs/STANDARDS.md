@@ -641,7 +641,7 @@ func TestShowJSONHasRequiredFields(t *testing.T) {
     // Invoke `quest show` against a fixture DB, parse stdout as JSON,
     // assert that every field listed below is present.
     required := []string{
-        "id", "title", "description", "context", "type", "status",
+        "id", "title", "description", "context", "status",
         "role", "tier", "severity", "tags", "parent", "acceptance_criteria", "metadata",
         "owner_session", "started_at", "completed_at",
         "dependencies", "prs", "commits", "notes",
