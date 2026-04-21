@@ -7,40 +7,6 @@ import (
 	"github.com/mocky/quest/internal/errors"
 )
 
-// TestValidateType pins the spec §Core fields `type` enum. Empty is
-// "unset" and must pass; every ValidTypes entry must pass; any other
-// string must return an ErrUsage-wrapped error.
-func TestValidateType(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		input   string
-		wantErr bool
-	}{
-		{name: "empty", input: "", wantErr: false},
-		{name: "task", input: "task", wantErr: false},
-		{name: "bug", input: "bug", wantErr: false},
-		{name: "unknown", input: "epic", wantErr: true},
-		{name: "uppercase rejected", input: "Task", wantErr: true},
-		{name: "whitespace rejected", input: " task", wantErr: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateType(tc.input)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("ValidateType(%q) = nil, want error", tc.input)
-				}
-				if !stderrors.Is(err, errors.ErrUsage) {
-					t.Errorf("ValidateType(%q) error = %v, want ErrUsage", tc.input, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Errorf("ValidateType(%q) = %v, want nil", tc.input, err)
-			}
-		})
-	}
-}
-
 // TestValidateTier pins the spec §Model tiers enum. Every T0-T6 must
 // pass; empty must pass (unset); any other string must return an
 // ErrUsage-wrapped error. The loop over ValidTiers guards against
@@ -67,20 +33,8 @@ func TestValidateTier(t *testing.T) {
 	}
 }
 
-// TestValidateTypeMessage locks the human-readable message shape so
-// the CLI stderr tail stays predictable for agents grepping errors.
-func TestValidateTypeMessage(t *testing.T) {
-	err := ValidateType("epic")
-	if err == nil {
-		t.Fatal("ValidateType(\"epic\") = nil, want error")
-	}
-	want := `unknown type "epic" (want task or bug)`
-	if got := err.Error(); got[:len(want)] != want {
-		t.Errorf("ValidateType message prefix = %q, want %q", got, want)
-	}
-}
-
-// TestValidateTierMessage mirrors TestValidateTypeMessage for tier.
+// TestValidateTierMessage pins the human-readable stderr tail for the
+// tier enum so agents grepping for the rejection hint remain stable.
 func TestValidateTierMessage(t *testing.T) {
 	err := ValidateTier("T9")
 	if err == nil {

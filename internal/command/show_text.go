@@ -26,7 +26,7 @@ func emitShowText(w io.Writer, resp showResponse) error {
 	width := resolveWrapWidth(w)
 	var buf strings.Builder
 
-	buf.WriteString(output.TaskRefLine(resp.ID, resp.Status, resp.Type, resp.Title))
+	buf.WriteString(output.TaskRefLine(resp.ID, resp.Status, resp.Title))
 	buf.WriteByte('\n')
 
 	writeMetadataCluster(&buf, resp)
@@ -88,7 +88,7 @@ func buildMetadataRows(resp showResponse) []metaRow {
 	if resp.Parent != nil {
 		rows = append(rows, metaRow{
 			key:   "parent",
-			value: output.TaskRefLine(resp.Parent.ID, resp.Parent.Status, resp.Parent.Type, resp.Parent.Title),
+			value: output.TaskRefLine(resp.Parent.ID, resp.Parent.Status, resp.Parent.Title),
 		})
 	}
 	if len(resp.Tags) > 0 {
@@ -369,7 +369,7 @@ func writeDependencies(buf *strings.Builder, deps []store.Dependency) {
 		buf.WriteString("    ")
 		buf.WriteString(d.LinkType)
 		buf.WriteString(strings.Repeat(" ", widest-len(d.LinkType)+2))
-		buf.WriteString(output.TaskRefLine(d.ID, d.Status, d.Type, d.Title))
+		buf.WriteString(output.TaskRefLine(d.ID, d.Status, d.Title))
 		buf.WriteByte('\n')
 	}
 }

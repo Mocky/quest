@@ -56,7 +56,7 @@ func TestRoleUnsetRendering(t *testing.T) {
 		reader := installCapturingMeter(t)
 		// Record a tasks.created event with empty role — recorder runs
 		// the value through roleOrUnset before stamping the dimension.
-		RecordTaskCreated(context.Background(), "proj-a1", "T2", "", "task")
+		RecordTaskCreated(context.Background(), "proj-a1", "T2", "")
 
 		var rm metricdata.ResourceMetrics
 		if err := reader.Collect(context.Background(), &rm); err != nil {

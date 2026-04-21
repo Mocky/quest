@@ -28,7 +28,6 @@ type TaskJSON struct {
 	Title              string             `json:"title"`
 	Description        string             `json:"description"`
 	Context            string             `json:"context"`
-	Type               string             `json:"type"`
 	Status             string             `json:"status"`
 	Role               *string            `json:"role"`
 	Tier               *string            `json:"tier"`
@@ -328,7 +327,6 @@ func buildTaskJSON(t store.Task, history []store.History) TaskJSON {
 		Title:              t.Title,
 		Description:        t.Description,
 		Context:            t.Context,
-		Type:               t.Type,
 		Status:             t.Status,
 		Role:               nullString(t.Role),
 		Tier:               nullString(t.Tier),

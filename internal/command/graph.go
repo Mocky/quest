@@ -19,14 +19,14 @@ import (
 )
 
 // graphNode is the JSON shape of one entry in the `nodes` array. Field
-// order matches spec §quest graph: id, title, type, status, tier, role,
-// children. Tier and role are *string so an unset value emits JSON
-// null instead of an empty string. External nodes appear with the same
-// shape but children is always []; outgoing edges are not expanded.
+// order matches spec §quest graph: id, title, status, tier, role,
+// severity, children. Tier and role are *string so an unset value emits
+// JSON null instead of an empty string. External nodes appear with the
+// same shape but children is always []; outgoing edges are not
+// expanded.
 type graphNode struct {
 	ID       string   `json:"id"`
 	Title    string   `json:"title"`
-	Type     string   `json:"type"`
 	Status   string   `json:"status"`
 	Tier     *string  `json:"tier"`
 	Role     *string  `json:"role"`
@@ -37,8 +37,7 @@ type graphNode struct {
 // graphEdge is one outgoing dependency edge from a subtree task. Field
 // names are quest-specific (`task` / `target`) per spec §quest graph
 // design notes. LinkType names the relationship primitive (`blocked-by`,
-// `caused-by`, …); the target task's classification (`task`/`bug`) is
-// available via the corresponding entry in `nodes[]`.
+// `caused-by`, …).
 type graphEdge struct {
 	Task         string `json:"task"`
 	LinkType     string `json:"link_type"`
@@ -83,7 +82,7 @@ func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string,
 	if err != nil {
 		return err
 	}
-	telemetry.RecordTaskContext(ctx, root.ID, root.Tier, root.Type)
+	telemetry.RecordTaskContext(ctx, root.ID, root.Tier)
 
 	ctx2, end := telemetry.StoreSpan(ctx, "quest.store.traverse")
 	defer func() { end(err) }()
@@ -134,7 +133,6 @@ func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string,
 		externals = append(externals, graphNode{
 			ID:       ext.ID,
 			Title:    ext.Title,
-			Type:     ext.Type,
 			Status:   ext.Status,
 			Tier:     nullString(ext.Tier),
 			Role:     nullString(ext.Role),
@@ -152,7 +150,6 @@ func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string,
 		nodes = append(nodes, graphNode{
 			ID:       t.ID,
 			Title:    t.Title,
-			Type:     t.Type,
 			Status:   t.Status,
 			Tier:     nullString(t.Tier),
 			Role:     nullString(t.Role),
@@ -210,13 +207,13 @@ func collectSubtree(ctx context.Context, s store.Store, root store.Task) ([]stor
 
 // emitGraphText renders the indented tree per spec §quest graph
 // --text. Every task reference — whether a tree node or an edge
-// target — uses the canonical `{id} [{status}] (bug?) {title}`
-// shape from output.TaskRefLine. Parent-child depth is computed from
-// the dotted ID offset relative to rootID; externals live outside the
-// subtree hierarchy and only surface as edge-target references.
-// The titleByID/typeByID map is built once from the subtree plus
-// externals so each edge row looks up target metadata in O(1) without
-// re-querying the store.
+// target — uses the canonical `{id} [{status}] {title}` shape from
+// output.TaskRefLine. Parent-child depth is computed from the dotted
+// ID offset relative to rootID; externals live outside the subtree
+// hierarchy and only surface as edge-target references. The
+// titleByID map is built once from the subtree plus externals so each
+// edge row looks up target metadata in O(1) without re-querying the
+// store.
 func emitGraphText(w io.Writer, rootID string, subtree []store.Task, externals []graphNode, edges []graphEdge) error {
 	depthOf := func(id string) int {
 		if id == rootID {
@@ -230,16 +227,13 @@ func emitGraphText(w io.Writer, rootID string, subtree []store.Task, externals [
 	}
 	titleByID := map[string]string{}
 	statusByID := map[string]string{}
-	typeByID := map[string]string{}
 	for _, t := range subtree {
 		titleByID[t.ID] = t.Title
 		statusByID[t.ID] = t.Status
-		typeByID[t.ID] = t.Type
 	}
 	for _, n := range externals {
 		titleByID[n.ID] = n.Title
 		statusByID[n.ID] = n.Status
-		typeByID[n.ID] = n.Type
 	}
 	edgesBy := map[string][]graphEdge{}
 	for _, e := range edges {
@@ -248,9 +242,9 @@ func emitGraphText(w io.Writer, rootID string, subtree []store.Task, externals [
 	var buf bytes.Buffer
 	for _, t := range subtree {
 		indent := strings.Repeat("  ", depthOf(t.ID))
-		fmt.Fprintln(&buf, indent+output.TaskRefLine(t.ID, t.Status, t.Type, t.Title))
+		fmt.Fprintln(&buf, indent+output.TaskRefLine(t.ID, t.Status, t.Title))
 		for _, e := range edgesBy[t.ID] {
-			targetRef := output.TaskRefLine(e.Target, statusByID[e.Target], typeByID[e.Target], titleByID[e.Target])
+			targetRef := output.TaskRefLine(e.Target, statusByID[e.Target], titleByID[e.Target])
 			fmt.Fprintf(&buf, "%s  %s  %s\n", indent, e.LinkType, targetRef)
 		}
 	}

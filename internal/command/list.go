@@ -32,11 +32,10 @@ var (
 // checks and the cli.Suggest "did you mean" hint.
 var (
 	validListStatuses   = []string{"open", "accepted", "completed", "failed", "cancelled"}
-	validListTypes      = []string{"task", "bug"}
 	validListTiers      = []string{"T0", "T1", "T2", "T3", "T4", "T5", "T6"}
 	validListSeverities = []string{"critical", "high", "medium", "low"}
 	validListColumns    = []string{
-		"id", "title", "status", "type", "tier", "role", "severity",
+		"id", "title", "status", "tier", "role", "severity",
 		"tags", "parent", "blocked-by", "children",
 	}
 )
@@ -69,7 +68,6 @@ func List(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 		Status:   filter.Statuses,
 		Role:     filter.Roles,
 		Tier:     filter.Tiers,
-		Type:     filter.Types,
 		Severity: filter.Severities,
 		Ready:    filter.Ready,
 	})
@@ -88,8 +86,8 @@ func List(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 // parseListFlags builds the Filter + column projection from args. Each
 // enum flag is a fs.Func so multiple occurrences accumulate and each
 // accepts a comma-separated list that is split at this layer. Unknown
-// values for --status, --type, --tier, --columns are rejected here so
-// the SQL builder in the store can assume a clean filter.
+// values for --status, --tier, --severity, --columns are rejected here
+// so the SQL builder in the store can assume a clean filter.
 func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, error) {
 	var (
 		filter          store.Filter
@@ -124,8 +122,6 @@ func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, er
 		addCSV(&filter.Tags, nil))
 	fs.Func("role", "ROLES (comma-separated; repeatable)",
 		addCSV(&filter.Roles, nil))
-	fs.Func("type", "TYPES (comma-separated; repeatable)",
-		addCSV(&filter.Types, nil))
 	fs.Func("tier", "TIERS (comma-separated; repeatable)",
 		addCSV(&filter.Tiers, nil))
 	fs.Func("severity", "SEVERITIES (comma-separated; repeatable)",
@@ -154,9 +150,6 @@ func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, er
 	}
 
 	if err := rejectUnknown("status", filter.Statuses, validListStatuses); err != nil {
-		return store.Filter{}, nil, err
-	}
-	if err := rejectUnknown("type", filter.Types, validListTypes); err != nil {
 		return store.Filter{}, nil, err
 	}
 	if err := rejectUnknown("tier", filter.Tiers, validListTiers); err != nil {
@@ -230,8 +223,6 @@ func enrichForColumns(ctx context.Context, s store.Store, tasks []store.Task, co
 				row.cells[c] = t.Title
 			case "status":
 				row.cells[c] = t.Status
-			case "type":
-				row.cells[c] = t.Type
 			case "tier":
 				row.cells[c] = nullString(t.Tier)
 			case "role":

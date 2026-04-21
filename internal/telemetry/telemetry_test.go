@@ -63,7 +63,7 @@ func TestStubsDoNotPanic(t *testing.T) {
 		t.Errorf("WrapStore did not return argument unchanged")
 	}
 
-	telemetry.RecordTaskContext(ctx, "proj-1", "T2", "task")
+	telemetry.RecordTaskContext(ctx, "proj-1", "T2")
 	telemetry.RecordHandlerError(ctx, io.EOF)
 	// RecordDispatchError in Phase 4 emits stderr + returns the mapped
 	// exit code so cli.Execute's early-return paths work today; the OTEL
@@ -78,7 +78,7 @@ func TestStubsDoNotPanic(t *testing.T) {
 	telemetry.RecordPreconditionFailed(ctx, "children_terminal", []string{"a", "b"})
 	telemetry.RecordCycleDetected(ctx, []string{"a", "b", "a"})
 	telemetry.RecordTerminalState(ctx, "proj-1", "T2", "coder", "completed")
-	telemetry.RecordTaskCreated(ctx, "proj-1", "T2", "coder", "task")
+	telemetry.RecordTaskCreated(ctx, "proj-1", "T2", "coder")
 	telemetry.RecordStatusTransition(ctx, "proj-1", "open", "accepted")
 	telemetry.RecordLinkAdded(ctx, "a", "b", "blocked-by")
 	telemetry.RecordLinkRemoved(ctx, "a", "b", "blocked-by")

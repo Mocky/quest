@@ -75,10 +75,6 @@ func TestBatchInvalidLinkTypeCodeRecognized(t *testing.T) {
 		t.Errorf("BatchCodeInvalidTag = %q, want %q",
 			batch.BatchCodeInvalidTag, "invalid_tag")
 	}
-	if batch.BatchCodeInvalidType != "invalid_type" {
-		t.Errorf("BatchCodeInvalidType = %q, want %q",
-			batch.BatchCodeInvalidType, "invalid_type")
-	}
 	if batch.BatchCodeInvalidTier != "invalid_tier" {
 		t.Errorf("BatchCodeInvalidTier = %q, want %q",
 			batch.BatchCodeInvalidTier, "invalid_tier")

@@ -361,7 +361,7 @@ func TestGraphJSONEmitsSeverity(t *testing.T) {
 
 // TestBatchInvalidSeverityEmitsSemanticError: batch validation surfaces
 // bad severity values with the new invalid_severity error code, matching
-// the invalid_type / invalid_tier shape.
+// the invalid_tier shape.
 func TestBatchInvalidSeverityEmitsSemanticError(t *testing.T) {
 	s, _ := testStore(t)
 	path := writeBatchFile(t, `{"title":"Bad","severity":"urgent"}`+"\n")
@@ -385,7 +385,7 @@ func TestBatchInvalidSeverityEmitsSemanticError(t *testing.T) {
 // value lands in the DB and the created history payload.
 func TestBatchValidSeverityPersists(t *testing.T) {
 	s, dbPath := testStore(t)
-	path := writeBatchFile(t, `{"ref":"root","title":"Bug","type":"bug","severity":"critical"}`+"\n")
+	path := writeBatchFile(t, `{"ref":"root","title":"Bug","severity":"critical"}`+"\n")
 
 	err, stdout, stderr := runBatch(t, s, createCfg(), []string{path})
 	if err != nil {
@@ -431,8 +431,8 @@ func seedListTaskWithSeverity(t *testing.T, s store.Store, id, status, sev strin
 		sevArg = sev
 	}
 	if _, err := tx.ExecContext(context.Background(),
-		`INSERT INTO tasks(id, title, status, type, severity, created_at)
-		 VALUES (?, ?, ?, 'task', ?, ?)`,
+		`INSERT INTO tasks(id, title, status, severity, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
 		id, id, status, sevArg, "2026-04-18T00:00:00Z"); err != nil {
 		t.Fatalf("insert %s: %v", id, err)
 	}

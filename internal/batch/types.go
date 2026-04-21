@@ -14,7 +14,6 @@ type BatchLine struct {
 	Title              string
 	Description        string
 	Context            string
-	Type               string
 	Tier               string
 	Role               string
 	Severity           string
@@ -84,11 +83,10 @@ const (
 )
 
 // Batch error codes. The disjoint parse/reference/graph/semantic
-// sets live alongside ValidateSemantic's five codes — five of those
+// sets live alongside ValidateSemantic's four codes — four of those
 // (cycle, blocked_by_cancelled, retry_target_status,
-// source_type_required, unknown_task_id) also appear below with a
-// different phase discriminator per quest-spec.md §Batch error
-// output.
+// unknown_task_id) also appear below with a different phase
+// discriminator per quest-spec.md §Batch error output.
 const (
 	BatchCodeEmptyFile          = "empty_file"
 	BatchCodeMalformedJSON      = "malformed_json"
@@ -104,10 +102,8 @@ const (
 
 	BatchCodeRetryTargetStatus  = "retry_target_status"
 	BatchCodeBlockedByCancelled = "blocked_by_cancelled"
-	BatchCodeSourceTypeRequired = "source_type_required"
 	BatchCodeInvalidTag         = "invalid_tag"
 	BatchCodeInvalidLinkType    = "invalid_link_type"
-	BatchCodeInvalidType        = "invalid_type"
 	BatchCodeInvalidTier        = "invalid_tier"
 	BatchCodeInvalidSeverity    = "invalid_severity"
 	BatchCodeFieldTooLong       = "field_too_long"

@@ -294,21 +294,6 @@ func TestPhaseSemanticInvalidLinkType(t *testing.T) {
 	}
 }
 
-// TestPhaseSemanticInvalidType: an out-of-enum `type` on a line →
-// invalid_type carrying field=type and the offending value.
-func TestPhaseSemanticInvalidType(t *testing.T) {
-	s := testStore(t)
-	body := `{"ref":"a","title":"A","type":"epic"}` + "\n"
-	_, errs := runPhases(t, s, body)
-	typeErrs := withCode(errs, batch.BatchCodeInvalidType)
-	if len(typeErrs) != 1 {
-		t.Fatalf("errs = %+v, want 1 invalid_type", typeErrs)
-	}
-	if typeErrs[0].Field != "type" || typeErrs[0].Value != "epic" {
-		t.Errorf("err = %+v, want field=type, value=epic", typeErrs[0])
-	}
-}
-
 // TestPhaseSemanticInvalidTier: an out-of-enum `tier` on a line →
 // invalid_tier carrying field=tier and the offending value.
 func TestPhaseSemanticInvalidTier(t *testing.T) {
@@ -414,20 +399,6 @@ func TestPhaseSemanticRetryTargetStatus(t *testing.T) {
 			e.Target == "proj-x" && e.ActualStatus == "completed"
 	}) {
 		t.Fatalf("errs = %+v, want retry_target_status {target=proj-x, actual_status=completed}", errs)
-	}
-}
-
-// TestPhaseSemanticSourceTypeRequired: caused-by on a task-type
-// source → source_type_required.
-func TestPhaseSemanticSourceTypeRequired(t *testing.T) {
-	s := testStore(t)
-	seedTask(t, s, "proj-x", "completed", "task")
-	body := `{"ref":"a","title":"A","type":"task","dependencies":[{"id":"proj-x","link_type":"caused-by"}]}` + "\n"
-	_, errs := runPhases(t, s, body)
-	if !hasErr(errs, func(e batch.BatchError) bool {
-		return e.Code == batch.BatchCodeSourceTypeRequired
-	}) {
-		t.Fatalf("errs = %+v, want source_type_required", errs)
 	}
 }
 
@@ -617,11 +588,6 @@ func TestBatchStderrShape(t *testing.T) {
 			keys: []string{"line", "phase", "code", "target", "message"},
 		},
 		{
-			name: "source_type_required",
-			err:  batch.BatchError{Line: 1, Phase: "semantic", Code: "source_type_required", LinkType: "caused-by", RequiredType: "bug", Message: "m"},
-			keys: []string{"line", "phase", "code", "link_type", "required_type", "message"},
-		},
-		{
 			name: "invalid_tag",
 			err:  batch.BatchError{Line: 1, Phase: "semantic", Code: "invalid_tag", Field: "tags[0]", Value: "bad", Message: "m"},
 			keys: []string{"line", "phase", "code", "field", "value", "message"},
@@ -629,11 +595,6 @@ func TestBatchStderrShape(t *testing.T) {
 		{
 			name: "invalid_link_type",
 			err:  batch.BatchError{Line: 1, Phase: "semantic", Code: "invalid_link_type", Field: "dependencies[0].type", Value: "bogus", Message: "m"},
-			keys: []string{"line", "phase", "code", "field", "value", "message"},
-		},
-		{
-			name: "invalid_type",
-			err:  batch.BatchError{Line: 1, Phase: "semantic", Code: "invalid_type", Field: "type", Value: "epic", Message: "m"},
 			keys: []string{"line", "phase", "code", "field", "value", "message"},
 		},
 		{

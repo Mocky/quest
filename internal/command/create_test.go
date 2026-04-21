@@ -76,15 +76,15 @@ func TestCreateTopLevelHappyPath(t *testing.T) {
 		t.Errorf("id = %q, want proj-01", id)
 	}
 
-	var title, status, typeVal string
+	var title, status string
 	var parent sql.NullString
 	row := queryOne(t, dbPath,
-		"SELECT title, status, type, parent FROM tasks WHERE id='proj-01'")
-	if err := row.Scan(&title, &status, &typeVal, &parent); err != nil {
+		"SELECT title, status, parent FROM tasks WHERE id='proj-01'")
+	if err := row.Scan(&title, &status, &parent); err != nil {
 		t.Fatalf("scan task: %v", err)
 	}
-	if title != "Auth module" || status != "open" || typeVal != "task" {
-		t.Errorf("task row = {%q, %q, %q}, want {Auth module, open, task}", title, status, typeVal)
+	if title != "Auth module" || status != "open" {
+		t.Errorf("task row = {%q, %q}, want {Auth module, open}", title, status)
 	}
 	if parent.Valid {
 		t.Errorf("parent = %q, want SQL NULL", parent.String)
@@ -172,16 +172,6 @@ func TestCreateTitleBoundary(t *testing.T) {
 	}
 }
 
-// TestCreateInvalidType: --type must be task or bug.
-func TestCreateInvalidType(t *testing.T) {
-	s, _ := testStore(t)
-	err, _, _ := runCreate(t, s, createCfg(),
-		[]string{"--title", "Bad", "--type", "epic"})
-	if err == nil || !stderrors.Is(err, errors.ErrUsage) {
-		t.Fatalf("err = %v, want ErrUsage", err)
-	}
-}
-
 // TestCreateInvalidTier: --tier must be one of T0..T6. Prior to the
 // shared ValidateTier helper the CLI accepted any string and deferred
 // detection to an agent noticing the bogus value in `quest show`.
@@ -199,7 +189,7 @@ func TestCreateInvalidTier(t *testing.T) {
 func TestCreateRejectsRepeatedSingleDepFlag(t *testing.T) {
 	s, _ := testStore(t)
 	err, _, _ := runCreate(t, s, createCfg(),
-		[]string{"--title", "Bug", "--type", "bug", "--caused-by", "proj-a1", "--caused-by", "proj-a2"})
+		[]string{"--title", "Bug", "--caused-by", "proj-a1", "--caused-by", "proj-a2"})
 	if err == nil || !stderrors.Is(err, errors.ErrUsage) {
 		t.Fatalf("err = %v, want ErrUsage", err)
 	}
@@ -348,28 +338,14 @@ func TestCreateBlockedByCancelledTargetExit5(t *testing.T) {
 	}
 }
 
-// TestCreateCausedByRequiresBugType: caused-by on a type=task source
-// is a source_type_required semantic violation.
-func TestCreateCausedByRequiresBugType(t *testing.T) {
-	s, _ := testStore(t)
-	seedTaskWithStatus(t, s, "proj-a1", "Upstream", "", "completed")
-
-	err, _, _ := runCreate(t, s, createCfg(), []string{
-		"--title", "Not a bug", "--caused-by", "proj-a1",
-	})
-	if err == nil || !stderrors.Is(err, errors.ErrConflict) {
-		t.Fatalf("err = %v, want wraps ErrConflict", err)
-	}
-}
-
-// TestCreateCausedByBugTypeSucceeds: with --type bug, caused-by
-// validates and the task is created.
-func TestCreateCausedByBugTypeSucceeds(t *testing.T) {
+// TestCreateCausedBySucceeds: caused-by works on any source; no
+// type gate exists after migration 006.
+func TestCreateCausedBySucceeds(t *testing.T) {
 	s, dbPath := testStore(t)
 	seedTaskWithStatus(t, s, "proj-a1", "Upstream", "", "completed")
 
 	err, stdout, _ := runCreate(t, s, createCfg(), []string{
-		"--title", "Regression", "--type", "bug", "--caused-by", "proj-a1",
+		"--title", "Regression", "--caused-by", "proj-a1",
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -499,7 +475,6 @@ func TestCreateHistoryPayloadShape(t *testing.T) {
 		"--parent", "proj-par",
 		"--tier", "T3",
 		"--role", "coder",
-		"--type", "bug",
 		"--tag", "go",
 	})
 	if err != nil {
@@ -516,31 +491,10 @@ func TestCreateHistoryPayloadShape(t *testing.T) {
 	if err := json.Unmarshal([]byte(payload), &m); err != nil {
 		t.Fatalf("unmarshal payload: %v; raw=%q", err, payload)
 	}
-	for _, key := range []string{"tier", "role", "type", "parent", "tags"} {
+	for _, key := range []string{"tier", "role", "parent", "tags"} {
 		if _, ok := m[key]; !ok {
 			t.Errorf("payload missing %q; got %v", key, m)
 		}
-	}
-}
-
-// TestCreateDefaultTypeOmittedFromPayload: type=task is the default
-// and must not appear in the `created` history payload.
-func TestCreateDefaultTypeOmittedFromPayload(t *testing.T) {
-	s, dbPath := testStore(t)
-	err, stdout, _ := runCreate(t, s, createCfg(),
-		[]string{"--title", "Default type"})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	id := ackID(t, stdout)
-
-	var payload string
-	if err := queryOne(t, dbPath,
-		"SELECT payload FROM history WHERE task_id='"+id+"' AND action='created'").Scan(&payload); err != nil {
-		t.Fatalf("scan payload: %v", err)
-	}
-	if strings.Contains(payload, `"type"`) {
-		t.Errorf("default type=task should be omitted; payload=%q", payload)
 	}
 }
 

@@ -200,22 +200,19 @@ func statusAttrs(status string) metric.MeasurementOption {
 // span under the active command span for graph/move traversals.
 
 // RecordTaskContext sets the §4.3 task-affecting attributes
-// (quest.task.id, quest.task.tier, quest.task.type) on the active
-// command span. Called by every task-affecting handler.
-func RecordTaskContext(ctx context.Context, id, tier, taskType string) {
+// (quest.task.id, quest.task.tier) on the active command span.
+// Called by every task-affecting handler.
+func RecordTaskContext(ctx context.Context, id, tier string) {
 	span := trace.SpanFromContext(ctx)
 	if nonRecording(span) {
 		return
 	}
-	attrs := make([]attribute.KeyValue, 0, 3)
+	attrs := make([]attribute.KeyValue, 0, 2)
 	if id != "" {
 		attrs = append(attrs, attribute.String("quest.task.id", id))
 	}
 	if tier != "" {
 		attrs = append(attrs, attribute.String("quest.task.tier", tier))
-	}
-	if taskType != "" {
-		attrs = append(attrs, attribute.String("quest.task.type", taskType))
 	}
 	if len(attrs) > 0 {
 		span.SetAttributes(attrs...)
@@ -335,23 +332,21 @@ func RecordTerminalState(ctx context.Context, taskID, tier, role, outcome string
 }
 
 // RecordTaskCreated enriches the active span with the new task's
-// identity (quest.task.id/tier/role/type) and increments
-// dept.quest.tasks.created{tier, role, type}. OTEL.md §8.6.
-func RecordTaskCreated(ctx context.Context, taskID, tier, role, taskType string) {
+// identity (quest.task.id/tier/role) and increments
+// dept.quest.tasks.created{tier, role}. OTEL.md §8.6.
+func RecordTaskCreated(ctx context.Context, taskID, tier, role string) {
 	span := trace.SpanFromContext(ctx)
 	if !nonRecording(span) {
 		span.SetAttributes(
 			attribute.String("quest.task.id", taskID),
 			attribute.String("quest.task.tier", tier),
 			attribute.String("quest.task.role", roleOrUnset(role)),
-			attribute.String("quest.task.type", taskType),
 		)
 	}
 	if tasksCreatedCtr != nil {
 		tasksCreatedCtr.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("tier", tier),
 			attribute.String("role", roleOrUnset(role)),
-			attribute.String("type", taskType),
 		))
 	}
 }
@@ -513,7 +508,6 @@ type QueryFilter struct {
 	Status   []string
 	Role     []string
 	Tier     []string
-	Type     []string
 	Severity []string
 	Ready    bool
 }
@@ -536,9 +530,6 @@ func RecordQueryResult(ctx context.Context, operation string, resultCount int, f
 		}
 		if v := joinSorted(filter.Tier); v != "" {
 			attrs = append(attrs, attribute.String("quest.query.filter.tier", v))
-		}
-		if v := joinSorted(filter.Type); v != "" {
-			attrs = append(attrs, attribute.String("quest.query.filter.type", v))
 		}
 		if v := joinSorted(filter.Severity); v != "" {
 			attrs = append(attrs, attribute.String("quest.query.filter.severity", v))

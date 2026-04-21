@@ -150,8 +150,9 @@ func TestDispatcherWritesPreMigrationSnapshot(t *testing.T) {
 
 	// Manually regress meta.schema_version to head-1 so the next
 	// dispatcher call migrates (head-1)→head and takes a pre-migration
-	// snapshot. Also drop the table that migration `head` creates so
-	// the replay matches what a real v{head-1} workspace would carry.
+	// snapshot. Migration 006 (head) drops the type column, so replaying
+	// it requires the column to exist — re-add it so the SELECT in 006
+	// resolves. Matches a real v{head-1} workspace which had `type`.
 	db, err := sql.Open("sqlite", "file:"+cfg.Workspace.DBPath)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -160,8 +161,8 @@ func TestDispatcherWritesPreMigrationSnapshot(t *testing.T) {
 	if _, err := db.Exec(`UPDATE meta SET value = ? WHERE key = 'schema_version'`, regress); err != nil {
 		t.Fatalf("regress meta: %v", err)
 	}
-	if _, err := db.Exec(`DROP TABLE commits`); err != nil {
-		t.Fatalf("drop commits: %v", err)
+	if _, err := db.Exec(`ALTER TABLE tasks ADD COLUMN type TEXT`); err != nil {
+		t.Fatalf("re-add type column: %v", err)
 	}
 	_ = db.Close()
 

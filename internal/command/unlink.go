@@ -47,19 +47,17 @@ func Unlink(ctx context.Context, cfg config.Config, s store.Store, args []string
 	}
 	defer tx.Rollback()
 
-	var (
-		taskType, tier sql.NullString
-	)
+	var tier sql.NullString
 	err = tx.QueryRowContext(ctx,
-		`SELECT type, tier FROM tasks WHERE id = ?`, taskID).
-		Scan(&taskType, &tier)
+		`SELECT tier FROM tasks WHERE id = ?`, taskID).
+		Scan(&tier)
 	if err != nil {
 		if stderrors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: task %q", errors.ErrNotFound, taskID)
 		}
 		return fmt.Errorf("%w: unlink: %s", errors.ErrGeneral, err.Error())
 	}
-	telemetry.RecordTaskContext(ctx, taskID, tier.String, taskType.String)
+	telemetry.RecordTaskContext(ctx, taskID, tier.String)
 
 	res, err := tx.ExecContext(ctx,
 		`DELETE FROM dependencies WHERE task_id = ? AND target_id = ? AND link_type = ?`,

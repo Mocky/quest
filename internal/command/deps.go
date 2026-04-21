@@ -41,7 +41,7 @@ func Deps(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	if err != nil {
 		return err
 	}
-	telemetry.RecordTaskContext(ctx, task.ID, task.Tier, task.Type)
+	telemetry.RecordTaskContext(ctx, task.ID, task.Tier)
 
 	ctx2, end := telemetry.StoreSpan(ctx, "quest.store.traverse")
 	defer func() { end(err) }()

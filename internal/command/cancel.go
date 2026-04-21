@@ -102,20 +102,20 @@ func Cancel(ctx context.Context, cfg config.Config, s store.Store, args []string
 	defer tx.Rollback()
 
 	var (
-		status      string
-		tier, taskT sql.NullString
-		role        sql.NullString
+		status string
+		tier   sql.NullString
+		role   sql.NullString
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT status, tier, role, type FROM tasks WHERE id = ?`, id).
-		Scan(&status, &tier, &role, &taskT)
+		`SELECT status, tier, role FROM tasks WHERE id = ?`, id).
+		Scan(&status, &tier, &role)
 	if err != nil {
 		if stderrors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: task %q", errors.ErrNotFound, id)
 		}
 		return fmt.Errorf("%w: cancel: %s", errors.ErrGeneral, err.Error())
 	}
-	telemetry.RecordTaskContext(ctx, id, tier.String, taskT.String)
+	telemetry.RecordTaskContext(ctx, id, tier.String)
 
 	// Terminal-state gating. completed / failed reject; cancelled is
 	// idempotent (exit 0 with empty arrays, no telemetry side-effects).

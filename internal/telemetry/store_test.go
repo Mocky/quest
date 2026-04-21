@@ -100,8 +100,8 @@ func TestInstrumentedStoreEmitsTxSpan(t *testing.T) {
 		t.Fatalf("BeginImmediate: %v", err)
 	}
 	if _, err := tx.ExecContext(context.Background(),
-		`INSERT INTO tasks (id, title, type, status, created_at) VALUES (?, ?, ?, ?, ?)`,
-		"test-1", "test", "task", "open", "2026-04-19T00:00:00Z",
+		`INSERT INTO tasks (id, title, status, created_at) VALUES (?, ?, ?, ?)`,
+		"test-1", "test", "open", "2026-04-19T00:00:00Z",
 	); err != nil {
 		_ = tx.Rollback()
 		t.Fatalf("ExecContext: %v", err)

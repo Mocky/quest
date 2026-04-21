@@ -41,7 +41,6 @@ func PhaseGraph(ctx context.Context, s store.Store, lines []BatchLine, valid map
 	// for refs, but lets the DFS treat refs and anonymous keys
 	// uniformly when following batch-internal edges.
 	refToKey := map[string]string{}
-	sourceType := map[string]string{}
 	for _, line := range lines {
 		if !valid[line.LineNo] {
 			continue
@@ -50,7 +49,6 @@ func PhaseGraph(ctx context.Context, s store.Store, lines []BatchLine, valid map
 		if line.Ref != "" {
 			refToKey[line.Ref] = key
 		}
-		sourceType[key] = line.Type
 	}
 	// Populate edges. Use raw Dependencies including invalid link
 	// types — those add no edges (phase 4 reports them separately).

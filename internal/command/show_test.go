@@ -157,7 +157,7 @@ func TestShowEmitsAllFieldsWithNulls(t *testing.T) {
 		t.Fatalf("stdout not JSON object: %v; raw=%q", jerr, stdout)
 	}
 	required := []string{
-		"id", "title", "description", "context", "type", "status",
+		"id", "title", "description", "context", "status",
 		"role", "tier", "tags", "parent", "acceptance_criteria",
 		"metadata", "owner_session", "started_at", "completed_at",
 		"dependencies", "prs", "notes", "handoff", "handoff_session",
@@ -232,7 +232,6 @@ func TestShowWithDepsDenormalizesTargetTitleAndStatus(t *testing.T) {
 			ID       string `json:"id"`
 			Title    string `json:"title"`
 			Status   string `json:"status"`
-			Type     string `json:"type"`
 			LinkType string `json:"link_type"`
 		} `json:"dependencies"`
 	}
@@ -243,8 +242,8 @@ func TestShowWithDepsDenormalizesTargetTitleAndStatus(t *testing.T) {
 		t.Fatalf("dependencies = %d, want 1", len(resp.Dependencies))
 	}
 	d := resp.Dependencies[0]
-	if d.ID != "proj-a1" || d.LinkType != "blocked-by" || d.Title != "Upstream" || d.Status != "open" || d.Type != "task" {
-		t.Errorf("dep = %+v, want {id=proj-a1, link_type=blocked-by, title=Upstream, status=open, type=task}", d)
+	if d.ID != "proj-a1" || d.LinkType != "blocked-by" || d.Title != "Upstream" || d.Status != "open" {
+		t.Errorf("dep = %+v, want {id=proj-a1, link_type=blocked-by, title=Upstream, status=open}", d)
 	}
 }
 
@@ -397,8 +396,8 @@ func TestShowParentIsObjectWhenSet(t *testing.T) {
 		t.Fatalf("BeginImmediate: %v", err)
 	}
 	if _, err := tx.ExecContext(context.Background(),
-		`INSERT INTO tasks(id, title, type, status, parent, created_at)
-		 VALUES ('proj-a1.1', 'JWT validation', 'task', 'open', 'proj-a1', ?)`,
+		`INSERT INTO tasks(id, title, status, parent, created_at)
+		 VALUES ('proj-a1.1', 'JWT validation', 'open', 'proj-a1', ?)`,
 		"2026-04-18T01:00:00Z"); err != nil {
 		t.Fatalf("insert child: %v", err)
 	}
@@ -406,7 +405,7 @@ func TestShowParentIsObjectWhenSet(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	// Non-root: parent is an object with all four keys populated.
+	// Non-root: parent is an object with three keys populated.
 	err, stdout, _ := runShow(t, s, baseCfg(), []string{"proj-a1.1"})
 	if err != nil {
 		t.Fatalf("Show child: %v", err)
@@ -416,7 +415,6 @@ func TestShowParentIsObjectWhenSet(t *testing.T) {
 			ID     string `json:"id"`
 			Title  string `json:"title"`
 			Status string `json:"status"`
-			Type   string `json:"type"`
 		} `json:"parent"`
 	}
 	if jerr := json.Unmarshal([]byte(stdout), &resp); jerr != nil {
@@ -426,8 +424,8 @@ func TestShowParentIsObjectWhenSet(t *testing.T) {
 		t.Fatalf("parent = null, want object; stdout=%q", stdout)
 	}
 	if resp.Parent.ID != "proj-a1" || resp.Parent.Title != "Auth module" ||
-		resp.Parent.Status != "open" || resp.Parent.Type != "task" {
-		t.Errorf("parent = %+v, want {id=proj-a1, title=Auth module, status=open, type=task}",
+		resp.Parent.Status != "open" {
+		t.Errorf("parent = %+v, want {id=proj-a1, title=Auth module, status=open}",
 			resp.Parent)
 	}
 
@@ -442,49 +440,6 @@ func TestShowParentIsObjectWhenSet(t *testing.T) {
 	}
 	if string(raw["parent"]) != "null" {
 		t.Errorf("root parent = %s, want null", raw["parent"])
-	}
-}
-
-// TestShowTextHeaderHasBugMarker pins the spec §Header rule: when the
-// task's type is bug, the header gets a ` (bug) ` marker between the
-// status bracket and the title. Default `task` omits the marker.
-func TestShowTextHeaderHasBugMarker(t *testing.T) {
-	s, _ := testStore(t)
-	// Seed one task of each classification.
-	tx, err := s.BeginImmediate(context.Background(), store.TxCreate)
-	if err != nil {
-		t.Fatalf("BeginImmediate: %v", err)
-	}
-	if _, err := tx.ExecContext(context.Background(),
-		`INSERT INTO tasks(id, title, type, status, created_at) VALUES
-		 ('proj-a1', 'Plain task', 'task', 'open', ?),
-		 ('proj-a2', 'Nasty regression', 'bug', 'open', ?)`,
-		"2026-04-18T00:00:00Z", "2026-04-18T00:00:00Z"); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-
-	cfg := baseCfg()
-	cfg.Output.Text = true
-
-	err, out1, _ := runShow(t, s, cfg, []string{"proj-a1"})
-	if err != nil {
-		t.Fatalf("Show proj-a1: %v", err)
-	}
-	first := firstLine(out1)
-	if first != "proj-a1 [open] Plain task" {
-		t.Errorf("task header = %q, want \"proj-a1 [open] Plain task\"", first)
-	}
-
-	err, out2, _ := runShow(t, s, cfg, []string{"proj-a2"})
-	if err != nil {
-		t.Fatalf("Show proj-a2: %v", err)
-	}
-	first = firstLine(out2)
-	if first != "proj-a2 [open] (bug) Nasty regression" {
-		t.Errorf("bug header = %q, want \"proj-a2 [open] (bug) Nasty regression\"", first)
 	}
 }
 
@@ -516,9 +471,9 @@ func TestShowTextMetadataCluster(t *testing.T) {
 		t.Fatalf("BeginImmediate: %v", err)
 	}
 	if _, err := tx.ExecContext(context.Background(),
-		`INSERT INTO tasks(id, title, type, status, tier, role, owner_session, metadata, created_at) VALUES
-		 ('proj-a1', 'Parent', 'bug', 'open', 'T1', 'planner', NULL, '{}', ?),
-		 ('proj-a1.1', 'Child', 'task', 'open', 'T3', 'coder', 'sess-1', '{"priority":"high"}', ?)`,
+		`INSERT INTO tasks(id, title, status, tier, role, owner_session, metadata, created_at) VALUES
+		 ('proj-a1', 'Parent', 'open', 'T1', 'planner', NULL, '{}', ?),
+		 ('proj-a1.1', 'Child', 'open', 'T3', 'coder', 'sess-1', '{"priority":"high"}', ?)`,
 		"2026-04-18T00:00:00Z", "2026-04-18T00:00:00Z"); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -541,12 +496,11 @@ func TestShowTextMetadataCluster(t *testing.T) {
 		t.Fatalf("Show: %v", err)
 	}
 	// Widest key is "metadata" (8) → value column starts at 4+8+2 = 14.
-	// Parent row: parent cluster with (bug) marker since proj-a1.type=bug.
 	// Tags row: comma-space join. Exec: T3 - coder - sess-1. Metadata:
 	// priority=high.
 	wantLines := []string{
 		"proj-a1.1 [open] Child",
-		"    parent    proj-a1 [open] (bug) Parent",
+		"    parent    proj-a1 [open] Parent",
 		"    tags      auth, go",
 		"    exec      T3 - coder - sess-1",
 		"    metadata  priority=high",
@@ -572,8 +526,8 @@ func TestShowTextExecTrailingNullDrops(t *testing.T) {
 		t.Fatalf("BeginImmediate: %v", err)
 	}
 	if _, err := tx.ExecContext(context.Background(),
-		`INSERT INTO tasks(id, title, type, status, tier, role, created_at) VALUES
-		 ('proj-a1', 'Alpha', 'task', 'open', 'T3', 'coder', ?)`,
+		`INSERT INTO tasks(id, title, status, tier, role, created_at) VALUES
+		 ('proj-a1', 'Alpha', 'open', 'T3', 'coder', ?)`,
 		"2026-04-18T00:00:00Z"); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -597,8 +551,7 @@ func TestShowTextExecTrailingNullDrops(t *testing.T) {
 }
 
 // TestShowTextDependenciesSection pins the Dependencies body: rows
-// are 4-indented, the link_type column pads to the widest value, and
-// each target renders with the `(bug)` marker when appropriate.
+// are 4-indented and the link_type column pads to the widest value.
 func TestShowTextDependenciesSection(t *testing.T) {
 	s, _ := testStore(t)
 	tx, err := s.BeginImmediate(context.Background(), store.TxCreate)
@@ -606,10 +559,10 @@ func TestShowTextDependenciesSection(t *testing.T) {
 		t.Fatalf("BeginImmediate: %v", err)
 	}
 	if _, err := tx.ExecContext(context.Background(),
-		`INSERT INTO tasks(id, title, type, status, created_at) VALUES
-		 ('proj-a1', 'JWT',    'task', 'completed', ?),
-		 ('proj-a2', 'Crash',  'bug',  'completed', ?),
-		 ('proj-a3', 'Middle', 'task', 'open',      ?)`,
+		`INSERT INTO tasks(id, title, status, created_at) VALUES
+		 ('proj-a1', 'JWT',    'completed', ?),
+		 ('proj-a2', 'Crash',  'completed', ?),
+		 ('proj-a3', 'Middle', 'open',      ?)`,
 		"2026-04-18T00:00:00Z", "2026-04-18T00:00:00Z", "2026-04-18T00:00:00Z"); err != nil {
 		t.Fatalf("insert tasks: %v", err)
 	}
@@ -633,7 +586,7 @@ func TestShowTextDependenciesSection(t *testing.T) {
 	// Widest link_type is "blocked-by" (10). Both rows pad to 10+2
 	// spaces before the target's task-ref cluster.
 	wantBlocked := "    blocked-by  proj-a1 [completed] JWT"
-	wantCaused := "    caused-by   proj-a2 [completed] (bug) Crash"
+	wantCaused := "    caused-by   proj-a2 [completed] Crash"
 	if !strings.Contains(stdout, wantBlocked) {
 		t.Errorf("missing blocked-by row %q in %q", wantBlocked, stdout)
 	}
@@ -655,8 +608,8 @@ func TestShowTextDebriefMissingOnCompleted(t *testing.T) {
 		t.Fatalf("BeginImmediate: %v", err)
 	}
 	if _, err := tx.ExecContext(context.Background(),
-		`INSERT INTO tasks(id, title, type, status, created_at) VALUES
-		 ('proj-a1', 'Done', 'task', 'completed', ?)`,
+		`INSERT INTO tasks(id, title, status, created_at) VALUES
+		 ('proj-a1', 'Done', 'completed', ?)`,
 		"2026-04-18T00:00:00Z"); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -689,8 +642,8 @@ func TestShowTextPipedWraps80(t *testing.T) {
 		t.Fatalf("BeginImmediate: %v", err)
 	}
 	if _, err := tx.ExecContext(context.Background(),
-		`INSERT INTO tasks(id, title, type, status, description, created_at) VALUES
-		 ('proj-a1', 'Alpha', 'task', 'open', ?, ?)`,
+		`INSERT INTO tasks(id, title, status, description, created_at) VALUES
+		 ('proj-a1', 'Alpha', 'open', ?, ?)`,
 		words, "2026-04-18T00:00:00Z"); err != nil {
 		t.Fatalf("insert: %v", err)
 	}

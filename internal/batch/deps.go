@@ -9,14 +9,12 @@ import (
 )
 
 // TaskShape describes the source task a set of dependency edges
-// originates from. Type drives the per-link-type source-type checks
-// (`caused-by` / `discovered-from` require `type=bug`). ID enables
-// cycle detection for `blocked-by` — empty ID skips the cycle pass,
-// which is the expected state for `quest create` and `quest batch`
-// where the source task has not been inserted yet.
+// originates from. ID enables cycle detection for `blocked-by` —
+// empty ID skips the cycle pass, which is the expected state for
+// `quest create` and `quest batch` where the source task has not been
+// inserted yet.
 type TaskShape struct {
-	ID   string
-	Type string
+	ID string
 }
 
 // Edge is one proposed dependency edge from the source.
@@ -42,15 +40,13 @@ type SemanticDepError struct {
 
 // Error codes emitted by ValidateSemantic. The batch parse / reference
 // / graph phases in batch.go own a disjoint code set; `cycle`,
-// `blocked_by_cancelled`, `retry_target_status`, `source_type_required`,
-// and `unknown_task_id` also appear there but are disambiguated by the
-// phase discriminator on batch errors (which is absent on
-// SemanticDepError).
+// `blocked_by_cancelled`, `retry_target_status`, and `unknown_task_id`
+// also appear there but are disambiguated by the phase discriminator
+// on batch errors (which is absent on SemanticDepError).
 const (
 	CodeCycle              = "cycle"
 	CodeBlockedByCancelled = "blocked_by_cancelled"
 	CodeRetryTargetStatus  = "retry_target_status"
-	CodeSourceTypeRequired = "source_type_required"
 	CodeUnknownTaskID      = "unknown_task_id"
 )
 
@@ -94,7 +90,7 @@ func ValidateSemantic(ctx context.Context, s store.Store, source TaskShape, edge
 			cache[id] = info
 			return info
 		}
-		info := &targetInfo{exists: true, status: task.Status, taskType: task.Type}
+		info := &targetInfo{exists: true, status: task.Status}
 		cache[id] = info
 		return info
 	}
@@ -125,14 +121,6 @@ func ValidateSemantic(ctx context.Context, s store.Store, source TaskShape, edge
 					Target: e.Target,
 					Type:   e.LinkType,
 					Detail: info.status,
-				})
-			}
-		case LinkCausedBy, LinkDiscoveredFrom:
-			if source.Type != "bug" {
-				out = append(out, SemanticDepError{
-					Code:   CodeSourceTypeRequired,
-					Target: e.Target,
-					Type:   e.LinkType,
 				})
 			}
 		}
@@ -250,6 +238,5 @@ func reverseMiddle(path []string) {
 type targetInfo struct {
 	exists    bool
 	status    string
-	taskType  string
 	lookupErr error
 }

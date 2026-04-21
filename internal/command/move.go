@@ -106,12 +106,12 @@ func Move(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	// Load the moved task: existence + current parent + task-context
 	// attributes for telemetry.
 	var (
-		oldParent      sql.NullString
-		tier, taskType sql.NullString
+		oldParent sql.NullString
+		tier      sql.NullString
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT parent, tier, type FROM tasks WHERE id = ?`, oldID).
-		Scan(&oldParent, &tier, &taskType)
+		`SELECT parent, tier FROM tasks WHERE id = ?`, oldID).
+		Scan(&oldParent, &tier)
 	if err != nil {
 		if stderrors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: task %q", errors.ErrNotFound, oldID)
@@ -282,7 +282,7 @@ func Move(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 
 	// Post-commit telemetry uses the post-rename root ID so
 	// retrospective queries keyed on quest.task.id find the move.
-	telemetry.RecordTaskContext(ctx, newRootID, tier.String, taskType.String)
+	telemetry.RecordTaskContext(ctx, newRootID, tier.String)
 	telemetry.RecordMoveOutcome(ctx, oldID, newRootID, len(renames), depUpdates)
 
 	return emitMoveAck(stdout, cfg.Output.Text, moveAck{

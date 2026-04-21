@@ -23,7 +23,6 @@ var validLinkTypes = map[string]bool{
 // clearest single error:
 //   - tag pattern (invalid_tag, field `tags[n]`)
 //   - link-type enum (invalid_link_type, field `dependencies[n].link_type`)
-//   - type enum (invalid_type, field `type`) against spec §Core fields
 //   - tier enum (invalid_tier, field `tier`) against spec §Model tiers
 //   - title byte cap (field_too_long, field `title`) — see spec
 //     §Field constraints; mirrors the `--title` cap on `quest create`
@@ -34,8 +33,7 @@ var validLinkTypes = map[string]bool{
 //     enforcement — a batch-internal ref parent is always `open` at
 //     insert time and is therefore exempt.
 //   - per-line ValidateSemantic against the committed store +
-//     same-line edges (blocked_by_cancelled, retry_target_status,
-//     source_type_required).
+//     same-line edges (blocked_by_cancelled, retry_target_status).
 //
 // Cycle checks are NOT re-run here — phase 3 owns cross-batch
 // cycle detection and phase 4 would double-report. `unknown_task_id`
@@ -51,7 +49,6 @@ func PhaseSemantic(ctx context.Context, s store.Store, lines []BatchLine, valid 
 		}
 		errs = append(errs, tagErrors(line)...)
 		errs = append(errs, linkTypeErrors(line)...)
-		errs = append(errs, typeEnumErrors(line)...)
 		errs = append(errs, tierEnumErrors(line)...)
 		errs = append(errs, severityEnumErrors(line)...)
 		errs = append(errs, titleTooLongErrors(line)...)
@@ -83,27 +80,7 @@ func titleTooLongErrors(line BatchLine) []BatchError {
 	}}
 }
 
-// typeEnumErrors checks line.Type against the spec §Core fields enum.
-// An empty Type is treated as the default `task` and passes; an
-// unrecognized non-empty string emits invalid_type carrying field
-// `type` and the offending value. Mirrors the invalid_tag / invalid_
-// link_type pattern so agents handle all phase-4 enum rejections the
-// same way.
-func typeEnumErrors(line BatchLine) []BatchError {
-	if err := ValidateType(line.Type); err != nil {
-		return []BatchError{{
-			Line:    line.LineNo,
-			Phase:   PhaseNameSemantic,
-			Code:    BatchCodeInvalidType,
-			Field:   "type",
-			Value:   line.Type,
-			Message: err.Error(),
-		}}
-	}
-	return nil
-}
-
-// tierEnumErrors mirrors typeEnumErrors for the §Model tiers enum.
+// tierEnumErrors checks line.Tier against the §Model tiers enum.
 // Empty tier is permitted (the spec tier column is nullable); any
 // non-empty string outside T0..T6 emits invalid_tier.
 func tierEnumErrors(line BatchLine) []BatchError {
@@ -120,10 +97,9 @@ func tierEnumErrors(line BatchLine) []BatchError {
 	return nil
 }
 
-// severityEnumErrors mirrors the type/tier enum checks for the
-// severity enum. Empty severity is permitted (nullable column); any
-// non-empty string outside the four lowercase enum values emits
-// invalid_severity.
+// severityEnumErrors mirrors the tier enum check for the severity
+// enum. Empty severity is permitted (nullable column); any non-empty
+// string outside the four lowercase enum values emits invalid_severity.
 func severityEnumErrors(line BatchLine) []BatchError {
 	if err := ValidateSeverity(line.Severity); err != nil {
 		return []BatchError{{
@@ -245,11 +221,7 @@ func semanticDepErrors(ctx context.Context, s store.Store, line BatchLine) []Bat
 	if len(edges) == 0 {
 		return nil
 	}
-	sourceType := line.Type
-	if sourceType == "" {
-		sourceType = "task"
-	}
-	depErrs := ValidateSemantic(ctx, s, TaskShape{Type: sourceType}, edges)
+	depErrs := ValidateSemantic(ctx, s, TaskShape{}, edges)
 	var errs []BatchError
 	for _, d := range depErrs {
 		switch d.Code {
@@ -272,15 +244,6 @@ func semanticDepErrors(ctx context.Context, s store.Store, line BatchLine) []Bat
 				Target:       d.Target,
 				ActualStatus: d.Detail,
 				Message:      fmt.Sprintf("retry-of target %q is %q (must be failed)", d.Target, d.Detail),
-			})
-		case CodeSourceTypeRequired:
-			errs = append(errs, BatchError{
-				Line:         line.LineNo,
-				Phase:        PhaseNameSemantic,
-				Code:         BatchCodeSourceTypeRequired,
-				LinkType:     d.Type,
-				RequiredType: "bug",
-				Message:      fmt.Sprintf("%s requires source type=bug", d.Type),
 			})
 		}
 	}

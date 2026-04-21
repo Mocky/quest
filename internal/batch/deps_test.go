@@ -31,22 +31,22 @@ func testStore(t *testing.T) store.Store {
 	return s
 }
 
-// seedTask inserts a task row with the supplied id/status/type; used
+// seedTask inserts a task row with the supplied id/status; used
 // by tests that need real targets in the graph for existence +
-// status + source-type checks.
+// status checks. The `taskType` argument is retained as a positional
+// no-op so callers don't require a sweeping rewrite after the type
+// column was dropped in migration 006.
 func seedTask(t *testing.T, s store.Store, id, status, taskType string) {
 	t.Helper()
+	_ = taskType
 	tx, err := s.BeginImmediate(context.Background(), store.TxCreate)
 	if err != nil {
 		t.Fatalf("BeginImmediate: %v", err)
 	}
 	defer tx.Rollback()
-	if taskType == "" {
-		taskType = "task"
-	}
 	if _, err := tx.ExecContext(context.Background(),
-		`INSERT INTO tasks(id, title, status, type, created_at) VALUES (?, ?, ?, ?, ?)`,
-		id, id, status, taskType, "2026-04-18T00:00:00Z"); err != nil {
+		`INSERT INTO tasks(id, title, status, created_at) VALUES (?, ?, ?, ?)`,
+		id, id, status, "2026-04-18T00:00:00Z"); err != nil {
 		t.Fatalf("insert %s: %v", id, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -54,7 +54,7 @@ func seedTask(t *testing.T, s store.Store, id, status, taskType string) {
 	}
 }
 
-// seedEdge inserts a dependency row linking src --type--> tgt.
+// seedEdge inserts a dependency row linking src --link_type--> tgt.
 func seedEdge(t *testing.T, s store.Store, src, tgt, linkType string) {
 	t.Helper()
 	tx, err := s.BeginImmediate(context.Background(), store.TxLink)
@@ -76,7 +76,7 @@ func seedEdge(t *testing.T, s store.Store, src, tgt, linkType string) {
 // errors, regardless of source shape.
 func TestValidateSemanticEmpty(t *testing.T) {
 	s := testStore(t)
-	errs := batch.ValidateSemantic(context.Background(), s, batch.TaskShape{Type: "task"}, nil)
+	errs := batch.ValidateSemantic(context.Background(), s, batch.TaskShape{}, nil)
 	if len(errs) != 0 {
 		t.Errorf("expected no errors, got %+v", errs)
 	}
@@ -100,7 +100,7 @@ func TestValidateSemanticUnknownTarget(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			errs := batch.ValidateSemantic(context.Background(), s,
-				batch.TaskShape{Type: "bug"},
+				batch.TaskShape{},
 				[]batch.Edge{{Target: "nope-1", LinkType: tc.linkType}})
 			if len(errs) != 1 {
 				t.Fatalf("errs = %+v, want 1 error", errs)
@@ -122,7 +122,7 @@ func TestValidateSemanticBlockedByCancelled(t *testing.T) {
 	seedTask(t, s, "proj-a1", "cancelled", "task")
 
 	errs := batch.ValidateSemantic(context.Background(), s,
-		batch.TaskShape{Type: "task"},
+		batch.TaskShape{},
 		[]batch.Edge{{Target: "proj-a1", LinkType: batch.LinkBlockedBy}})
 	if len(errs) != 1 {
 		t.Fatalf("errs = %+v, want 1 error", errs)
@@ -145,7 +145,7 @@ func TestValidateSemanticBlockedByNonCancelled(t *testing.T) {
 		id := "proj-a" + string(rune('1'+i))
 		seedTask(t, s, id, st, "task")
 		errs := batch.ValidateSemantic(context.Background(), s,
-			batch.TaskShape{Type: "task"},
+			batch.TaskShape{},
 			[]batch.Edge{{Target: id, LinkType: batch.LinkBlockedBy}})
 		if len(errs) != 0 {
 			t.Errorf("status=%s: errs = %+v, want none", st, errs)
@@ -172,7 +172,7 @@ func TestValidateSemanticRetryOfTargetStatus(t *testing.T) {
 		id := "proj-b" + string(rune('1'+i))
 		seedTask(t, s, id, tc.status, "task")
 		errs := batch.ValidateSemantic(context.Background(), s,
-			batch.TaskShape{Type: "task"},
+			batch.TaskShape{},
 			[]batch.Edge{{Target: id, LinkType: batch.LinkRetryOf}})
 		if tc.wantOK {
 			if len(errs) != 0 {
@@ -192,44 +192,6 @@ func TestValidateSemanticRetryOfTargetStatus(t *testing.T) {
 	}
 }
 
-// TestValidateSemanticSourceTypeRequired: caused-by /
-// discovered-from require source.Type=bug.
-func TestValidateSemanticSourceTypeRequired(t *testing.T) {
-	s := testStore(t)
-	seedTask(t, s, "proj-src1", "completed", "task")
-
-	cases := []struct {
-		linkType   string
-		sourceType string
-		wantErr    bool
-	}{
-		{batch.LinkCausedBy, "task", true},
-		{batch.LinkCausedBy, "bug", false},
-		{batch.LinkDiscoveredFrom, "task", true},
-		{batch.LinkDiscoveredFrom, "bug", false},
-	}
-	for _, tc := range cases {
-		name := tc.linkType + "/" + tc.sourceType
-		t.Run(name, func(t *testing.T) {
-			errs := batch.ValidateSemantic(context.Background(), s,
-				batch.TaskShape{Type: tc.sourceType},
-				[]batch.Edge{{Target: "proj-src1", LinkType: tc.linkType}})
-			if tc.wantErr {
-				if len(errs) != 1 || errs[0].Code != batch.CodeSourceTypeRequired {
-					t.Fatalf("errs = %+v, want 1 source_type_required", errs)
-				}
-				if errs[0].Type != tc.linkType {
-					t.Errorf("type = %q, want %q", errs[0].Type, tc.linkType)
-				}
-			} else {
-				if len(errs) != 0 {
-					t.Errorf("errs = %+v, want none", errs)
-				}
-			}
-		})
-	}
-}
-
 // TestValidateSemanticCycleDirect: source exists and target already
 // blocks source — adding source→target closes the cycle.
 func TestValidateSemanticCycleDirect(t *testing.T) {
@@ -239,7 +201,7 @@ func TestValidateSemanticCycleDirect(t *testing.T) {
 	seedEdge(t, s, "proj-a2", "proj-a1", batch.LinkBlockedBy)
 
 	errs := batch.ValidateSemantic(context.Background(), s,
-		batch.TaskShape{ID: "proj-a1", Type: "task"},
+		batch.TaskShape{ID: "proj-a1"},
 		[]batch.Edge{{Target: "proj-a2", LinkType: batch.LinkBlockedBy}})
 	if len(errs) != 1 {
 		t.Fatalf("errs = %+v, want 1 error", errs)
@@ -268,7 +230,7 @@ func TestValidateSemanticCycleTransitive(t *testing.T) {
 
 	// Adding A blocked-by C: A → C → B → A is a cycle.
 	errs := batch.ValidateSemantic(context.Background(), s,
-		batch.TaskShape{ID: "proj-a", Type: "task"},
+		batch.TaskShape{ID: "proj-a"},
 		[]batch.Edge{{Target: "proj-c", LinkType: batch.LinkBlockedBy}})
 	if len(errs) != 1 {
 		t.Fatalf("errs = %+v, want 1 cycle", errs)
@@ -305,7 +267,7 @@ func TestValidateSemanticNoCycleForNewSource(t *testing.T) {
 
 	// Source has no ID → cycle check skipped. Edge passes semantic.
 	errs := batch.ValidateSemantic(context.Background(), s,
-		batch.TaskShape{Type: "task"},
+		batch.TaskShape{},
 		[]batch.Edge{{Target: "proj-a", LinkType: batch.LinkBlockedBy}})
 	if len(errs) != 0 {
 		t.Errorf("errs = %+v, want none (cycle skipped for new source)", errs)
@@ -319,7 +281,7 @@ func TestValidateSemanticSelfLoop(t *testing.T) {
 	seedTask(t, s, "proj-a", "open", "task")
 
 	errs := batch.ValidateSemantic(context.Background(), s,
-		batch.TaskShape{ID: "proj-a", Type: "task"},
+		batch.TaskShape{ID: "proj-a"},
 		[]batch.Edge{{Target: "proj-a", LinkType: batch.LinkBlockedBy}})
 	if len(errs) != 1 {
 		t.Fatalf("errs = %+v, want 1 cycle", errs)
@@ -343,7 +305,7 @@ func TestValidateSemanticCollectsAllErrors(t *testing.T) {
 		{Target: "proj-ok", LinkType: batch.LinkRetryOf},
 	}
 	errs := batch.ValidateSemantic(context.Background(), s,
-		batch.TaskShape{Type: "task"}, edges)
+		batch.TaskShape{}, edges)
 	if len(errs) != 3 {
 		t.Fatalf("errs = %+v, want 3 errors", errs)
 	}
@@ -371,7 +333,6 @@ func TestValidateSemanticErrorCodes(t *testing.T) {
 		batch.CodeCycle,
 		batch.CodeBlockedByCancelled,
 		batch.CodeRetryTargetStatus,
-		batch.CodeSourceTypeRequired,
 		batch.CodeUnknownTaskID,
 	}
 	for _, c := range want {

@@ -38,7 +38,6 @@ type createArgs struct {
 	Description        *string
 	Context            *string
 	Parent             *string
-	Type               *string
 	Tier               *string
 	Role               *string
 	Severity           *string
@@ -53,9 +52,9 @@ type createArgs struct {
 
 // parseCreateArgs consumes every flag listed in spec §Task Creation
 // plus validates shape-time preconditions (empty free-form values,
-// repeated single-value dep flags, unknown `--type`). @file
-// resolution runs through the per-invocation Resolver so errors
-// (missing file, >1 MiB, second `@-`) exit 2 before any DB I/O.
+// repeated single-value dep flags). @file resolution runs through the
+// per-invocation Resolver so errors (missing file, >1 MiB, second
+// `@-`) exit 2 before any DB I/O.
 func parseCreateArgs(stdin io.Reader, stderr io.Writer, args []string) (createArgs, []string, error) {
 	fs := newFlagSet("create")
 	fs.SetOutput(stderr)
@@ -93,7 +92,6 @@ func parseCreateArgs(stdin io.Reader, stderr io.Writer, args []string) (createAr
 	fs.Func("description", "full description (supports @file)", setText(&parsed.Description, "--description", true))
 	fs.Func("context", "worker context (supports @file)", setText(&parsed.Context, "--context", true))
 	fs.Func("parent", "parent task ID", setText(&parsed.Parent, "--parent", false))
-	fs.Func("type", "task type: task (default) or bug", setText(&parsed.Type, "--type", false))
 	fs.Func("tier", "model tier (T0-T6)", setText(&parsed.Tier, "--tier", false))
 	fs.Func("role", "assigned role", setText(&parsed.Role, "--role", false))
 	fs.Func("severity", "triage severity (critical|high|medium|low)", setText(&parsed.Severity, "--severity", false))
@@ -133,8 +131,7 @@ func parseCreateArgs(stdin io.Reader, stderr io.Writer, args []string) (createAr
 // validateCreateArgs catches the empty-value and shape errors that
 // must exit 2 before any DB I/O. `--title` is required and
 // non-empty; every other free-form text flag, if provided, must be
-// non-empty; every dep ID, if provided, must be non-empty; `--type`,
-// if provided, must be one of the spec-enumerated values.
+// non-empty; every dep ID, if provided, must be non-empty.
 func validateCreateArgs(a createArgs) error {
 	if a.Title == nil {
 		return fmt.Errorf("create: --title is required: %w", errors.ErrUsage)
@@ -163,9 +160,6 @@ func validateCreateArgs(a createArgs) error {
 	if err := checkNonEmpty("--parent", a.Parent); err != nil {
 		return err
 	}
-	if err := checkNonEmpty("--type", a.Type); err != nil {
-		return err
-	}
 	if err := checkNonEmpty("--tier", a.Tier); err != nil {
 		return err
 	}
@@ -177,11 +171,6 @@ func validateCreateArgs(a createArgs) error {
 	}
 	if err := checkNonEmpty("--acceptance-criteria", a.AcceptanceCriteria); err != nil {
 		return err
-	}
-	if a.Type != nil {
-		if err := batch.ValidateType(*a.Type); err != nil {
-			return fmt.Errorf("create: --type: %w", err)
-		}
 	}
 	if a.Tier != nil {
 		if err := batch.ValidateTier(*a.Tier); err != nil {
@@ -274,8 +263,6 @@ func formatDepError(e batch.SemanticDepError) string {
 		return fmt.Sprintf("%s target %s is cancelled", e.Type, e.Target)
 	case batch.CodeRetryTargetStatus:
 		return fmt.Sprintf("%s target %s is %q (must be failed)", e.Type, e.Target, e.Detail)
-	case batch.CodeSourceTypeRequired:
-		return fmt.Sprintf("%s requires source type=bug", e.Type)
 	case batch.CodeUnknownTaskID:
 		return fmt.Sprintf("%s target %s not found", e.Type, e.Target)
 	}
@@ -335,11 +322,7 @@ func Create(ctx context.Context, cfg config.Config, s store.Store, args []string
 	// at a task that does not yet exist.
 	edges := buildEdges(parsed)
 	if len(edges) > 0 {
-		sourceType := "task"
-		if parsed.Type != nil {
-			sourceType = *parsed.Type
-		}
-		if depErrs := batch.ValidateSemantic(ctx, s, batch.TaskShape{Type: sourceType}, edges); len(depErrs) > 0 {
+		if depErrs := batch.ValidateSemantic(ctx, s, batch.TaskShape{}, edges); len(depErrs) > 0 {
 			for _, depErr := range depErrs {
 				if depErr.Code == batch.CodeCycle {
 					telemetry.RecordCycleDetected(ctx, depErr.Path)
@@ -402,10 +385,6 @@ func Create(ctx context.Context, cfg config.Config, s store.Store, args []string
 		return err
 	}
 
-	taskType := "task"
-	if parsed.Type != nil {
-		taskType = *parsed.Type
-	}
 	tier := ""
 	if parsed.Tier != nil {
 		tier = *parsed.Tier
@@ -414,7 +393,7 @@ func Create(ctx context.Context, cfg config.Config, s store.Store, args []string
 	if parsed.Role != nil {
 		role = *parsed.Role
 	}
-	telemetry.RecordTaskCreated(ctx, newID, tier, role, taskType)
+	telemetry.RecordTaskCreated(ctx, newID, tier, role)
 	if telemetry.CaptureContentEnabled() {
 		if parsed.Title != nil && *parsed.Title != "" {
 			telemetry.RecordContentTitle(ctx, *parsed.Title)
@@ -473,23 +452,19 @@ func insertTaskRow(ctx context.Context, tx *store.Tx, a createArgs, parentID, id
 	if a.Context != nil {
 		contextVal = *a.Context
 	}
-	taskType := "task"
-	if a.Type != nil {
-		taskType = *a.Type
-	}
 	metadataJSON, err := canonicalMetadata(a.Meta)
 	if err != nil {
 		return fmt.Errorf("%w: create: %s", errors.ErrGeneral, err.Error())
 	}
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO tasks(
-			id, title, description, context, type, status,
+			id, title, description, context, status,
 			role, tier, severity, acceptance_criteria, metadata, parent,
 			created_at
-		) VALUES (?, ?, ?, ?, ?, 'open',
+		) VALUES (?, ?, ?, ?, 'open',
 			?, ?, ?, ?, ?, ?,
 			?)`,
-		id, *a.Title, description, contextVal, taskType,
+		id, *a.Title, description, contextVal,
 		nullableFromPtr(a.Role),
 		nullableFromPtr(a.Tier),
 		nullableFromPtr(a.Severity),
@@ -536,9 +511,6 @@ func createdHistoryPayload(a createArgs, tags []string, edges []batch.Edge, pare
 	}
 	if a.Severity != nil && *a.Severity != "" {
 		payload["severity"] = *a.Severity
-	}
-	if a.Type != nil && *a.Type != "task" {
-		payload["type"] = *a.Type
 	}
 	if parentID != "" {
 		payload["parent"] = parentID

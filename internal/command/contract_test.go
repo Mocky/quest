@@ -68,7 +68,7 @@ func TestShowJSONHasRequiredFields(t *testing.T) {
 		t.Fatalf("Show: %v", err)
 	}
 	required := []string{
-		"id", "title", "description", "context", "type", "status",
+		"id", "title", "description", "context", "status",
 		"role", "tier", "severity", "tags", "parent", "acceptance_criteria",
 		"metadata", "owner_session", "started_at", "completed_at",
 		"dependencies", "prs", "commits", "notes", "handoff", "handoff_session",
@@ -79,9 +79,9 @@ func TestShowJSONHasRequiredFields(t *testing.T) {
 }
 
 // TestShowParentIsObject pins the spec's denormalized parent cluster:
-// when the task has a parent, `parent` is a four-field object whose
-// keys appear in `id, title, status, type` order. On a root task the
-// field is JSON null (covered by TestShowEmitsAllFieldsWithNulls).
+// when the task has a parent, `parent` is a three-field object whose
+// keys appear in `id, title, status` order. On a root task the field
+// is JSON null (covered by TestShowEmitsAllFieldsWithNulls).
 func TestShowParentIsObject(t *testing.T) {
 	s, _ := testStore(t)
 	seedMinimalTask(t, s, "proj-a1", "Auth module")
@@ -90,8 +90,8 @@ func TestShowParentIsObject(t *testing.T) {
 		t.Fatalf("BeginImmediate: %v", err)
 	}
 	if _, err := tx.ExecContext(context.Background(),
-		`INSERT INTO tasks(id, title, type, status, parent, created_at)
-		 VALUES ('proj-a1.1', 'Child', 'task', 'open', 'proj-a1', ?)`,
+		`INSERT INTO tasks(id, title, status, parent, created_at)
+		 VALUES ('proj-a1.1', 'Child', 'open', 'proj-a1', ?)`,
 		"2026-04-18T01:00:00Z"); err != nil {
 		t.Fatalf("insert child: %v", err)
 	}
@@ -112,13 +112,13 @@ func TestShowParentIsObject(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing `parent` key: %q", stdout)
 	}
-	testutil.AssertSchema(t, parentBytes, []string{"id", "title", "status", "type"})
-	testutil.AssertJSONKeyOrder(t, parentBytes, []string{"id", "title", "status", "type"})
+	testutil.AssertSchema(t, parentBytes, []string{"id", "title", "status"})
+	testutil.AssertJSONKeyOrder(t, parentBytes, []string{"id", "title", "status"})
 }
 
-// TestShowDepsShape pins the five-key dependency cluster emitted
+// TestShowDepsShape pins the four-key dependency cluster emitted
 // inside `dependencies[]` on both `quest show` and `quest deps`:
-// id, title, status, type, link_type — in that order.
+// id, title, status, link_type — in that order.
 func TestShowDepsShape(t *testing.T) {
 	s, _ := testStore(t)
 	seedMinimalTask(t, s, "proj-a1", "Target")
@@ -151,7 +151,7 @@ func TestShowDepsShape(t *testing.T) {
 	if len(wrapper.Dependencies) != 1 {
 		t.Fatalf("dependencies = %d, want 1", len(wrapper.Dependencies))
 	}
-	want := []string{"id", "title", "status", "type", "link_type"}
+	want := []string{"id", "title", "status", "link_type"}
 	testutil.AssertSchema(t, wrapper.Dependencies[0], want)
 	testutil.AssertJSONKeyOrder(t, wrapper.Dependencies[0], want)
 }
@@ -389,7 +389,7 @@ func TestDepsOutputShape(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
-	for _, k := range []string{"id", "type", "title", "status"} {
+	for _, k := range []string{"id", "title", "status"} {
 		if _, ok := rows[0][k]; !ok {
 			t.Errorf("dep row missing %q: %v", k, rows[0])
 		}
@@ -527,7 +527,7 @@ func TestGraphOutputShape(t *testing.T) {
 		if len(resp.Nodes) != 1 {
 			t.Fatalf("nodes = %d, want 1", len(resp.Nodes))
 		}
-		for _, k := range []string{"id", "title", "type", "status", "tier", "role", "severity", "children"} {
+		for _, k := range []string{"id", "title", "status", "tier", "role", "severity", "children"} {
 			if _, ok := resp.Nodes[0][k]; !ok {
 				t.Errorf("node missing %q: %v", k, resp.Nodes[0])
 			}

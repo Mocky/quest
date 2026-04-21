@@ -108,19 +108,17 @@ func tagApply(ctx context.Context, cfg config.Config, s store.Store, stdout io.W
 	}
 	defer tx.Rollback()
 
-	var (
-		taskType, tier sql.NullString
-	)
+	var tier sql.NullString
 	err = tx.QueryRowContext(ctx,
-		`SELECT type, tier FROM tasks WHERE id = ?`, id).
-		Scan(&taskType, &tier)
+		`SELECT tier FROM tasks WHERE id = ?`, id).
+		Scan(&tier)
 	if err != nil {
 		if stderrors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: task %q", errors.ErrNotFound, id)
 		}
 		return fmt.Errorf("%w: tag: %s", errors.ErrGeneral, err.Error())
 	}
-	telemetry.RecordTaskContext(ctx, id, tier.String, taskType.String)
+	telemetry.RecordTaskContext(ctx, id, tier.String)
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	var changed []string

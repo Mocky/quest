@@ -53,7 +53,6 @@ type updateArgs struct {
 	Title              *string
 	Description        *string
 	Context            *string
-	Type               *string
 	Tier               *string
 	Role               *string
 	Severity           *string
@@ -65,7 +64,7 @@ type updateArgs struct {
 // to decide whether the mixed-flag role gate must fire.
 func (a updateArgs) hasElevated() bool {
 	return a.Title != nil || a.Description != nil || a.Context != nil ||
-		a.Type != nil || a.Tier != nil || a.Role != nil ||
+		a.Tier != nil || a.Role != nil ||
 		a.Severity != nil || a.AcceptanceCriteria != nil || len(a.Meta) > 0
 }
 
@@ -84,9 +83,6 @@ func (a updateArgs) blockedOnTerminalState() []string {
 	}
 	if a.Context != nil {
 		blocked = append(blocked, "--context")
-	}
-	if a.Type != nil {
-		blocked = append(blocked, "--type")
 	}
 	if a.Tier != nil {
 		blocked = append(blocked, "--tier")
@@ -120,8 +116,7 @@ func (a updateArgs) blockedOnTerminalState() []string {
 // because `update` is worker-accessible, so the inner re-check fires
 // only on elevated flags present in the mix. Full ladder: existence
 // (3) → role gate on elevated flags (6) → ownership (4) →
-// terminal-state / cancelled (5) → `--type` transition (5) →
-// flag-shape usage (2).
+// terminal-state / cancelled (5) → flag-shape usage (2).
 func Update(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	positional, flagArgs := splitLeadingPositional(args)
 	parsed, trailing, err := parseUpdateArgs(cfg, stdin, stderr, flagArgs)
@@ -149,7 +144,7 @@ func Update(ctx context.Context, cfg config.Config, s store.Store, args []string
 	if err != nil {
 		return err
 	}
-	telemetry.RecordTaskContext(ctx, id, cur.tier, cur.typeVal)
+	telemetry.RecordTaskContext(ctx, id, cur.tier)
 
 	// Mixed-flag gate — existence already passed above. The dispatcher
 	// routes `update` at worker level so workers can call --note/--pr/
@@ -204,24 +199,6 @@ func Update(ctx context.Context, cfg config.Config, s store.Store, args []string
 			tx.MarkOutcome(store.TxRolledBackPrecondition)
 			return fmt.Errorf("task is in terminal state (%s); flags not allowed: %s: %w",
 				cur.status, strings.Join(blocked, ", "), errors.ErrConflict)
-		}
-	}
-
-	// --type task transition check — outgoing caused-by or
-	// discovered-from link forbids retyping back to `task`.
-	if parsed.Type != nil && *parsed.Type == "task" {
-		var blocker string
-		err := tx.QueryRowContext(ctx,
-			`SELECT target_id || ' (' || link_type || ')'
-			 FROM dependencies WHERE task_id = ?
-			   AND link_type IN ('caused-by','discovered-from') LIMIT 1`, id).Scan(&blocker)
-		if err != nil && !stderrors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: update: type check: %s", errors.ErrGeneral, err.Error())
-		}
-		if blocker != "" {
-			telemetry.RecordPreconditionFailed(ctx, "type_transition", nil)
-			tx.MarkOutcome(store.TxRolledBackPrecondition)
-			return fmt.Errorf("type 'task' blocked by outgoing link: %s: %w", blocker, errors.ErrConflict)
 		}
 	}
 
@@ -305,7 +282,6 @@ func parseUpdateArgs(cfg config.Config, stdin io.Reader, stderr io.Writer, args 
 	fs.Func("title", "update the task title", setRaw(&parsed.Title, "--title", false))
 	fs.Func("description", "update the full description", setRaw(&parsed.Description, "--description", true))
 	fs.Func("context", "update the worker context", setRaw(&parsed.Context, "--context", true))
-	fs.Func("type", "change the task type", setRaw(&parsed.Type, "--type", false))
 	fs.Func("tier", "change the model tier", setRaw(&parsed.Tier, "--tier", false))
 	fs.Func("role", "change the assigned role", setRaw(&parsed.Role, "--role", false))
 	fs.Func("severity", "change the triage severity", setRaw(&parsed.Severity, "--severity", false))
@@ -337,7 +313,6 @@ type updateState struct {
 	status             string
 	ownerSession       string
 	tier               string
-	typeVal            string
 	title              string
 	description        string
 	contextVal         string
@@ -349,13 +324,13 @@ type updateState struct {
 
 func loadUpdateState(ctx context.Context, tx *store.Tx, id string) (updateState, error) {
 	var (
-		cur                                  updateState
-		owner, tier, typ, role, sev, accCrit sql.NullString
+		cur                             updateState
+		owner, tier, role, sev, accCrit sql.NullString
 	)
 	err := tx.QueryRowContext(ctx,
-		`SELECT status, owner_session, tier, type, title, description, context, role, severity, acceptance_criteria, metadata
+		`SELECT status, owner_session, tier, title, description, context, role, severity, acceptance_criteria, metadata
 		 FROM tasks WHERE id = ?`, id).
-		Scan(&cur.status, &owner, &tier, &typ, &cur.title, &cur.description, &cur.contextVal, &role, &sev, &accCrit, &cur.metadataJSON)
+		Scan(&cur.status, &owner, &tier, &cur.title, &cur.description, &cur.contextVal, &role, &sev, &accCrit, &cur.metadataJSON)
 	if err != nil {
 		if stderrors.Is(err, sql.ErrNoRows) {
 			return updateState{}, fmt.Errorf("%w: task %q", errors.ErrNotFound, id)
@@ -364,7 +339,6 @@ func loadUpdateState(ctx context.Context, tx *store.Tx, id string) (updateState,
 	}
 	cur.ownerSession = owner.String
 	cur.tier = tier.String
-	cur.typeVal = typ.String
 	cur.role = role.String
 	cur.severity = sev.String
 	cur.acceptanceCriteria = accCrit.String
@@ -411,11 +385,6 @@ func validateUpdateUsage(a updateArgs) error {
 	}
 	if err := check("--acceptance-criteria", a.AcceptanceCriteria); err != nil {
 		return err
-	}
-	if a.Type != nil {
-		if err := batch.ValidateType(*a.Type); err != nil {
-			return fmt.Errorf("update: --type: %w", err)
-		}
 	}
 	if a.Tier != nil {
 		if err := batch.ValidateTier(*a.Tier); err != nil {
@@ -496,11 +465,6 @@ func applyUpdate(ctx context.Context, tx *store.Tx, id string, cfg config.Config
 	}
 	if a.Context != nil {
 		if err := addSet("context", cur.contextVal, *a.Context, false); err != nil {
-			return err
-		}
-	}
-	if a.Type != nil {
-		if err := addSet("type", cur.typeVal, *a.Type, false); err != nil {
 			return err
 		}
 	}

@@ -86,19 +86,19 @@ func Accept(ctx context.Context, cfg config.Config, s store.Store, args []string
 	defer tx.Rollback()
 
 	var (
-		status      string
-		tier, taskT sql.NullString
+		status string
+		tier   sql.NullString
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT status, tier, type FROM tasks WHERE id = ?`, id).
-		Scan(&status, &tier, &taskT)
+		`SELECT status, tier FROM tasks WHERE id = ?`, id).
+		Scan(&status, &tier)
 	if err != nil {
 		if stderrors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: task %q", errors.ErrNotFound, id)
 		}
 		return fmt.Errorf("%w: accept: %s", errors.ErrGeneral, err.Error())
 	}
-	telemetry.RecordTaskContext(ctx, id, tier.String, taskT.String)
+	telemetry.RecordTaskContext(ctx, id, tier.String)
 
 	if status != "open" {
 		telemetry.RecordPreconditionFailed(ctx, "from_status", nil)

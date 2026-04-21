@@ -9,16 +9,12 @@ import (
 )
 
 // TaskRefLine renders the canonical task-reference cluster
-// `{id} [{status}] (bug?) {title}` used anywhere a task appears by
+// `{id} [{status}] {title}` used anywhere a task appears by
 // reference in --text output: the show header, the parent metadata
 // row, show dependency rows, and graph node / edge lines. Routing
-// every call site through one formatter keeps the `(bug)` marker
-// consistent when the spec evolves (e.g. a new marker for another
-// type).
-func TaskRefLine(id, status, taskType, title string) string {
-	if taskType == "bug" {
-		return fmt.Sprintf("%s [%s] (bug) %s", id, status, title)
-	}
+// every call site through one formatter keeps the layout consistent
+// across surfaces.
+func TaskRefLine(id, status, title string) string {
 	return fmt.Sprintf("%s [%s] %s", id, status, title)
 }
 

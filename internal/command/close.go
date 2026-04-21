@@ -145,20 +145,20 @@ func closeTask(ctx context.Context, cfg config.Config, s store.Store, args []str
 	// Load the fields the precondition ladder needs plus the telemetry
 	// context attributes.
 	var (
-		status      string
-		owner       sql.NullString
-		tier, typeV sql.NullString
+		status string
+		owner  sql.NullString
+		tier   sql.NullString
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT status, owner_session, tier, type FROM tasks WHERE id = ?`, id).
-		Scan(&status, &owner, &tier, &typeV)
+		`SELECT status, owner_session, tier FROM tasks WHERE id = ?`, id).
+		Scan(&status, &owner, &tier)
 	if err != nil {
 		if stderrors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: task %q", errors.ErrNotFound, id)
 		}
 		return fmt.Errorf("%w: %s: %s", errors.ErrGeneral, action.name, err.Error())
 	}
-	telemetry.RecordTaskContext(ctx, id, tier.String, typeV.String)
+	telemetry.RecordTaskContext(ctx, id, tier.String)
 
 	// Ownership applies only after acceptance (spec §accept). Pre-
 	// acceptance the leaf_direct_close carve-out must take precedence

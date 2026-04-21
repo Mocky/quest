@@ -363,10 +363,12 @@ INSERT INTO nonexistent_table(id) VALUES (1);
 
 // TestMigrateV3CheckConstraintsRejectInvalidEnums pins that after
 // migration 003 the DB itself rejects out-of-enum values on
-// tasks.status, tasks.type, dependencies.link_type, and history.action.
-// Every case goes through a direct `sql` INSERT, not through the Go
-// command handlers, so the guarantee is at the storage boundary rather
-// than in handler code that a future path could bypass.
+// tasks.status, dependencies.link_type, and history.action. The
+// tasks.type CHECK also landed in 003 but was removed again in 006,
+// so the type case is not exercised here. Every case goes through a
+// direct `sql` INSERT, not through the Go command handlers, so the
+// guarantee is at the storage boundary rather than in handler code
+// that a future path could bypass.
 func TestMigrateV3CheckConstraintsRejectInvalidEnums(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "quest.db")
 	s, err := store.Open(path)
@@ -389,8 +391,8 @@ func TestMigrateV3CheckConstraintsRejectInvalidEnums(t *testing.T) {
 	// below fire before any FK check would, but using a real ID keeps
 	// the test focused on the CHECK outcome.
 	if _, err := db.Exec(
-		`INSERT INTO tasks(id, title, status, type, created_at)
-		 VALUES ('proj-a1', 'ok', 'open', 'task', '2026-04-21T00:00:00Z')`); err != nil {
+		`INSERT INTO tasks(id, title, status, created_at)
+		 VALUES ('proj-a1', 'ok', 'open', '2026-04-21T00:00:00Z')`); err != nil {
 		t.Fatalf("seed valid task: %v", err)
 	}
 
@@ -403,11 +405,6 @@ func TestMigrateV3CheckConstraintsRejectInvalidEnums(t *testing.T) {
 			name: "tasks.status out of enum",
 			stmt: `INSERT INTO tasks(id, title, status, created_at) VALUES (?,?,?,?)`,
 			args: []any{"proj-a2", "bad", "complete", "2026-04-21T00:00:00Z"},
-		},
-		{
-			name: "tasks.type out of enum",
-			stmt: `INSERT INTO tasks(id, title, type, created_at) VALUES (?,?,?,?)`,
-			args: []any{"proj-a3", "bad", "feature", "2026-04-21T00:00:00Z"},
 		},
 		{
 			name: "dependencies.link_type out of enum",
@@ -456,7 +453,6 @@ func TestMigrateV3AcceptsEveryEnumValue(t *testing.T) {
 	defer db.Close()
 
 	validStatuses := []string{"open", "accepted", "completed", "failed", "cancelled"}
-	validTypes := []string{"task", "bug"}
 	validLinks := []string{"blocked-by", "caused-by", "discovered-from", "retry-of"}
 	validActions := []string{
 		"created", "accepted", "completed", "failed", "cancelled",
@@ -464,22 +460,14 @@ func TestMigrateV3AcceptsEveryEnumValue(t *testing.T) {
 		"linked", "unlinked", "tagged", "untagged", "handoff_set",
 	}
 
-	// Seed one parent task each iteration covers status + type
-	// combinations; status iterated first because more values.
+	// Seed one task per status so the dependency / history cases below
+	// have a real FK target.
 	for i, st := range validStatuses {
 		id := "proj-s" + strconv.Itoa(i)
 		if _, err := db.Exec(
-			`INSERT INTO tasks(id, title, status, type, created_at) VALUES (?,?,?,?,?)`,
-			id, "status-"+st, st, "task", "2026-04-21T00:00:00Z"); err != nil {
+			`INSERT INTO tasks(id, title, status, created_at) VALUES (?,?,?,?)`,
+			id, "status-"+st, st, "2026-04-21T00:00:00Z"); err != nil {
 			t.Errorf("status %q rejected: %v", st, err)
-		}
-	}
-	for i, ty := range validTypes {
-		id := "proj-t" + strconv.Itoa(i)
-		if _, err := db.Exec(
-			`INSERT INTO tasks(id, title, status, type, created_at) VALUES (?,?,?,?,?)`,
-			id, "type-"+ty, "open", ty, "2026-04-21T00:00:00Z"); err != nil {
-			t.Errorf("type %q rejected: %v", ty, err)
 		}
 	}
 
@@ -869,9 +857,200 @@ func TestMigrateV4PreservesV3Data(t *testing.T) {
 		t.Errorf("dependency target_id = %q after CASCADE, want 'proj-p1x'", depTarget)
 	}
 
-	// Type / status CHECK constraints from v3 survive.
+	// Status CHECK constraint from v3 survives. (The type CHECK also
+	// landed in v3 but was removed in v6 together with the column.)
 	if _, err := db.Exec(
 		`INSERT INTO tasks(id, title, status, created_at) VALUES ('proj-bad', 'bad', 'complete', '2026-04-21T00:00:00Z')`); err == nil {
 		t.Errorf("insert with status='complete' accepted after v4, want CHECK failure (v3 constraint must survive)")
+	}
+}
+
+// TestMigrateV6DropsTypeColumnAndPreservesBugAsTag pins migration 006:
+// the tasks.type column is dropped, and every pre-migration row with
+// type='bug' gains a `bug` tag via INSERT OR IGNORE so pre-existing bug
+// tags are not duplicated. The test seeds at v5 (the schema just before
+// 006) and then migrates to head, mirroring the v3→v4 and v2→v3 pinning
+// tests above.
+func TestMigrateV6DropsTypeColumnAndPreservesBugAsTag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quest.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// Apply 001..005 only so the seed below still has a `type` column
+	// to populate. fstest.MapFS lets the test ship its own truncated
+	// migration set without touching the embedded FS.
+	v5only := fstest.MapFS{
+		"001_initial.sql":                &fstest.MapFile{Data: readMigrationFile(t, "001_initial.sql")},
+		"002_rename_status_complete.sql": &fstest.MapFile{Data: readMigrationFile(t, "002_rename_status_complete.sql")},
+		"003_enum_check_constraints.sql": &fstest.MapFile{Data: readMigrationFile(t, "003_enum_check_constraints.sql")},
+		"004_severity.sql":               &fstest.MapFile{Data: readMigrationFile(t, "004_severity.sql")},
+		"005_commits.sql":                &fstest.MapFile{Data: readMigrationFile(t, "005_commits.sql")},
+	}
+	if _, err := store.MigrateFromFS(context.Background(), s, v5only); err != nil {
+		t.Fatalf("v5-only Migrate: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	// proj-b1 has type='bug' and no existing bug tag — expect one on the
+	// far side. proj-b2 has type='bug' AND an existing bug tag — the
+	// INSERT OR IGNORE must not duplicate the row. proj-t1 has
+	// type='task' — it must come through tag-less (or only with its
+	// other tags) and unaffected. proj-b3 has type='bug' with an
+	// unrelated tag so we can check ordering and coexistence.
+	if _, err := db.Exec(`
+		INSERT INTO tasks(id, title, status, type, created_at) VALUES
+			('proj-b1', 'bug one',      'open',     'bug',  '2026-04-21T00:00:00Z'),
+			('proj-b2', 'bug two',      'accepted', 'bug',  '2026-04-21T00:01:00Z'),
+			('proj-b3', 'bug three',    'open',     'bug',  '2026-04-21T00:02:00Z'),
+			('proj-t1', 'plain task',   'open',     'task', '2026-04-21T00:03:00Z');
+		INSERT INTO tags(task_id, tag) VALUES
+			('proj-b2', 'bug'),
+			('proj-b3', 'auth'),
+			('proj-t1', 'go');
+	`); err != nil {
+		t.Fatalf("seed v5 rows: %v", err)
+	}
+	_ = db.Close()
+
+	applied, err := store.Migrate(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Migrate forward from v5: %v", err)
+	}
+	if applied != store.SupportedSchemaVersion-5 {
+		t.Fatalf("applied = %d, want %d (replays 006..head)", applied, store.SupportedSchemaVersion-5)
+	}
+
+	db, err = sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer db.Close()
+
+	// Schema version lands at head.
+	var version string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
+		t.Fatalf("select schema_version: %v", err)
+	}
+	if version != strconv.Itoa(store.SupportedSchemaVersion) {
+		t.Errorf("schema_version = %q, want %q", version, strconv.Itoa(store.SupportedSchemaVersion))
+	}
+
+	// The type column is gone from tasks.
+	rows, err := db.Query(`PRAGMA table_info(tasks)`)
+	if err != nil {
+		t.Fatalf("table_info: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			colType string
+			notNull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if name == "type" {
+			t.Errorf("type column present in tasks after v6, want dropped")
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("table_info rows: %v", err)
+	}
+
+	// proj-b1 picks up a bug tag (transform case).
+	wantTags := map[string][]string{
+		"proj-b1": {"bug"},
+		"proj-b2": {"bug"},
+		"proj-b3": {"auth", "bug"},
+		"proj-t1": {"go"},
+	}
+	for id, want := range wantTags {
+		tagRows, err := db.Query(`SELECT tag FROM tags WHERE task_id = ? ORDER BY tag`, id)
+		if err != nil {
+			t.Fatalf("select tags for %s: %v", id, err)
+		}
+		var got []string
+		for tagRows.Next() {
+			var tag string
+			if err := tagRows.Scan(&tag); err != nil {
+				tagRows.Close()
+				t.Fatalf("scan tag: %v", err)
+			}
+			got = append(got, tag)
+		}
+		tagRows.Close()
+		if len(got) != len(want) {
+			t.Errorf("tags for %s = %v, want %v", id, got, want)
+			continue
+		}
+		for i, tag := range want {
+			if got[i] != tag {
+				t.Errorf("tags for %s = %v, want %v", id, got, want)
+				break
+			}
+		}
+	}
+
+	// Idempotency: proj-b2 had a bug tag pre-migration and the migration
+	// inserted-or-ignored another. The tags table PK on (task_id, tag)
+	// would reject a straight INSERT, and the transform uses OR IGNORE,
+	// so exactly one row for ('proj-b2','bug') must remain.
+	var b2BugCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tags WHERE task_id = 'proj-b2' AND tag = 'bug'`).Scan(&b2BugCount); err != nil {
+		t.Fatalf("count b2 bug tags: %v", err)
+	}
+	if b2BugCount != 1 {
+		t.Errorf("proj-b2 bug tag count = %d, want 1 (INSERT OR IGNORE must dedup)", b2BugCount)
+	}
+
+	// proj-t1 (non-bug) did not gain a bug tag.
+	var t1BugCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tags WHERE task_id = 'proj-t1' AND tag = 'bug'`).Scan(&t1BugCount); err != nil {
+		t.Fatalf("count t1 bug tags: %v", err)
+	}
+	if t1BugCount != 0 {
+		t.Errorf("proj-t1 (non-bug) gained a bug tag, want none")
+	}
+
+	// Every pre-migration row still exists.
+	var taskCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tasks`).Scan(&taskCount); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if taskCount != 4 {
+		t.Errorf("tasks count = %d, want 4", taskCount)
+	}
+
+	// Indexes return after the CREATE/INSERT/DROP/RENAME.
+	wantIndexes := []string{
+		"idx_tasks_parent", "idx_tasks_status", "idx_tasks_status_role",
+	}
+	idxRows, err := db.Query(`SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'`)
+	if err != nil {
+		t.Fatalf("sqlite_master index query: %v", err)
+	}
+	defer idxRows.Close()
+	have := map[string]bool{}
+	for idxRows.Next() {
+		var n string
+		if err := idxRows.Scan(&n); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		have[n] = true
+	}
+	for _, name := range wantIndexes {
+		if !have[name] {
+			t.Errorf("missing index %q after v6 (got %v)", name, sortedKeys(have))
+		}
 	}
 }

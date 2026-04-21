@@ -26,11 +26,15 @@ func runList(t *testing.T, s store.Store, cfg config.Config, args []string) (err
 	return err, out.String(), errb.String()
 }
 
-// seedListTask inserts a task with explicit role/tier/type columns so
-// the list tests can exercise every enum filter. Nullable columns are
-// persisted as NULL when the corresponding arg is "".
+// seedListTask inserts a task with explicit role/tier columns so the
+// list tests can exercise every enum filter. Nullable columns are
+// persisted as NULL when the corresponding arg is "". The `taskType`
+// parameter is retained as a positional no-op so existing call sites
+// keep compiling after migration 006 dropped the type column; `bug` is
+// now a tag and seeded via seedTag at the call site if needed.
 func seedListTask(t *testing.T, s store.Store, id, title, parent, status, role, tier, taskType string) {
 	t.Helper()
+	_ = taskType
 	tx, err := s.BeginImmediate(context.Background(), store.TxCreate)
 	if err != nil {
 		t.Fatalf("BeginImmediate: %v", err)
@@ -46,13 +50,10 @@ func seedListTask(t *testing.T, s store.Store, id, title, parent, status, role, 
 	if tier != "" {
 		tierArg = tier
 	}
-	if taskType == "" {
-		taskType = "task"
-	}
 	if _, err := tx.ExecContext(context.Background(),
-		`INSERT INTO tasks(id, title, status, type, role, tier, parent, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, title, status, taskType, roleArg, tierArg, parentArg, "2026-04-18T00:00:00Z"); err != nil {
+		`INSERT INTO tasks(id, title, status, role, tier, parent, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, title, status, roleArg, tierArg, parentArg, "2026-04-18T00:00:00Z"); err != nil {
 		t.Fatalf("insert %s: %v", id, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -178,13 +179,13 @@ func TestListStatusRepeatableUnion(t *testing.T) {
 	}
 }
 
-// TestListRoleTierTypeFilters: each enum filter narrows independently,
+// TestListRoleTierFilters: each enum filter narrows independently,
 // composed AND across flags.
-func TestListRoleTierTypeFilters(t *testing.T) {
+func TestListRoleTierFilters(t *testing.T) {
 	s, _ := testStore(t)
-	seedListTask(t, s, "proj-a1", "Alpha", "", "open", "coder", "T2", "task")
-	seedListTask(t, s, "proj-a2", "Beta", "", "open", "coder", "T3", "task")
-	seedListTask(t, s, "proj-a3", "Gamma", "", "open", "reviewer", "T2", "bug")
+	seedListTask(t, s, "proj-a1", "Alpha", "", "open", "coder", "T2", "")
+	seedListTask(t, s, "proj-a2", "Beta", "", "open", "coder", "T3", "")
+	seedListTask(t, s, "proj-a3", "Gamma", "", "open", "reviewer", "T2", "")
 
 	err, stdout, _ := runList(t, s, plannerCfg(),
 		[]string{"--role", "coder", "--tier", "T2,T3"})
@@ -194,15 +195,6 @@ func TestListRoleTierTypeFilters(t *testing.T) {
 	rows := parseListArray(t, stdout)
 	if len(rows) != 2 {
 		t.Errorf("rows = %d, want 2", len(rows))
-	}
-
-	err, stdout, _ = runList(t, s, plannerCfg(), []string{"--type", "bug"})
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	rows = parseListArray(t, stdout)
-	if len(rows) != 1 || string(rows[0]["id"]) != `"proj-a3"` {
-		t.Errorf("--type bug rows = %+v, want proj-a3", rows)
 	}
 }
 
@@ -356,21 +348,6 @@ func TestListUnknownStatusRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "completed") {
 		t.Errorf("err = %q, want 'did you mean completed' hint", err.Error())
-	}
-}
-
-// TestListUnknownTypeRejected: typo on --type also rejected.
-func TestListUnknownTypeRejected(t *testing.T) {
-	s, _ := testStore(t)
-	err, _, _ := runList(t, s, plannerCfg(), []string{"--type", "bgu"})
-	if err == nil {
-		t.Fatal("got nil, want ErrUsage")
-	}
-	if !stderrors.Is(err, errors.ErrUsage) {
-		t.Fatalf("err = %v, want wraps ErrUsage", err)
-	}
-	if !strings.Contains(err.Error(), "bug") {
-		t.Errorf("err = %q, want 'did you mean bug'", err.Error())
 	}
 }
 

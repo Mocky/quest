@@ -26,14 +26,13 @@ import (
 // omitted"). History is *[]historyEntry with omitempty so the field is
 // absent by default and present as `[]` when --history is passed on a
 // task with no history — the one documented carve-out in §quest show.
-// Parent is a *taskRef so non-root tasks emit the four-field
-// `{id,title,status,type}` cluster and root tasks emit JSON null.
+// Parent is a *taskRef so non-root tasks emit the three-field
+// `{id,title,status}` cluster and root tasks emit JSON null.
 type showResponse struct {
 	ID                 string             `json:"id"`
 	Title              string             `json:"title"`
 	Description        string             `json:"description"`
 	Context            string             `json:"context"`
-	Type               string             `json:"type"`
 	Status             string             `json:"status"`
 	Role               *string            `json:"role"`
 	Tier               *string            `json:"tier"`
@@ -56,16 +55,15 @@ type showResponse struct {
 	History            *[]historyEntry    `json:"history,omitempty"`
 }
 
-// taskRef is the four-field task-reference cluster the spec pins as the
+// taskRef is the three-field task-reference cluster the spec pins as the
 // canonical shape wherever a task appears by reference (parent,
 // dependency targets, graph edge targets). Field order is the spec
-// order — id, title, status, type — and all four keys are always
+// order — id, title, status — and all three keys are always
 // present when the wrapping pointer is non-nil.
 type taskRef struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	Status string `json:"status"`
-	Type   string `json:"type"`
 }
 
 // historyEntry renders one history row with its action-specific payload
@@ -178,7 +176,7 @@ func Show(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	if err != nil {
 		return err
 	}
-	telemetry.RecordTaskContext(ctx, task.ID, task.Tier, task.Type)
+	telemetry.RecordTaskContext(ctx, task.ID, task.Tier)
 
 	resp, err := buildShowResponse(ctx, s, task)
 	if err != nil {
@@ -221,14 +219,13 @@ func buildShowResponse(ctx context.Context, s store.Store, t store.Task) (showRe
 		if err != nil {
 			return showResponse{}, fmt.Errorf("show: load parent %q: %w", t.Parent, err)
 		}
-		parent = &taskRef{ID: p.ID, Title: p.Title, Status: p.Status, Type: p.Type}
+		parent = &taskRef{ID: p.ID, Title: p.Title, Status: p.Status}
 	}
 	return showResponse{
 		ID:                 t.ID,
 		Title:              t.Title,
 		Description:        t.Description,
 		Context:            t.Context,
-		Type:               t.Type,
 		Status:             t.Status,
 		Role:               nullString(t.Role),
 		Tier:               nullString(t.Tier),

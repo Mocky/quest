@@ -116,11 +116,6 @@ func createOne(ctx context.Context, tx *store.Tx, line BatchLine, parentID strin
 		return "", dErr
 	}
 
-	taskType := line.Type
-	if taskType == "" {
-		taskType = "task"
-	}
-
 	// Normalize tags once; phase 4 already reported bad tags, so
 	// here every tag passes validation. De-duplication is cheap and
 	// guarantees the UNIQUE constraint on (task_id, tag) never fires.
@@ -149,13 +144,13 @@ func createOne(ctx context.Context, tx *store.Tx, line BatchLine, parentID strin
 
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO tasks(
-			id, title, description, context, type, status,
+			id, title, description, context, status,
 			role, tier, severity, acceptance_criteria, metadata, parent,
 			created_at
-		) VALUES (?, ?, ?, ?, ?, 'open',
+		) VALUES (?, ?, ?, ?, 'open',
 			?, ?, ?, ?, ?, ?,
 			?)`,
-		id, line.Title, line.Description, line.Context, taskType,
+		id, line.Title, line.Description, line.Context,
 		nullable(line.Role),
 		nullable(line.Tier),
 		nullable(line.Severity),
@@ -196,7 +191,7 @@ func createOne(ctx context.Context, tx *store.Tx, line BatchLine, parentID strin
 		})
 	}
 
-	payload := createdPayload(line, parentID, tags, taskType, edgeRecords)
+	payload := createdPayload(line, parentID, tags, edgeRecords)
 	if err := store.AppendHistory(ctx, tx, store.History{
 		TaskID:    id,
 		Timestamp: now,
@@ -247,7 +242,7 @@ func canonicalMetadataJSON(meta map[string]any) (string, error) {
 // createdPayload mirrors the `created` history payload shape from
 // internal/command/create.go: non-default values only, with
 // dependencies recorded as ordered {target, link_type} objects.
-func createdPayload(line BatchLine, parentID string, tags []string, taskType string, edges []map[string]any) map[string]any {
+func createdPayload(line BatchLine, parentID string, tags []string, edges []map[string]any) map[string]any {
 	payload := map[string]any{}
 	if line.Tier != "" {
 		payload["tier"] = line.Tier
@@ -257,9 +252,6 @@ func createdPayload(line BatchLine, parentID string, tags []string, taskType str
 	}
 	if line.Severity != "" {
 		payload["severity"] = line.Severity
-	}
-	if taskType != "" && taskType != "task" {
-		payload["type"] = taskType
 	}
 	if parentID != "" {
 		payload["parent"] = parentID

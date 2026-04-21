@@ -30,7 +30,6 @@ func runGraph(t *testing.T, s store.Store, cfg config.Config, args []string) (er
 type graphNodeT struct {
 	ID       string   `json:"id"`
 	Title    string   `json:"title"`
-	Type     string   `json:"type"`
 	Status   string   `json:"status"`
 	Tier     *string  `json:"tier"`
 	Role     *string  `json:"role"`
@@ -214,8 +213,8 @@ func TestGraphLeafNoDeps(t *testing.T) {
 // a different project prefix is external at any root.
 func TestGraphCrossProjectExternal(t *testing.T) {
 	s, _ := testStore(t)
-	seedListTask(t, s, "proj-31", "Crash report", "", "completed", "", "", "bug")
-	seedListTask(t, s, "proj-a1", "Fix follow-up", "", "open", "", "", "task")
+	seedListTask(t, s, "proj-31", "Crash report", "", "completed", "", "", "")
+	seedListTask(t, s, "proj-a1", "Fix follow-up", "", "open", "", "", "")
 	seedDep(t, s, "proj-a1", "proj-31", "caused-by")
 
 	err, stdout, _ := runGraph(t, s, plannerCfg(), []string{"proj-a1"})
@@ -235,8 +234,8 @@ func TestGraphCrossProjectExternal(t *testing.T) {
 	if ext == nil {
 		t.Fatalf("proj-31 not in nodes: %+v", g.Nodes)
 	}
-	if ext.Title != "Crash report" || ext.Type != "bug" || ext.Status != "completed" {
-		t.Errorf("external node = %+v, want crash report/bug/completed", ext)
+	if ext.Title != "Crash report" || ext.Status != "completed" {
+		t.Errorf("external node = %+v, want crash report/completed", ext)
 	}
 	if len(g.Edges) != 1 || g.Edges[0].LinkType != "caused-by" {
 		t.Errorf("edges = %+v, want one caused-by", g.Edges)
@@ -244,8 +243,8 @@ func TestGraphCrossProjectExternal(t *testing.T) {
 }
 
 // TestGraphTextFormat pins the indented tree + dep-edge shape.
-// Every task reference uses the canonical `{id} [{status}] (bug?)
-// {title}` cluster, unified with `quest show --text`.
+// Every task reference uses the canonical `{id} [{status}] {title}`
+// cluster, unified with `quest show --text`.
 func TestGraphTextFormat(t *testing.T) {
 	s, _ := testStore(t)
 	seedListTask(t, s, "proj-a1", "Auth module", "", "open", "", "", "")
@@ -270,32 +269,6 @@ func TestGraphTextFormat(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "    blocked-by  proj-a1.1 [completed] JWT") {
 		t.Errorf("missing dep edge under proj-a1.2: %q", stdout)
-	}
-}
-
-// TestGraphTextFormatBugMarker pins the `(bug)` marker on both node
-// lines and edge target references when the target's type is bug.
-// Mirror of the show --text marker check, covering the graph
-// surface so a regression in either renderer fails independently.
-func TestGraphTextFormatBugMarker(t *testing.T) {
-	s, _ := testStore(t)
-	seedListTask(t, s, "proj-a1", "Fix auth bug", "", "open", "", "", "bug")
-	seedListTask(t, s, "proj-31", "Crash report", "", "completed", "", "", "bug")
-	seedDep(t, s, "proj-a1", "proj-31", "caused-by")
-
-	cfg := plannerCfg()
-	cfg.Output.Text = true
-	err, stdout, _ := runGraph(t, s, cfg, []string{"proj-a1"})
-	if err != nil {
-		t.Fatalf("Graph: %v", err)
-	}
-	// Root bug shows (bug) marker.
-	if !strings.Contains(stdout, "proj-a1 [open] (bug) Fix auth bug") {
-		t.Errorf("missing bug marker on root node: %q", stdout)
-	}
-	// Edge target (external bug) shows (bug) marker too.
-	if !strings.Contains(stdout, "  caused-by  proj-31 [completed] (bug) Crash report") {
-		t.Errorf("missing bug marker on edge target: %q", stdout)
 	}
 }
 

@@ -65,7 +65,7 @@ func seedTaskRow(t *testing.T, s store.Store, id string) {
 //     restores empty Role/Session as Go zero strings (the rendering
 //     layer in command/show.go re-emits them as JSON null via *string).
 //   - The created action's payload captures non-default planning
-//     fields (tier/role/type/parent/tags/dependencies); read-back
+//     fields (tier/role/parent/tags/dependencies); read-back
 //     restores them via Payload's map[string]any.
 func TestHistoryEntryShape(t *testing.T) {
 	t.Run("ActionEnumNonEmpty", func(t *testing.T) {
@@ -202,7 +202,6 @@ func TestHistoryEntryShape(t *testing.T) {
 			Payload: map[string]any{
 				"tier": "T2",
 				"role": "coder",
-				"type": "bug",
 				"tags": []string{"auth", "go"},
 				"dependencies": []map[string]any{
 					{"target": "proj-a0", "link_type": "blocked-by"},
@@ -223,7 +222,7 @@ func TestHistoryEntryShape(t *testing.T) {
 			t.Fatalf("history = %d, want 1", len(hist))
 		}
 		p := hist[0].Payload
-		want := []string{"dependencies", "role", "tags", "tier", "type"}
+		want := []string{"dependencies", "role", "tags", "tier"}
 		got := make([]string, 0, len(p))
 		for k := range p {
 			got = append(got, k)

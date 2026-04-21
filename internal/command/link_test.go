@@ -33,19 +33,21 @@ func runUnlink(t *testing.T, s store.Store, cfg config.Config, args []string) (e
 	return err, out.String(), errb.String()
 }
 
-// seedTaskTyped inserts a task with explicit type/status so the
-// link tests can build sources of `type=bug` and targets of
-// failed/cancelled status.
+// seedTaskTyped inserts a task with explicit status so the link
+// tests can build targets of failed/cancelled status. The `taskType`
+// parameter is a positional no-op retained after migration 006
+// dropped the type column.
 func seedTaskTyped(t *testing.T, s store.Store, id, title, status, taskType string) {
 	t.Helper()
+	_ = taskType
 	tx, err := s.BeginImmediate(context.Background(), store.TxCreate)
 	if err != nil {
 		t.Fatalf("BeginImmediate: %v", err)
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(context.Background(),
-		`INSERT INTO tasks(id, title, status, type, created_at) VALUES (?, ?, ?, ?, ?)`,
-		id, title, status, taskType, "2026-04-18T00:00:00Z"); err != nil {
+		`INSERT INTO tasks(id, title, status, created_at) VALUES (?, ?, ?, ?)`,
+		id, title, status, "2026-04-18T00:00:00Z"); err != nil {
 		t.Fatalf("insert %s: %v", id, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -87,26 +89,11 @@ func TestLinkBlockedByHappyPath(t *testing.T) {
 	}
 }
 
-// TestLinkCausedByRequiresBugSource: --caused-by from a non-bug source
-// fails with exit 5 (source_type_required).
-func TestLinkCausedByRequiresBugSource(t *testing.T) {
-	s, _ := testStore(t)
-	seedTaskTyped(t, s, "proj-a1", "Source", "open", "task")
-	seedTaskWithStatus(t, s, "proj-a2", "Target", "", "open")
-
-	err, _, _ := runLink(t, s, plannerCfg(), []string{"proj-a1", "--caused-by", "proj-a2"})
-	if err == nil {
-		t.Fatal("Link: got nil, want ErrConflict")
-	}
-	if !stderrors.Is(err, errors.ErrConflict) {
-		t.Fatalf("err = %v, want wraps ErrConflict", err)
-	}
-}
-
-// TestLinkCausedByOnBugSource: caused-by from a bug source succeeds.
-func TestLinkCausedByOnBugSource(t *testing.T) {
+// TestLinkCausedBySucceeds: caused-by works from any source after the
+// type column was dropped in migration 006.
+func TestLinkCausedBySucceeds(t *testing.T) {
 	s, dbPath := testStore(t)
-	seedTaskTyped(t, s, "proj-a1", "Source", "open", "bug")
+	seedTaskWithStatus(t, s, "proj-a1", "Source", "", "open")
 	seedTaskWithStatus(t, s, "proj-a2", "Target", "", "open")
 
 	err, _, _ := runLink(t, s, plannerCfg(), []string{"proj-a1", "--caused-by", "proj-a2"})
@@ -120,11 +107,12 @@ func TestLinkCausedByOnBugSource(t *testing.T) {
 	}
 }
 
-// TestLinkDiscoveredFromOnBugSource verifies the second bug-only link
-// type round-trips the same way as caused-by.
-func TestLinkDiscoveredFromOnBugSource(t *testing.T) {
+// TestLinkDiscoveredFromSucceeds mirrors the caused-by path for
+// discovered-from — both are open to any source type after the type
+// column was dropped.
+func TestLinkDiscoveredFromSucceeds(t *testing.T) {
 	s, dbPath := testStore(t)
-	seedTaskTyped(t, s, "proj-a1", "Bug", "open", "bug")
+	seedTaskWithStatus(t, s, "proj-a1", "Bug", "", "open")
 	seedTaskWithStatus(t, s, "proj-a2", "Target", "", "open")
 
 	err, _, _ := runLink(t, s, plannerCfg(), []string{"proj-a1", "--discovered-from", "proj-a2"})
@@ -254,7 +242,7 @@ func TestLinkDuplicateNoOp(t *testing.T) {
 // includes link_type.
 func TestLinkMultiTypeBetweenSamePair(t *testing.T) {
 	s, dbPath := testStore(t)
-	seedTaskTyped(t, s, "proj-a1", "Bug", "open", "bug")
+	seedTaskWithStatus(t, s, "proj-a1", "Bug", "", "open")
 	seedTaskWithStatus(t, s, "proj-a2", "Target", "", "open")
 
 	if err, _, _ := runLink(t, s, plannerCfg(), []string{"proj-a1", "--caused-by", "proj-a2"}); err != nil {
@@ -353,7 +341,7 @@ func TestUnlinkMissingEdgeIsNoOp(t *testing.T) {
 		t.Fatalf("unlink: %v", err)
 	}
 	var ack struct {
-		Task, Target, Type string
+		Task, Target, LinkType string
 	}
 	_ = json.Unmarshal([]byte(stdout), &ack)
 	if ack.Task != "proj-a1" {

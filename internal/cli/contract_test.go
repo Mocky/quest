@@ -75,7 +75,7 @@ func TestRoleGateDenials(t *testing.T) {
 // gate inside the handler.
 var updateElevatedFlags = []string{
 	"--title", "--description", "--context",
-	"--type", "--tier", "--role",
+	"--tier", "--role",
 	"--acceptance-criteria",
 }
 

@@ -132,19 +132,17 @@ func Link(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	}
 	defer tx.Rollback()
 
-	var (
-		taskType, tier sql.NullString
-	)
+	var tier sql.NullString
 	err = tx.QueryRowContext(ctx,
-		`SELECT type, tier FROM tasks WHERE id = ?`, taskID).
-		Scan(&taskType, &tier)
+		`SELECT tier FROM tasks WHERE id = ?`, taskID).
+		Scan(&tier)
 	if err != nil {
 		if stderrors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: task %q", errors.ErrNotFound, taskID)
 		}
 		return fmt.Errorf("%w: link: %s", errors.ErrGeneral, err.Error())
 	}
-	telemetry.RecordTaskContext(ctx, taskID, tier.String, taskType.String)
+	telemetry.RecordTaskContext(ctx, taskID, tier.String)
 
 	// Self-reference cycle check runs inside the tx *after* source
 	// existence so a `quest link ghost --blocked-by ghost` against a
@@ -165,8 +163,7 @@ func Link(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	// committed graph; any new edge from this tx is included via the
 	// inFlight slice.
 	depErrs := batch.ValidateSemantic(ctx, s, batch.TaskShape{
-		ID:   taskID,
-		Type: taskType.String,
+		ID: taskID,
 	}, []batch.Edge{edge})
 	if len(depErrs) > 0 {
 		// Map first dep error to its precondition. Cycles emit the path
@@ -189,8 +186,6 @@ func Link(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 			case batch.CodeRetryTargetStatus:
 				precondition = "from_status"
 				blockedBy = []string{de.Target}
-			case batch.CodeSourceTypeRequired:
-				precondition = "type_transition"
 			}
 		}
 		telemetry.RecordPreconditionFailed(ctx, precondition, blockedBy)

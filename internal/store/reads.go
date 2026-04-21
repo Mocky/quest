@@ -14,7 +14,7 @@ import (
 // selectTaskColumns names the task-row projection in a single place so
 // GetTask scans line up with the SELECT. Order matches scanTask's scan
 // destinations.
-const selectTaskColumns = `id, title, description, context, type, status,
+const selectTaskColumns = `id, title, description, context, status,
 	role, tier, severity, acceptance_criteria, metadata, parent,
 	owner_session, started_at, completed_at,
 	handoff, handoff_session, handoff_written_at, debrief, created_at`
@@ -41,7 +41,7 @@ func scanTask(s scanner) (Task, error) {
 		metadataJSON                                  string
 	)
 	if err := s.Scan(
-		&t.ID, &t.Title, &t.Description, &t.Context, &t.Type, &t.Status,
+		&t.ID, &t.Title, &t.Description, &t.Context, &t.Status,
 		&role, &tier, &severity, &acceptCrit, &metadataJSON, &parent,
 		&ownerSess, &startedAt, &completedAt,
 		&handoff, &handoffSess, &handoffWritten, &debrief, &t.CreatedAt,
@@ -130,7 +130,7 @@ func (s *sqliteStore) GetTaskWithDeps(ctx context.Context, id string) (Task, err
 }
 
 // ListTasks returns tasks matching filter in ID-ascending order. Enum
-// filters (Statuses/Parents/Roles/Types/Tiers) compose with OR within
+// filters (Statuses/Parents/Roles/Tiers) compose with OR within
 // each flag and AND across flags. Tags compose with AND (a task tagged
 // `go` AND `auth`) via one correlated subquery per tag. The handler
 // defaults Statuses to the non-cancelled set before calling; an empty
@@ -159,7 +159,6 @@ func (s *sqliteStore) ListTasks(ctx context.Context, filter Filter) ([]Task, err
 	addIn("t.status", filter.Statuses)
 	addIn("t.parent", filter.Parents)
 	addIn("t.role", filter.Roles)
-	addIn("t.type", filter.Types)
 	addIn("t.tier", filter.Tiers)
 	addIn("t.severity", filter.Severities)
 	for _, tag := range filter.Tags {
@@ -279,11 +278,11 @@ func (s *sqliteStore) GetChildren(ctx context.Context, parentID string) ([]Task,
 }
 
 // GetDependencies returns outgoing edges for id (task_id is the source)
-// with the target's title, status, and type denormalized via JOIN, per
-// spec §quest show. Sorted by (created_at, target_id, link_type) for
-// stable output across calls.
+// with the target's title and status denormalized via JOIN, per spec
+// §quest show. Sorted by (created_at, target_id, link_type) for stable
+// output across calls.
 func (s *sqliteStore) GetDependencies(ctx context.Context, id string) ([]Dependency, error) {
-	const q = `SELECT d.target_id, t.title, t.status, t.type, d.link_type
+	const q = `SELECT d.target_id, t.title, t.status, d.link_type
 		FROM dependencies d JOIN tasks t ON t.id = d.target_id
 		WHERE d.task_id = ?
 		ORDER BY d.created_at, d.target_id, d.link_type`
@@ -295,7 +294,7 @@ func (s *sqliteStore) GetDependencies(ctx context.Context, id string) ([]Depende
 	out := []Dependency{}
 	for rows.Next() {
 		var d Dependency
-		if err := rows.Scan(&d.ID, &d.Title, &d.Status, &d.Type, &d.LinkType); err != nil {
+		if err := rows.Scan(&d.ID, &d.Title, &d.Status, &d.LinkType); err != nil {
 			return nil, classifyDriverErr(err)
 		}
 		out = append(out, d)

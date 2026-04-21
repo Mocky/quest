@@ -127,7 +127,6 @@ func parseOneLine(r rawLine) (BatchLine, []BatchError) {
 	_ = decodeString(outer, "ref", &line.Ref)
 	_ = decodeString(outer, "description", &line.Description)
 	_ = decodeString(outer, "context", &line.Context)
-	_ = decodeString(outer, "type", &line.Type)
 	_ = decodeString(outer, "tier", &line.Tier)
 	_ = decodeString(outer, "role", &line.Role)
 	_ = decodeString(outer, "severity", &line.Severity)
