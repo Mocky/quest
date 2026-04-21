@@ -165,7 +165,7 @@ func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string,
 	resp := graphResponse{Nodes: nodes, Edges: edges}
 	telemetry.RecordGraphResult(ctx, rootID, len(nodes), len(edges), len(externals), len(subtree))
 
-	if cfg.Output.Format == "text" {
+	if cfg.Output.Text {
 		return emitGraphText(stdout, rootID, subtree, externals, edges)
 	}
 	enc := json.NewEncoder(stdout)
@@ -206,8 +206,8 @@ func collectSubtree(ctx context.Context, s store.Store, root store.Task) ([]stor
 }
 
 // emitGraphText renders the indented tree per spec §quest graph
-// --format text. Every task reference — whether a tree node or an
-// edge target — uses the canonical `{id} [{status}] (bug?) {title}`
+// --text. Every task reference — whether a tree node or an edge
+// target — uses the canonical `{id} [{status}] (bug?) {title}`
 // shape from output.TaskRefLine. Parent-child depth is computed from
 // the dotted ID offset relative to rootID; externals live outside the
 // subtree hierarchy and only surface as edge-target references.

@@ -67,7 +67,7 @@ func plannerCfg() config.Config {
 			EnforceSessionOwnership: true,
 		},
 		Agent:  config.AgentConfig{Role: "planner", Session: "sess-p1"},
-		Output: config.OutputConfig{Format: "json"},
+		Output: config.OutputConfig{},
 	}
 }
 
@@ -78,7 +78,7 @@ func workerCfg(session string) config.Config {
 			EnforceSessionOwnership: true,
 		},
 		Agent:  config.AgentConfig{Role: "worker", Session: session},
-		Output: config.OutputConfig{Format: "json"},
+		Output: config.OutputConfig{},
 	}
 }
 

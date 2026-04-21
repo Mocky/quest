@@ -125,7 +125,7 @@ func Cancel(ctx context.Context, cfg config.Config, s store.Store, args []string
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		return emitCancelAck(stdout, cfg.Output.Format, cancelAck{
+		return emitCancelAck(stdout, cfg.Output.Text, cancelAck{
 			Cancelled: []string{},
 			Skipped:   []cancelSkippedEntry{},
 		})
@@ -247,7 +247,7 @@ func Cancel(ctx context.Context, cfg config.Config, s store.Store, args []string
 		telemetry.RecordContentReason(ctx, reason)
 	}
 
-	return emitCancelAck(stdout, cfg.Output.Format, cancelAck{
+	return emitCancelAck(stdout, cfg.Output.Text, cancelAck{
 		Cancelled: cancelled,
 		Skipped:   skipped,
 	})
@@ -302,11 +302,11 @@ func loadDescendants(ctx context.Context, tx *store.Tx, id string) ([]descendant
 	return out, nil
 }
 
-// emitCancelAck renders the ack in the active format. Text mode
+// emitCancelAck renders the ack in the active mode. Text mode
 // matches spec §quest cancel: one `cancelled: <id>` line per cancelled
 // task, then one `skipped: <id> (<status>)` line per skipped entry.
-func emitCancelAck(stdout io.Writer, format string, ack cancelAck) error {
-	if format == "text" {
+func emitCancelAck(stdout io.Writer, text bool, ack cancelAck) error {
+	if text {
 		for _, id := range ack.Cancelled {
 			if _, err := fmt.Fprintf(stdout, "cancelled: %s\n", id); err != nil {
 				return err
@@ -319,5 +319,5 @@ func emitCancelAck(stdout io.Writer, format string, ack cancelAck) error {
 		}
 		return nil
 	}
-	return output.Emit(stdout, format, ack)
+	return output.Emit(stdout, text, ack)
 }

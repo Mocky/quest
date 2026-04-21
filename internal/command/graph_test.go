@@ -244,7 +244,7 @@ func TestGraphCrossProjectExternal(t *testing.T) {
 
 // TestGraphTextFormat pins the indented tree + dep-edge shape.
 // Every task reference uses the canonical `{id} [{status}] (bug?)
-// {title}` cluster, unified with `quest show --format text`.
+// {title}` cluster, unified with `quest show --text`.
 func TestGraphTextFormat(t *testing.T) {
 	s, _ := testStore(t)
 	seedListTask(t, s, "proj-a1", "Auth module", "", "open", "", "", "")
@@ -253,7 +253,7 @@ func TestGraphTextFormat(t *testing.T) {
 	seedDep(t, s, "proj-a1.2", "proj-a1.1", "blocked-by")
 
 	cfg := plannerCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runGraph(t, s, cfg, []string{"proj-a1"})
 	if err != nil {
 		t.Fatalf("Graph: %v", err)
@@ -274,7 +274,7 @@ func TestGraphTextFormat(t *testing.T) {
 
 // TestGraphTextFormatBugMarker pins the `(bug)` marker on both node
 // lines and edge target references when the target's type is bug.
-// Mirror of the show --format text marker check, covering the graph
+// Mirror of the show --text marker check, covering the graph
 // surface so a regression in either renderer fails independently.
 func TestGraphTextFormatBugMarker(t *testing.T) {
 	s, _ := testStore(t)
@@ -283,7 +283,7 @@ func TestGraphTextFormatBugMarker(t *testing.T) {
 	seedDep(t, s, "proj-a1", "proj-31", "caused-by")
 
 	cfg := plannerCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runGraph(t, s, cfg, []string{"proj-a1"})
 	if err != nil {
 		t.Fatalf("Graph: %v", err)

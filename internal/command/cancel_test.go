@@ -344,7 +344,7 @@ func TestCancelMissingIDReturnsUsage(t *testing.T) {
 	}
 }
 
-// TestCancelTextModeRendersLines: --format text emits one `cancelled:
+// TestCancelTextModeRendersLines: --text emits one `cancelled:
 // <id>` line per cancelled task and one `skipped: <id> (<status>)` per
 // skipped entry.
 func TestCancelTextModeRendersLines(t *testing.T) {
@@ -354,7 +354,7 @@ func TestCancelTextModeRendersLines(t *testing.T) {
 	seedTaskWithStatus(t, s, "proj-a1.2", "Done", "proj-a1", "completed")
 
 	cfg := plannerCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runCancel(t, s, cfg, "", []string{"proj-a1", "-r"})
 	if err != nil {
 		t.Fatalf("Cancel: %v", err)

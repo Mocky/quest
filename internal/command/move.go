@@ -282,7 +282,7 @@ func Move(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	telemetry.RecordTaskContext(ctx, newRootID, tier.String, taskType.String)
 	telemetry.RecordMoveOutcome(ctx, oldID, newRootID, len(renames), depUpdates)
 
-	return emitMoveAck(stdout, cfg.Output.Format, moveAck{
+	return emitMoveAck(stdout, cfg.Output.Text, moveAck{
 		ID:      newRootID,
 		Renames: renames,
 	})
@@ -393,8 +393,8 @@ func rewriteSubgraphID(id, oldRootID, newRootID string) string {
 	return newRootID + strings.TrimPrefix(id, oldRootID)
 }
 
-func emitMoveAck(stdout io.Writer, format string, ack moveAck) error {
-	if format == "text" {
+func emitMoveAck(stdout io.Writer, text bool, ack moveAck) error {
+	if text {
 		for _, r := range ack.Renames {
 			if _, err := fmt.Fprintf(stdout, "%s → %s\n", r.Old, r.New); err != nil {
 				return err
@@ -402,5 +402,5 @@ func emitMoveAck(stdout io.Writer, format string, ack moveAck) error {
 		}
 		return nil
 	}
-	return output.Emit(stdout, format, ack)
+	return output.Emit(stdout, text, ack)
 }

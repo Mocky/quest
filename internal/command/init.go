@@ -125,7 +125,7 @@ func Init(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 		return fmt.Errorf("init: %s: %w", err.Error(), errors.ErrGeneral)
 	}
 
-	if cfg.Output.Format == "text" {
+	if cfg.Output.Text {
 		fmt.Fprintln(stdout, absQuestDir)
 		success = true
 		return nil

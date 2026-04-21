@@ -32,7 +32,7 @@ func exportCfg(workspaceRoot string) config.Config {
 	return config.Config{
 		Workspace: config.WorkspaceConfig{Root: workspaceRoot, ElevatedRoles: []string{"planner"}},
 		Agent:     config.AgentConfig{Role: "planner", Session: "sess-p1"},
-		Output:    config.OutputConfig{Format: "json"},
+		Output:    config.OutputConfig{},
 	}
 }
 
@@ -338,7 +338,7 @@ func TestExportTextFormat(t *testing.T) {
 
 	workspace := t.TempDir()
 	cfg := exportCfg(workspace)
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runExport(t, s, cfg, nil)
 	if err != nil {
 		t.Fatalf("Export: %v", err)

@@ -130,7 +130,7 @@ func tagApply(ctx context.Context, cfg config.Config, s store.Store, stdout io.W
 		return err
 	}
 
-	return output.Emit(stdout, cfg.Output.Format, tagAck{ID: id, Tags: post})
+	return output.Emit(stdout, cfg.Output.Text, tagAck{ID: id, Tags: post})
 }
 
 // readTagsTx reads the post-state tag list inside the transaction so

@@ -3,7 +3,7 @@
 // span (OTEL.md §8.2). Handlers live in internal/command/ and never
 // parse flags or call os.Exit; cli owns both. Exports:
 //
-//   - ParseGlobals — position-independent --format / --log-level parser.
+//   - ParseGlobals — position-independent --text / --log-level parser.
 //   - Execute       — the dispatcher (command identification, role gate,
 //     workspace + config validation, store open + migrate, per-command
 //     span, handler dispatch, panic recovery).

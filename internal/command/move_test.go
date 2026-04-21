@@ -488,7 +488,7 @@ func TestMoveTextModeRendersRenames(t *testing.T) {
 	seedTaskWithStatus(t, s, "proj-b2", "B2", "", "open")
 
 	cfg := plannerCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runMove(t, s, cfg, []string{"proj-a1.3", "--parent", "proj-b2"})
 	if err != nil {
 		t.Fatalf("Move: %v", err)

@@ -57,7 +57,7 @@ func TestVersionJSON(t *testing.T) {
 }
 
 func TestVersionText(t *testing.T) {
-	cmd := exec.Command(questBin, "--format", "text", "version")
+	cmd := exec.Command(questBin, "--text", "version")
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("quest version: %v", err)
@@ -188,7 +188,7 @@ func TestInitHappyPath(t *testing.T) {
 
 func TestInitTextFormat(t *testing.T) {
 	dir := t.TempDir()
-	stdout, stderr, code := runInDir(t, dir, "--format", "text", "init", "--prefix", "tst")
+	stdout, stderr, code := runInDir(t, dir, "--text", "init", "--prefix", "tst")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%q", code, stderr)
 	}

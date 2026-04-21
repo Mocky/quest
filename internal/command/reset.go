@@ -132,13 +132,13 @@ func Reset(ctx context.Context, cfg config.Config, s store.Store, args []string,
 	if parsed.Reason != nil && *parsed.Reason != "" && telemetry.CaptureContentEnabled() {
 		telemetry.RecordContentReason(ctx, reason)
 	}
-	return emitResetAck(stdout, cfg.Output.Format, resetAck{ID: id, Status: "open"})
+	return emitResetAck(stdout, cfg.Output.Text, resetAck{ID: id, Status: "open"})
 }
 
-func emitResetAck(stdout io.Writer, format string, ack resetAck) error {
-	if format == "text" {
+func emitResetAck(stdout io.Writer, text bool, ack resetAck) error {
+	if text {
 		_, err := fmt.Fprintf(stdout, "%s reset to open\n", ack.ID)
 		return err
 	}
-	return output.Emit(stdout, format, ack)
+	return output.Emit(stdout, text, ack)
 }

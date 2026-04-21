@@ -43,7 +43,7 @@ func testStore(t *testing.T) (store.Store, string) {
 func baseCfg() config.Config {
 	return config.Config{
 		Agent:  config.AgentConfig{},
-		Output: config.OutputConfig{Format: "json"},
+		Output: config.OutputConfig{},
 	}
 }
 
@@ -467,7 +467,7 @@ func TestShowTextHeaderHasBugMarker(t *testing.T) {
 	}
 
 	cfg := baseCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 
 	err, out1, _ := runShow(t, s, cfg, []string{"proj-a1"})
 	if err != nil {
@@ -495,7 +495,7 @@ func TestShowTextMinimalTask(t *testing.T) {
 	s, _ := testStore(t)
 	seedMinimalTask(t, s, "proj-a1", "Alpha")
 	cfg := baseCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runShow(t, s, cfg, []string{"proj-a1"})
 	if err != nil {
 		t.Fatalf("Show: %v", err)
@@ -535,7 +535,7 @@ func TestShowTextMetadataCluster(t *testing.T) {
 	}
 
 	cfg := baseCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runShow(t, s, cfg, []string{"proj-a1.1"})
 	if err != nil {
 		t.Fatalf("Show: %v", err)
@@ -582,7 +582,7 @@ func TestShowTextExecTrailingNullDrops(t *testing.T) {
 	}
 
 	cfg := baseCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runShow(t, s, cfg, []string{"proj-a1"})
 	if err != nil {
 		t.Fatalf("Show: %v", err)
@@ -625,7 +625,7 @@ func TestShowTextDependenciesSection(t *testing.T) {
 	}
 
 	cfg := baseCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runShow(t, s, cfg, []string{"proj-a3"})
 	if err != nil {
 		t.Fatalf("Show: %v", err)
@@ -665,7 +665,7 @@ func TestShowTextDebriefMissingOnCompleted(t *testing.T) {
 	}
 
 	cfg := baseCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runShow(t, s, cfg, []string{"proj-a1"})
 	if err != nil {
 		t.Fatalf("Show: %v", err)
@@ -699,7 +699,7 @@ func TestShowTextPipedWraps80(t *testing.T) {
 	}
 
 	cfg := baseCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runShow(t, s, cfg, []string{"proj-a1"})
 	if err != nil {
 		t.Fatalf("Show: %v", err)
@@ -810,7 +810,7 @@ func TestShowTextHistoryBlock(t *testing.T) {
 	}
 
 	cfg := baseCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runShow(t, s, cfg, []string{"--history", "proj-a1"})
 	if err != nil {
 		t.Fatalf("Show: %v", err)

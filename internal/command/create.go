@@ -416,7 +416,7 @@ func Create(ctx context.Context, cfg config.Config, s store.Store, args []string
 			telemetry.RecordContentAcceptanceCriteria(ctx, *parsed.AcceptanceCriteria)
 		}
 	}
-	return output.Emit(stdout, cfg.Output.Format, createAck{ID: newID})
+	return output.Emit(stdout, cfg.Output.Text, createAck{ID: newID})
 }
 
 // checkCreateParent runs the parent-existence, parent-status, and

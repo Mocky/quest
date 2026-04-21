@@ -11,9 +11,9 @@ import (
 )
 
 // TestParseGlobals pins STANDARDS.md §Flag Overrides: global flags are
-// position-independent — `--format json version` and `version --format
-// json` parse identically — and unknown flags pass through untouched so
-// the subcommand parser can reject or accept them.
+// position-independent — `--text version` and `version --text` parse
+// identically — and unknown flags pass through untouched so the
+// subcommand parser can reject or accept them.
 func TestParseGlobals(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -22,21 +22,15 @@ func TestParseGlobals(t *testing.T) {
 		remaining []string
 	}{
 		{
-			name:      "format before command",
-			args:      []string{"--format", "json", "version"},
-			want:      config.Flags{Format: "json"},
+			name:      "text before command",
+			args:      []string{"--text", "version"},
+			want:      config.Flags{Text: true},
 			remaining: []string{"version"},
 		},
 		{
-			name:      "format after command",
-			args:      []string{"version", "--format", "json"},
-			want:      config.Flags{Format: "json"},
-			remaining: []string{"version"},
-		},
-		{
-			name:      "format inline equals",
-			args:      []string{"--format=json", "version"},
-			want:      config.Flags{Format: "json"},
+			name:      "text after command",
+			args:      []string{"version", "--text"},
+			want:      config.Flags{Text: true},
 			remaining: []string{"version"},
 		},
 		{
@@ -53,8 +47,8 @@ func TestParseGlobals(t *testing.T) {
 		},
 		{
 			name:      "both globals in mixed positions",
-			args:      []string{"show", "--format", "json", "qst-01", "--log-level=debug"},
-			want:      config.Flags{Format: "json", LogLevel: "debug"},
+			args:      []string{"show", "--text", "qst-01", "--log-level=debug"},
+			want:      config.Flags{Text: true, LogLevel: "debug"},
 			remaining: []string{"show", "qst-01"},
 		},
 		{
@@ -93,17 +87,16 @@ func TestParseGlobals(t *testing.T) {
 }
 
 // TestParseGlobalsTrailingValuelessFlag pins the qst-0u fix: a trailing
-// --format or --log-level with no value returns a wrapped ErrUsage so
-// the caller exits 2 with a "missing value" message instead of
-// misrouting the flag token into the unknown-command path.
+// --log-level with no value returns a wrapped ErrUsage so the caller
+// exits 2 with a "missing value" message instead of misrouting the
+// flag token into the unknown-command path. --text takes no value and
+// is a pure toggle, so only --log-level can trip this case.
 func TestParseGlobalsTrailingValuelessFlag(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
 		want string
 	}{
-		{"format alone", []string{"--format"}, "missing value for --format"},
-		{"format after command", []string{"version", "--format"}, "missing value for --format"},
 		{"log-level alone", []string{"--log-level"}, "missing value for --log-level"},
 		{"log-level after command", []string{"version", "--log-level"}, "missing value for --log-level"},
 	}

@@ -160,15 +160,15 @@ func Accept(ctx context.Context, cfg config.Config, s store.Store, args []string
 		return err
 	}
 	telemetry.RecordStatusTransition(ctx, id, "open", "accepted")
-	return output.Emit(stdout, cfg.Output.Format, acceptAck{ID: id, Status: "accepted"})
+	return output.Emit(stdout, cfg.Output.Text, acceptAck{ID: id, Status: "accepted"})
 }
 
 // emitConflictBody writes a conflict struct to stdout in the active
-// output format. JSON mode uses the standard encoder; text mode falls
+// output mode. JSON mode uses the standard encoder; text mode falls
 // back to a one-liner summarizing the blocking IDs so human-facing
 // callers still get something readable (the JSON body is the contract).
 func emitConflictBody(cfg config.Config, stdout io.Writer, body acceptConflictBody) error {
-	if cfg.Output.Format == "text" {
+	if cfg.Output.Text {
 		_, err := fmt.Fprintf(stdout, "conflict: %s has non-terminal children: %s\n",
 			body.Task, formatConflictChildren(body.NonTerminalChildren))
 		return err

@@ -54,10 +54,10 @@ func Deps(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	if deps == nil {
 		deps = []store.Dependency{}
 	}
-	if cfg.Output.Format == "text" {
+	if cfg.Output.Text {
 		return emitDepsText(stdout, deps)
 	}
-	return output.Emit(stdout, cfg.Output.Format, deps)
+	return output.Emit(stdout, cfg.Output.Text, deps)
 }
 
 // emitDepsText writes a fixed-width table with the dependency list.

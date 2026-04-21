@@ -90,13 +90,13 @@ Test what agents actually see: stdout JSON, stderr diagnostics, exit codes. Thes
 - Error output shape: `quest: <class>: <message>` on stderr as the final line, plus the structured JSON body where the spec requires it (e.g., conflict on `accept` includes the non-terminal children on stdout).
 - Exit codes: 0 on success; 1-7 for failures, mapped per the spec.
 - Batch stderr JSONL: one object per error, with the documented fields.
-- `--format text` rendering: tables for `list` and `graph`, indented tree for `graph`, column truncation when output is piped vs. TTY-sized when a TTY.
+- `--text` rendering: tables for `list` and `graph`, indented tree for `graph`, column truncation when output is piped vs. TTY-sized when a TTY.
 - `--log-level` raises or lowers slog verbosity as expected.
 - Environment variable resolution: `AGENT_TASK` as default task ID, `AGENT_ROLE` for gating.
 
 **File naming:** `cli_test.go` in a package that can build and invoke the quest binary. Use a `TestMain` that runs `go build` once into a `t.TempDir()` and points subsequent `os/exec.Command` calls at it. Tag with `//go:build integration` if the build step is slow enough to matter for the fast cycle.
 
-**Why this layer matters:** The JSON output contract layer catches shape regressions, but a CLI can still break in subtle ways — wrong stream for an error, exit code not propagated from a handler, `--format` ignored in some code path. Layer 4 catches those.
+**Why this layer matters:** The JSON output contract layer catches shape regressions, but a CLI can still break in subtle ways — wrong stream for an error, exit code not propagated from a handler, `--text` ignored in some code path. Layer 4 catches those.
 
 ### Layer 5 — Concurrency & Load Tests
 
@@ -499,7 +499,7 @@ t.Run("batch with cycle reports graph-phase error", ...)
 - Success output shape: invoke the CLI against a fixture workspace, capture stdout, parse as JSON, verify every spec-mandated field is present.
 - Error output shape: invoke with bad input, capture both streams, verify stderr ends with `quest: <class>: <message>` then `quest: exit N (<class>)`, and the exit code matches.
 - Batch stderr JSONL: every batch error code produces a line with the documented fields.
-- `--format text`: table rendering matches the spec's column defaults and truncation rules; `graph` indentation matches.
+- `--text`: table rendering matches the spec's column defaults and truncation rules; `graph` indentation matches.
 - stderr request context (in DEBUG mode): `dept.task.id` and `dept.session.id` appear on slog records when the env vars are set, are absent otherwise.
 
 ### `internal/export/`

@@ -67,8 +67,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Log.OTELLevel != "info" {
 		t.Errorf("Log.OTELLevel default = %q, want info", cfg.Log.OTELLevel)
 	}
-	if cfg.Output.Format != "json" {
-		t.Errorf("Output.Format default = %q, want json", cfg.Output.Format)
+	if cfg.Output.Text {
+		t.Errorf("Output.Text default = true, want false (JSON default)")
 	}
 	if cfg.Telemetry.CaptureContent {
 		t.Errorf("CaptureContent = true, want false by default")
@@ -158,20 +158,20 @@ func TestLogLevelPrecedence(t *testing.T) {
 	}
 }
 
-func TestFormatPrecedence(t *testing.T) {
+func TestTextFlagPropagates(t *testing.T) {
 	clearEnv(t)
 
-	t.Run("default json", func(t *testing.T) {
+	t.Run("default is JSON", func(t *testing.T) {
 		cfg := Load(Flags{})
-		if cfg.Output.Format != "json" {
-			t.Errorf("Format = %q, want json", cfg.Output.Format)
+		if cfg.Output.Text {
+			t.Errorf("Output.Text = true, want false (JSON default)")
 		}
 	})
 
-	t.Run("flag override", func(t *testing.T) {
-		cfg := Load(Flags{Format: "text"})
-		if cfg.Output.Format != "text" {
-			t.Errorf("Format = %q, want text", cfg.Output.Format)
+	t.Run("flag toggles text", func(t *testing.T) {
+		cfg := Load(Flags{Text: true})
+		if !cfg.Output.Text {
+			t.Errorf("Output.Text = false, want true when Flags.Text is set")
 		}
 	})
 }
@@ -206,7 +206,6 @@ func TestValidateCollectsErrors(t *testing.T) {
 	cfg := Config{
 		Workspace: WorkspaceConfig{Root: "/tmp/fake", IDPrefix: "Bad-Prefix"},
 		Log:       LogConfig{Level: "spammy", OTELLevel: "ghost"},
-		Output:    OutputConfig{Format: "yaml"},
 	}
 	err := cfg.Validate()
 	if err == nil {
@@ -217,7 +216,6 @@ func TestValidateCollectsErrors(t *testing.T) {
 		".quest/config.toml: id_prefix",
 		"QUEST_LOG_LEVEL",
 		"QUEST_LOG_OTEL_LEVEL",
-		"--format",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message missing %q\nfull:\n%s", want, msg)
@@ -229,7 +227,6 @@ func TestValidateMissingIDPrefix(t *testing.T) {
 	cfg := Config{
 		Workspace: WorkspaceConfig{Root: "/tmp/fake"},
 		Log:       LogConfig{Level: "warn", OTELLevel: "info"},
-		Output:    OutputConfig{Format: "json"},
 	}
 	err := cfg.Validate()
 	if err == nil {
@@ -244,7 +241,6 @@ func TestValidateGoodConfig(t *testing.T) {
 	cfg := Config{
 		Workspace: WorkspaceConfig{Root: "/tmp/fake", IDPrefix: "proj"},
 		Log:       LogConfig{Level: "warn", OTELLevel: "info"},
-		Output:    OutputConfig{Format: "json"},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate() = %v, want nil", err)

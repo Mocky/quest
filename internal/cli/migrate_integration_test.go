@@ -54,7 +54,7 @@ func TestInitProducesMigrateSpanAsChild(t *testing.T) {
 
 	cfg := config.Config{
 		Log:    config.LogConfig{Level: "warn", OTELLevel: "info"},
-		Output: config.OutputConfig{Format: "json"},
+		Output: config.OutputConfig{},
 	}
 	exit, _, errb := runExecute([]string{"init", "--prefix", "proj"}, cfg)
 	if exit != 0 {
@@ -271,7 +271,7 @@ func TestFreshInitDoesNotWriteSnapshot(t *testing.T) {
 
 	cfg := config.Config{
 		Log:    config.LogConfig{Level: "warn", OTELLevel: "info"},
-		Output: config.OutputConfig{Format: "json"},
+		Output: config.OutputConfig{},
 	}
 	if exit, _, errb := runExecute([]string{"init", "--prefix", "proj"}, cfg); exit != 0 {
 		t.Fatalf("init exit=%d stderr=%s", exit, errb)
@@ -290,7 +290,7 @@ func TestFreshInitDoesNotWriteSnapshot(t *testing.T) {
 		},
 		Agent:  config.AgentConfig{Role: "planner"},
 		Log:    config.LogConfig{Level: "warn", OTELLevel: "info"},
-		Output: config.OutputConfig{Format: "json"},
+		Output: config.OutputConfig{},
 	}
 	if exit, _, errb := runExecute([]string{"list"}, wrkCfg); exit != 0 {
 		t.Fatalf("list after init exit=%d stderr=%s", exit, errb)

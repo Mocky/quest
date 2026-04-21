@@ -38,7 +38,7 @@ func setupWorkspace(t *testing.T, prefix, role string) config.Config {
 		},
 		Agent:  config.AgentConfig{Role: role},
 		Log:    config.LogConfig{Level: "warn", OTELLevel: "info"},
-		Output: config.OutputConfig{Format: "json"},
+		Output: config.OutputConfig{},
 	}
 }
 

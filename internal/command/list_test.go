@@ -470,7 +470,7 @@ func TestListTextFormat(t *testing.T) {
 	s, _ := testStore(t)
 	seedListTask(t, s, "proj-a1", "Alpha", "", "open", "", "", "")
 	cfg := plannerCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runList(t, s, cfg, nil)
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -492,7 +492,7 @@ func TestListTextFormatUnboundedTitleWhenPiped(t *testing.T) {
 	longTitle := strings.Repeat("x", 60)
 	seedListTask(t, s, "proj-t1", longTitle, "", "open", "", "", "")
 	cfg := plannerCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runList(t, s, cfg, nil)
 	if err != nil {
 		t.Fatalf("List: %v", err)

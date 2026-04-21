@@ -224,7 +224,7 @@ func Link(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	if rows > 0 {
 		telemetry.RecordLinkAdded(ctx, taskID, edge.Target, edge.LinkType)
 	}
-	return output.Emit(stdout, cfg.Output.Format, linkAck{
+	return output.Emit(stdout, cfg.Output.Text, linkAck{
 		Task:     taskID,
 		Target:   edge.Target,
 		LinkType: edge.LinkType,

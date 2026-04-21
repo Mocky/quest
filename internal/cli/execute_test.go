@@ -24,7 +24,7 @@ func baseCfg() config.Config {
 		Workspace: config.WorkspaceConfig{Root: "", DBPath: "", IDPrefix: "", ElevatedRoles: []string{"planner"}},
 		Agent:     config.AgentConfig{Role: ""},
 		Log:       config.LogConfig{Level: "warn", OTELLevel: "info"},
-		Output:    config.OutputConfig{Format: "json"},
+		Output:    config.OutputConfig{},
 	}
 }
 
@@ -75,7 +75,7 @@ func TestExecuteVersion(t *testing.T) {
 
 func TestExecuteVersionText(t *testing.T) {
 	cfg := baseCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	exit, stdout, _ := runExecute([]string{"version"}, cfg)
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0", exit)

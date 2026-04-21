@@ -14,9 +14,10 @@ import (
 
 // Flags carries the position-independent global flags the dispatcher
 // extracts before resolving Config. Per STANDARDS.md §Flag Overrides,
-// `--color` is deliberately absent.
+// `--color` is deliberately absent. Text is a valueless toggle; JSON
+// is the default so an unset Text produces the agent-contract shape.
 type Flags struct {
-	Format   string
+	Text     bool
 	LogLevel string
 }
 
@@ -55,10 +56,13 @@ type TelemetryConfig struct {
 	CaptureContent bool
 }
 
-// OutputConfig controls stdout rendering for command results. Text mode
-// is a human rendering, not a contract — agents read json.
+// OutputConfig controls stdout rendering for command results. Text is
+// a human rendering, not a contract — agents read JSON, which is the
+// default when Text is false. No env-var equivalent exists: Claude
+// Code sessions inherit shell env across many terminals and a
+// persistent default would silently corrupt agent output.
 type OutputConfig struct {
-	Format string
+	Text bool
 }
 
 // Config is the resolved runtime configuration. Load never returns an
@@ -101,7 +105,7 @@ func Load(flags Flags) Config {
 			CaptureContent: captureContent(),
 		},
 		Output: OutputConfig{
-			Format: firstNonEmpty(flags.Format, "json"),
+			Text: flags.Text,
 		},
 	}
 }
@@ -126,9 +130,6 @@ func (c Config) Validate() error {
 	}
 	if !validLogLevel(c.Log.OTELLevel) {
 		errs = append(errs, fmt.Sprintf("QUEST_LOG_OTEL_LEVEL: %q is not a valid log level", c.Log.OTELLevel))
-	}
-	if f := c.Output.Format; f != "json" && f != "text" {
-		errs = append(errs, fmt.Sprintf("--format: %q is not a valid output format", f))
 	}
 	if len(errs) == 0 {
 		return nil

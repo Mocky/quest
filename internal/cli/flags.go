@@ -8,12 +8,13 @@ import (
 	"github.com/mocky/quest/internal/errors"
 )
 
-// ParseGlobals extracts --format and --log-level from args in a
+// ParseGlobals extracts --text and --log-level from args in a
 // position-independent way and returns the stripped subcommand args.
-// A trailing valueless --format or --log-level (e.g. `quest version
-// --format`) returns a wrapped ErrUsage so the caller exits 2 with a
-// clear "missing value" message rather than misrouting the flag into
-// the unknown-command path.
+// --text is a valueless toggle; --log-level takes a value, and a
+// trailing valueless --log-level (e.g. `quest version --log-level`)
+// returns a wrapped ErrUsage so the caller exits 2 with a clear
+// "missing value" message rather than misrouting the flag into the
+// unknown-command path.
 func ParseGlobals(args []string) (config.Flags, []string, error) {
 	var flags config.Flags
 	remaining := make([]string, 0, len(args))
@@ -21,13 +22,8 @@ func ParseGlobals(args []string) (config.Flags, []string, error) {
 	for i < len(args) {
 		a := args[i]
 		switch {
-		case a == "--format" && i+1 < len(args):
-			flags.Format = args[i+1]
-			i += 2
-		case a == "--format":
-			return config.Flags{}, nil, fmt.Errorf("%w: missing value for --format", errors.ErrUsage)
-		case strings.HasPrefix(a, "--format="):
-			flags.Format = strings.TrimPrefix(a, "--format=")
+		case a == "--text":
+			flags.Text = true
 			i++
 		case a == "--log-level" && i+1 < len(args):
 			flags.LogLevel = args[i+1]

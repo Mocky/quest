@@ -143,7 +143,7 @@ func TestDepsTextFormat(t *testing.T) {
 	seedDep(t, s, "proj-a2", "proj-a1", "blocked-by")
 
 	cfg := plannerCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runDeps(t, s, cfg, []string{"proj-a2"})
 	if err != nil {
 		t.Fatalf("Deps: %v", err)

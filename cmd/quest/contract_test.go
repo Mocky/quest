@@ -67,21 +67,25 @@ func initWorkspace(t *testing.T, dir, prefix string) {
 }
 
 // TestGlobalFlagPositioning pins spec §Output & Error Conventions —
-// `--format` is parsed before the command name so `--format json
-// version` and `version --format json` both work. (Today only the
-// pre-command position is supported via cli.ParseGlobals; the other
-// position is rejected as "unknown flag" by version's flag.Parse.
-// This test pins the pre-command position only — the post-command
-// position is intentionally not supported.)
+// `--text` is position-independent so `--text version` and
+// `version --text` both work via cli.ParseGlobals.
 func TestGlobalFlagPositioning(t *testing.T) {
 	dir := t.TempDir()
-	stdout, stderr, code := runInDir(t, dir, "--format", "text", "version")
+	stdout, stderr, code := runInDir(t, dir, "--text", "version")
 	if code != 0 {
-		t.Fatalf("--format text version: exit = %d; stderr=%q", code, stderr)
+		t.Fatalf("--text version: exit = %d; stderr=%q", code, stderr)
 	}
 	line := strings.TrimRight(stdout, "\n")
 	if line == "" || strings.Contains(line, "{") {
 		t.Errorf("text version output looks wrong: %q", stdout)
+	}
+	stdout, stderr, code = runInDir(t, dir, "version", "--text")
+	if code != 0 {
+		t.Fatalf("version --text: exit = %d; stderr=%q", code, stderr)
+	}
+	line = strings.TrimRight(stdout, "\n")
+	if line == "" || strings.Contains(line, "{") {
+		t.Errorf("text version output looks wrong (post-command): %q", stdout)
 	}
 }
 
@@ -140,7 +144,7 @@ func TestCancelTextFormat(t *testing.T) {
 	}
 	stdout, stderr, code := runWithEnv(t, dir,
 		[]string{"AGENT_ROLE=planner"},
-		"--format", "text", "cancel", "tst-01")
+		"--text", "cancel", "tst-01")
 	if code != 0 {
 		t.Fatalf("cancel: exit = %d; stderr=%q", code, stderr)
 	}
@@ -163,7 +167,7 @@ func TestMoveTextFormat(t *testing.T) {
 		t.Fatalf("create bravo: %d %s", code, stderr)
 	}
 	stdout, stderr, code := runWithEnv(t, dir, planner,
-		"--format", "text", "move", "tst-01", "--parent", "tst-02")
+		"--text", "move", "tst-01", "--parent", "tst-02")
 	if code != 0 {
 		t.Fatalf("move: exit = %d; stderr=%q", code, stderr)
 	}
@@ -185,7 +189,7 @@ func TestResetTextFormat(t *testing.T) {
 		t.Fatalf("accept: %d %s", code, stderr)
 	}
 	stdout, stderr, code := runWithEnv(t, dir, planner,
-		"--format", "text", "reset", "tst-01")
+		"--text", "reset", "tst-01")
 	if code != 0 {
 		t.Fatalf("reset: exit = %d; stderr=%q", code, stderr)
 	}
@@ -195,8 +199,8 @@ func TestResetTextFormat(t *testing.T) {
 }
 
 // TestTagUntagTextFormat smoke-checks the post-state tag list output.
-// Tag adds two tags; untag removes one; both `--format text` calls
-// emit the post-state list as part of stdout.
+// Tag adds two tags; untag removes one; both `--text` calls emit the
+// post-state list as part of stdout.
 func TestTagUntagTextFormat(t *testing.T) {
 	dir := t.TempDir()
 	initWorkspace(t, dir, "tst")
@@ -205,7 +209,7 @@ func TestTagUntagTextFormat(t *testing.T) {
 		t.Fatalf("create: %d %s", code, stderr)
 	}
 	stdout, stderr, code := runWithEnv(t, dir, planner,
-		"--format", "text", "tag", "tst-01", "go,auth")
+		"--text", "tag", "tst-01", "go,auth")
 	if code != 0 {
 		t.Fatalf("tag: exit = %d; stderr=%q", code, stderr)
 	}
@@ -213,7 +217,7 @@ func TestTagUntagTextFormat(t *testing.T) {
 		t.Errorf("tag text output missing id; got %q", stdout)
 	}
 	stdout, stderr, code = runWithEnv(t, dir, planner,
-		"--format", "text", "untag", "tst-01", "go")
+		"--text", "untag", "tst-01", "go")
 	if code != 0 {
 		t.Fatalf("untag: exit = %d; stderr=%q", code, stderr)
 	}

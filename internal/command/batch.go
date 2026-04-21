@@ -170,7 +170,7 @@ func Batch(ctx context.Context, cfg config.Config, s store.Store, args []string,
 		return err
 	}
 
-	if err := emitPairs(stdout, cfg.Output.Format, pairs); err != nil {
+	if err := emitPairs(stdout, cfg.Output.Text, pairs); err != nil {
 		return err
 	}
 
@@ -221,14 +221,14 @@ func emitBatchErrors(stderr io.Writer, errs []batch.BatchError) {
 	}
 }
 
-// emitPairs writes the ref→id mapping in the active output format.
+// emitPairs writes the ref→id mapping in the active output mode.
 // JSON mode (default) uses output.EmitJSONL (slice form, uniform
 // shape); text mode renders a two-column table via output.Table.
-func emitPairs(w io.Writer, format string, pairs []batch.RefIDPair) error {
+func emitPairs(w io.Writer, text bool, pairs []batch.RefIDPair) error {
 	if len(pairs) == 0 {
 		return nil
 	}
-	if format == "text" {
+	if text {
 		cols := []output.Column{
 			{Name: "REF", Width: 24},
 			{Name: "ID", Width: 24},

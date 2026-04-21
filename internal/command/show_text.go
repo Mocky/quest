@@ -17,9 +17,9 @@ import (
 // via var-replace so golden output is deterministic.
 var showTextClock = func() time.Time { return time.Now().UTC() }
 
-// emitShowText renders resp per quest-spec §quest show --format text.
-// Width resolution: min(TerminalWidth(w), 100) when w is a TTY, 80
-// when piped. Prose sections wrap at width; row-oriented sections
+// emitShowText renders resp per quest-spec §quest show --text. Width
+// resolution: min(TerminalWidth(w), 100) when w is a TTY, 80 when
+// piped. Prose sections wrap at width; row-oriented sections
 // (Dependencies, PRs, History) and the metadata cluster overflow
 // without truncation per spec §Wrap rules.
 func emitShowText(w io.Writer, resp showResponse) error {

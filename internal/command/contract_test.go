@@ -644,7 +644,7 @@ func TestVersionOutputShape(t *testing.T) {
 	})
 	t.Run("text", func(t *testing.T) {
 		cfg := baseCfg()
-		cfg.Output.Format = "text"
+		cfg.Output.Text = true
 		var out bytes.Buffer
 		if err := command.Version(context.Background(), cfg, nil, nil, strings.NewReader(""), &out, &bytes.Buffer{}); err != nil {
 			t.Fatalf("Version text: %v", err)
@@ -658,7 +658,7 @@ func TestVersionOutputShape(t *testing.T) {
 
 // TestInitOutputShape pins {"workspace","id_prefix"} JSON and the bare
 // absolute path text output. The workspace value's basename is ".quest"
-// (asserts the abs-path includes the directory); --format text emits
+// (asserts the abs-path includes the directory); --text emits
 // just the absolute path with a trailing newline.
 func TestInitOutputShape(t *testing.T) {
 	t.Run("json", func(t *testing.T) {
@@ -693,7 +693,7 @@ func TestInitOutputShape(t *testing.T) {
 		t.Cleanup(cwd)
 
 		cfg := baseCfg()
-		cfg.Output.Format = "text"
+		cfg.Output.Text = true
 		var out, errb bytes.Buffer
 		if err := command.Init(context.Background(), cfg, nil,
 			[]string{"--prefix", "proj"}, strings.NewReader(""), &out, &errb); err != nil {

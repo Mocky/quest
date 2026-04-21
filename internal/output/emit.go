@@ -6,29 +6,26 @@ import (
 	"io"
 )
 
-// Emit writes value to w in the requested format. JSON mode uses a
-// single json.Encoder pass — compact output, one trailing newline per
-// quest-spec §Output & Error Conventions. Text mode is the human-
-// facing fallback: handlers that render structured text (tables,
-// trees) call Table / Tree directly and compose their own output; Emit
-// in text mode just `%v`-prints the value so a handler that has no
-// text specialization still produces something readable on a TTY.
+// Emit writes value to w in the requested format. JSON mode (text
+// false) uses a single json.Encoder pass — compact output, one
+// trailing newline per quest-spec §Output & Error Conventions. Text
+// mode is the human-facing fallback: handlers that render structured
+// text (tables, trees) call Table / Tree directly and compose their
+// own output; Emit in text mode just `%v`-prints the value so a
+// handler that has no text specialization still produces something
+// readable on a TTY.
 //
 // Agents always parse JSON; text mode is not part of the contract per
 // STANDARDS.md §CLI Surface Versioning. The pretty-printed examples in
 // quest-spec.md are for readability only — real stdout is compact.
-func Emit(w io.Writer, format string, value any) error {
-	switch format {
-	case "json", "":
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "")
-		return enc.Encode(value)
-	case "text":
+func Emit(w io.Writer, text bool, value any) error {
+	if text {
 		_, err := fmt.Fprintln(w, value)
 		return err
-	default:
-		return fmt.Errorf("output: unknown format %q", format)
 	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "")
+	return enc.Encode(value)
 }
 
 // EmitJSONL encodes values as one JSON object per line. The bounded

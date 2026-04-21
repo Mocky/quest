@@ -235,13 +235,13 @@ func TestResetMissingIDReturnsUsage(t *testing.T) {
 	}
 }
 
-// TestResetTextModeRendersAck: --format text emits `<id> reset to open`.
+// TestResetTextModeRendersAck: --text emits `<id> reset to open`.
 func TestResetTextModeRendersAck(t *testing.T) {
 	s, _ := testStore(t)
 	seedTaskFull(t, s, "proj-a1", "Alpha", "accepted", "sess-w1")
 
 	cfg := plannerCfg()
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runReset(t, s, cfg, "", []string{"proj-a1"})
 	if err != nil {
 		t.Fatalf("Reset: %v", err)

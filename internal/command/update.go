@@ -252,7 +252,7 @@ func Update(ctx context.Context, cfg config.Config, s store.Store, args []string
 			telemetry.RecordContentHandoff(ctx, *parsed.Handoff)
 		}
 	}
-	return output.Emit(stdout, cfg.Output.Format, updateAck{ID: id})
+	return output.Emit(stdout, cfg.Output.Text, updateAck{ID: id})
 }
 
 // parseUpdateArgs consumes args into an updateArgs struct plus the
@@ -665,10 +665,10 @@ func marshalSorted(m map[string]any) (string, error) {
 }
 
 // emitCancelledBody writes the cancelled coordination body to stdout
-// in the active output format. Shape is contract-pinned (spec §update
+// in the active output mode. Shape is contract-pinned (spec §update
 // *In-flight worker coordination*); text mode emits a short summary.
 func emitCancelledBody(cfg config.Config, stdout io.Writer, body cancelledConflictBody) error {
-	if cfg.Output.Format == "text" {
+	if cfg.Output.Text {
 		_, err := fmt.Fprintf(stdout, "conflict: %s was cancelled\n", body.Task)
 		return err
 	}

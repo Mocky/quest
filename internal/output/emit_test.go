@@ -23,7 +23,7 @@ func TestEmitJSONNullEmptyContract(t *testing.T) {
 	v := payload{Note: nilPtr, Tags: []string{}, Meta: map[string]any{}, Present: "hi"}
 
 	var buf bytes.Buffer
-	if err := Emit(&buf, "json", v); err != nil {
+	if err := Emit(&buf, false, v); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	got := strings.TrimRight(buf.String(), "\n")
@@ -38,7 +38,7 @@ func TestEmitJSONNullEmptyContract(t *testing.T) {
 
 func TestEmitJSONCompact(t *testing.T) {
 	var buf bytes.Buffer
-	if err := Emit(&buf, "json", map[string]int{"a": 1}); err != nil {
+	if err := Emit(&buf, false, map[string]int{"a": 1}); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	if strings.Contains(buf.String(), "  ") {
@@ -48,17 +48,11 @@ func TestEmitJSONCompact(t *testing.T) {
 
 func TestEmitTextFallback(t *testing.T) {
 	var buf bytes.Buffer
-	if err := Emit(&buf, "text", "hello"); err != nil {
+	if err := Emit(&buf, true, "hello"); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	if buf.String() != "hello\n" {
 		t.Errorf("text Emit = %q, want %q", buf.String(), "hello\n")
-	}
-}
-
-func TestEmitUnknownFormat(t *testing.T) {
-	if err := Emit(&bytes.Buffer{}, "xml", "x"); err == nil {
-		t.Fatalf("Emit: expected error for unknown format")
 	}
 }
 
@@ -157,7 +151,7 @@ func TestOrderedRowThroughEmit(t *testing.T) {
 		{Columns: []string{"id", "status"}, Values: map[string]any{"id": "proj-02", "status": "accepted"}},
 	}
 	var buf bytes.Buffer
-	if err := Emit(&buf, "json", rows); err != nil {
+	if err := Emit(&buf, false, rows); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	var got []map[string]any

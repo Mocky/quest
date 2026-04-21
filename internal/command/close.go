@@ -320,5 +320,5 @@ func closeTask(ctx context.Context, cfg config.Config, s store.Store, args []str
 			telemetry.RecordContentDebrief(ctx, *parsed.Debrief)
 		}
 	}
-	return output.Emit(stdout, cfg.Output.Format, closeAck{ID: id, Status: action.newStatus})
+	return output.Emit(stdout, cfg.Output.Text, closeAck{ID: id, Status: action.newStatus})
 }

@@ -86,7 +86,7 @@ func Backup(ctx context.Context, cfg config.Config, s store.Store, args []string
 		return err
 	}
 
-	if cfg.Output.Format == "text" {
+	if cfg.Output.Text {
 		fmt.Fprintln(stdout, absDB)
 		return nil
 	}

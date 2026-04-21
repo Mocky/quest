@@ -45,7 +45,7 @@ func backupCfg(t *testing.T, workspaceRoot string) config.Config {
 	return config.Config{
 		Workspace: config.WorkspaceConfig{Root: workspaceRoot, ElevatedRoles: []string{"planner"}},
 		Agent:     config.AgentConfig{Role: "planner", Session: "sess-p1"},
-		Output:    config.OutputConfig{Format: "json"},
+		Output:    config.OutputConfig{},
 	}
 }
 
@@ -278,7 +278,7 @@ func TestBackupTextFormatOutputsPathOnly(t *testing.T) {
 	outDir := t.TempDir()
 	outPath := filepath.Join(outDir, "snap.db")
 	cfg := backupCfg(t, workspace)
-	cfg.Output.Format = "text"
+	cfg.Output.Text = true
 	err, stdout, _ := runBackup(t, s, cfg, []string{"--to", outPath})
 	if err != nil {
 		t.Fatalf("Backup: %v", err)

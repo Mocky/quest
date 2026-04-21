@@ -199,10 +199,10 @@ func Show(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 		}
 		resp.History = &out
 	}
-	if cfg.Output.Format == "text" {
+	if cfg.Output.Text {
 		return emitShowText(stdout, resp)
 	}
-	return output.Emit(stdout, cfg.Output.Format, resp)
+	return output.Emit(stdout, cfg.Output.Text, resp)
 }
 
 // buildShowResponse adapts the store.Task (plain-string null-when-empty)
