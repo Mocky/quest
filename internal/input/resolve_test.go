@@ -2,6 +2,7 @@ package input_test
 
 import (
 	stderrors "errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,6 +155,34 @@ func TestResolveFileExactCapAccepted(t *testing.T) {
 	}
 	if len(got) != input.MaxBytes {
 		t.Errorf("got len=%d, want %d", len(got), input.MaxBytes)
+	}
+}
+
+// TestResolveFileCapsBytesReadAtLimit covers the TOCTOU-closure
+// contract: resolveFile reads via io.LimitReader(MaxBytes+1), so a
+// file much larger than the cap still trips rejection at the same
+// byte count the stdin path reports. The prior Stat-then-ReadFile
+// implementation would load the whole file into memory first; this
+// test pins the new behavior by asserting the observed-size field
+// equals MaxBytes+1 even when the file on disk is 5x that large.
+func TestResolveFileCapsBytesReadAtLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge.bin")
+	body := make([]byte, 5*input.MaxBytes)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	r := input.NewResolver(strings.NewReader(""))
+	_, err := r.Resolve("--description", "@"+path)
+	if err == nil {
+		t.Fatalf("got nil, want oversized ErrUsage")
+	}
+	if !stderrors.Is(err, errors.ErrUsage) {
+		t.Fatalf("err = %v, want wraps ErrUsage", err)
+	}
+	want := fmt.Sprintf("observed %d bytes", input.MaxBytes+1)
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("err = %q, want contains %q (proves LimitReader capped the read)", err.Error(), want)
 	}
 }
 

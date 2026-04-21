@@ -76,23 +76,27 @@ func (r *Resolver) resolveStdin(flag string) (string, error) {
 	return string(b), nil
 }
 
-// resolveFile reads @path (relative to CWD). Missing file / permission
-// denied / read errors all map to exit 2 with the underlying OS error
-// appended; oversized files are rejected before Read to avoid touching
-// gigabyte-sized log files that might be sitting behind a misaimed
-// flag.
+// resolveFile reads @path (relative to CWD) via os.Open + LimitReader
+// capped at MaxBytes+1 — mirroring the @- path. Missing file /
+// permission denied / read errors all map to exit 2 with the underlying
+// OS error appended. Sizing runs on bytes actually read, not on a prior
+// os.Stat: a Stat-then-ReadFile sequence leaves a TOCTOU window where a
+// file that grows between the two calls could bypass the 1 MiB cap.
+// LimitReader closes that window — the cap is a memory-protection
+// guarantee even when another writer is extending the file.
 func (r *Resolver) resolveFile(flag, path string) (string, error) {
-	info, err := os.Stat(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("%s: failed to read @%s: %s: %w", flag, path, err.Error(), errors.ErrUsage)
 	}
-	if info.Size() > MaxBytes {
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, MaxBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("%s: failed to read @%s: %s: %w", flag, path, err.Error(), errors.ErrUsage)
+	}
+	if len(b) > MaxBytes {
 		return "", fmt.Errorf("%s: file @%s exceeds 1 MiB limit (observed %d bytes): %w",
-			flag, path, info.Size(), errors.ErrUsage)
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("%s: failed to read @%s: %s: %w", flag, path, err.Error(), errors.ErrUsage)
+			flag, path, len(b), errors.ErrUsage)
 	}
 	return string(b), nil
 }
