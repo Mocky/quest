@@ -39,6 +39,18 @@ const SupportedSchemaVersion = 2
 type unwrapper interface{ Unwrap() Store }
 
 func Migrate(ctx context.Context, s Store) (int, error) {
+	sub, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		return 0, fmt.Errorf("%w: sub migrations: %s", errors.ErrGeneral, err.Error())
+	}
+	return migrate(ctx, s, sub)
+}
+
+// migrate is the workhorse that Migrate (production) and tests drive.
+// Accepting an fs.FS lets the migration-failure-rolls-back test ship a
+// poisoned migration set without mutating the embedded FS at package
+// scope.
+func migrate(ctx context.Context, s Store, src fs.FS) (int, error) {
 	for {
 		if u, ok := s.(unwrapper); ok {
 			s = u.Unwrap()
@@ -50,7 +62,7 @@ func Migrate(ctx context.Context, s Store) (int, error) {
 	if !ok {
 		return 0, fmt.Errorf("%w: store.Migrate called with non-sqlite store", errors.ErrGeneral)
 	}
-	files, err := loadMigrations()
+	files, err := loadMigrationsFromFS(src)
 	if err != nil {
 		return 0, err
 	}
@@ -58,10 +70,11 @@ func Migrate(ctx context.Context, s Store) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	head := files[len(files)-1].version
 	switch {
-	case stored > SupportedSchemaVersion:
-		return 0, errors.NewSchemaTooNew(stored, SupportedSchemaVersion)
-	case stored == SupportedSchemaVersion:
+	case stored > head:
+		return 0, errors.NewSchemaTooNew(stored, head)
+	case stored == head:
 		return 0, nil
 	}
 
@@ -89,12 +102,12 @@ func Migrate(ctx context.Context, s Store) (int, error) {
 				// Pre-migration snapshot).
 				slog.ErrorContext(ctx, "migration rollback failed",
 					"schema.from", stored,
-					"schema.to", SupportedSchemaVersion,
+					"schema.to", head,
 					"migration", fmt.Sprintf("%03d_%s", m.version, m.label),
 					"err", rbErr.Error(),
 				)
 				return 0, fmt.Errorf("%w: migration %03d %s failed and rollback also failed -- database may be partially migrated, restore from .quest/backups/pre-v%d-*.db: exec: %s; rollback: %s",
-					errors.ErrGeneral, m.version, m.label, SupportedSchemaVersion, err.Error(), rbErr.Error())
+					errors.ErrGeneral, m.version, m.label, head, err.Error(), rbErr.Error())
 			}
 			return 0, fmt.Errorf("%w: migration %03d %s: %s", errors.ErrGeneral, m.version, m.label, err.Error())
 		}
@@ -105,7 +118,7 @@ func Migrate(ctx context.Context, s Store) (int, error) {
 	}
 	slog.InfoContext(ctx, "schema migration applied",
 		"schema.from", stored,
-		"schema.to", SupportedSchemaVersion,
+		"schema.to", head,
 		"applied_count", applied,
 	)
 	return applied, nil
@@ -118,7 +131,26 @@ type migration struct {
 }
 
 func loadMigrations() ([]migration, error) {
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	sub, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("%w: sub migrations: %s", errors.ErrGeneral, err.Error())
+	}
+	out, err := loadMigrationsFromFS(sub)
+	if err != nil {
+		return nil, err
+	}
+	// Production-only head invariant: the embedded set must top out at
+	// SupportedSchemaVersion so a binary cannot ship believing it knows
+	// about a schema it does not actually carry migrations for. Test
+	// fixtures use loadMigrationsFromFS directly to skip this check.
+	if top := out[len(out)-1].version; top != SupportedSchemaVersion {
+		return nil, fmt.Errorf("%w: highest migration version %d does not match SupportedSchemaVersion %d", errors.ErrGeneral, top, SupportedSchemaVersion)
+	}
+	return out, nil
+}
+
+func loadMigrationsFromFS(src fs.FS) ([]migration, error) {
+	entries, err := fs.ReadDir(src, ".")
 	if err != nil {
 		return nil, fmt.Errorf("%w: read migrations: %s", errors.ErrGeneral, err.Error())
 	}
@@ -136,25 +168,21 @@ func loadMigrations() ([]migration, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%w: migration %q has non-integer prefix %q", errors.ErrGeneral, e.Name(), prefix)
 		}
-		body, err := fs.ReadFile(migrationsFS, "migrations/"+e.Name())
+		body, err := fs.ReadFile(src, e.Name())
 		if err != nil {
 			return nil, fmt.Errorf("%w: read migration %q: %s", errors.ErrGeneral, e.Name(), err.Error())
 		}
 		out = append(out, migration{version: v, label: label, sql: string(body)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
-	// Gap + head invariants: versions must start at 1, be contiguous,
-	// and top out at SupportedSchemaVersion.
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: no migrations embedded", errors.ErrGeneral)
+	}
+	// Gap invariant: versions must start at 1 and be contiguous.
 	for i, m := range out {
 		if m.version != i+1 {
 			return nil, fmt.Errorf("%w: migration gap — expected version %d at index %d, got %d", errors.ErrGeneral, i+1, i, m.version)
 		}
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("%w: no migrations embedded", errors.ErrGeneral)
-	}
-	if top := out[len(out)-1].version; top != SupportedSchemaVersion {
-		return nil, fmt.Errorf("%w: highest migration version %d does not match SupportedSchemaVersion %d", errors.ErrGeneral, top, SupportedSchemaVersion)
 	}
 	return out, nil
 }

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	_ "modernc.org/sqlite"
 
@@ -244,4 +245,98 @@ func TestMigrationEnforcesForeignKeys(t *testing.T) {
 		t.Fatalf("insert with missing parent: got nil error, want FK violation")
 	}
 	_ = tx.Rollback()
+}
+
+// TestMigrationFailureRollsBack pins the spec's forward-only-never-partial
+// promise (quest-spec.md §Storage): when a migration fails mid-execution
+// the transaction rolls back, schema_version stays at the prior value,
+// no rows from the failing migration persist, and the error names the
+// failing migration. Re-running against a working migration set after
+// the failure then lands at head.
+func TestMigrationFailureRollsBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quest.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// Poisoned set: a minimal valid 001 that creates meta + bumps
+	// schema_version, followed by a 002 that starts with real SQL
+	// (so there is state to roll back) and then hits an unresolvable
+	// reference. fstest.MapFS lets the test ship its own migration set
+	// without touching the embedded FS.
+	poisoned := fstest.MapFS{
+		"001_initial.sql": &fstest.MapFile{Data: []byte(`
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO meta(key, value) VALUES ('schema_version', '1');
+`)},
+		"002_poisoned.sql": &fstest.MapFile{Data: []byte(`
+CREATE TABLE poisoned_evidence (id INTEGER PRIMARY KEY);
+UPDATE meta SET value = '2' WHERE key = 'schema_version';
+INSERT INTO nonexistent_table(id) VALUES (1);
+`)},
+	}
+
+	applied, err := store.MigrateFromFS(context.Background(), s, poisoned)
+	if err == nil {
+		t.Fatalf("MigrateFromFS on poisoned set: got nil error, want migration failure")
+	}
+	if applied != 0 {
+		t.Errorf("applied = %d, want 0 (failure returns 0 on the error path)", applied)
+	}
+	if !stderrors.Is(err, errors.ErrGeneral) {
+		t.Errorf("err = %v, want wraps ErrGeneral", err)
+	}
+	// The error text must name which migration failed so operators
+	// and agents can locate the broken file.
+	if !strings.Contains(err.Error(), "002") || !strings.Contains(err.Error(), "poisoned") {
+		t.Errorf("err = %q, want migration identifier (\"002\" and label) in message", err.Error())
+	}
+
+	// After rollback the DB must be indistinguishable from pre-migration:
+	// no meta table (so CurrentSchemaVersion returns 0), and no rows from
+	// the failing migration persist. Probe sqlite_master directly since
+	// CurrentSchemaVersion already returns 0 when meta is absent.
+	v, err := s.CurrentSchemaVersion(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentSchemaVersion after rollback: %v", err)
+	}
+	if v != 0 {
+		t.Errorf("schema_version after rollback = %d, want 0 (transaction must have rolled back 001 too)", v)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	for _, table := range []string{"meta", "poisoned_evidence"} {
+		var name string
+		row := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table)
+		if err := row.Scan(&name); err == nil {
+			t.Errorf("table %q exists after rollback, want none (forward-only-never-partial violated)", table)
+		} else if !stderrors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("sqlite_master lookup for %q: %v", table, err)
+		}
+	}
+
+	// Re-running with the real (embedded) migration set after the
+	// failure must succeed and land at head. This pins the spec's
+	// implicit recovery contract: a partial failure does not wedge the
+	// DB — the next Migrate run against a fixed set reaches head.
+	applied, err = store.Migrate(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Migrate after rollback: %v", err)
+	}
+	if applied != store.SupportedSchemaVersion {
+		t.Errorf("applied after recovery = %d, want %d", applied, store.SupportedSchemaVersion)
+	}
+	v, err = s.CurrentSchemaVersion(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentSchemaVersion after recovery: %v", err)
+	}
+	if v != store.SupportedSchemaVersion {
+		t.Errorf("schema_version after recovery = %d, want %d", v, store.SupportedSchemaVersion)
+	}
 }
