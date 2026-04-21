@@ -16,6 +16,7 @@ import (
 	"github.com/mocky/quest/internal/buildinfo"
 	"github.com/mocky/quest/internal/cli"
 	"github.com/mocky/quest/internal/config"
+	"github.com/mocky/quest/internal/errors"
 	"github.com/mocky/quest/internal/logging"
 	"github.com/mocky/quest/internal/telemetry"
 )
@@ -30,7 +31,11 @@ func main() {
 }
 
 func run() int {
-	flags, remainingArgs := cli.ParseGlobals(os.Args[1:])
+	flags, remainingArgs, err := cli.ParseGlobals(os.Args[1:])
+	if err != nil {
+		errors.EmitStderr(err, os.Stderr)
+		return errors.ExitCode(err)
+	}
 	cfg := config.Load(flags)
 
 	ctx := context.Background()

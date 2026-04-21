@@ -485,7 +485,13 @@ func run() int {
     // the stripped subcommand args + a config.Flags value. Done inside
     // internal/cli/flags.go so telemetry / logging can be built with resolved
     // values before cli.Execute runs. cli.Execute does not re-parse globals.
-    flags, remainingArgs := cli.ParseGlobals(os.Args[1:])
+    // A trailing valueless --format/--log-level short-circuits with a
+    // wrapped ErrUsage (exit 2) before any telemetry is wired up.
+    flags, remainingArgs, err := cli.ParseGlobals(os.Args[1:])
+    if err != nil {
+        errors.EmitStderr(err, os.Stderr)
+        return errors.ExitCode(err)
+    }
 
     // internal/config/ is the sole reader of env vars; it surfaces AGENT_ROLE,
     // AGENT_TASK, AGENT_SESSION, TRACEPARENT, TRACESTATE, and
