@@ -61,7 +61,7 @@ func parseCancelArgs(stdin io.Reader, stderr io.Writer, args []string) (cancelAr
 
 	if err := fs.Parse(args); err != nil {
 		if stderrors.Is(err, flag.ErrHelp) {
-			return cancelArgs{}, nil, nil
+			return cancelArgs{}, nil, err
 		}
 		if stderrors.Is(err, errors.ErrUsage) {
 			return cancelArgs{}, nil, err
@@ -79,6 +79,9 @@ func parseCancelArgs(stdin io.Reader, stderr io.Writer, args []string) (cancelAr
 func Cancel(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	positional, flagArgs := splitLeadingPositional(args)
 	parsed, trailing, err := parseCancelArgs(stdin, stderr, flagArgs)
+	if stderrors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

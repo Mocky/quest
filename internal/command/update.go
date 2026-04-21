@@ -125,6 +125,9 @@ func (a updateArgs) blockedOnTerminalState() []string {
 func Update(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	positional, flagArgs := splitLeadingPositional(args)
 	parsed, trailing, err := parseUpdateArgs(cfg, stdin, stderr, flagArgs)
+	if stderrors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -314,7 +317,7 @@ func parseUpdateArgs(cfg config.Config, stdin io.Reader, stderr io.Writer, args 
 
 	if err := fs.Parse(args); err != nil {
 		if stderrors.Is(err, flag.ErrHelp) {
-			return updateArgs{}, nil, nil
+			return updateArgs{}, nil, err
 		}
 		// Surface the resolver's ErrUsage cleanly; flag package wraps
 		// the fn error into its usage output but preserves the chain.

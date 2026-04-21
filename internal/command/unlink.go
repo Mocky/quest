@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	stderrors "errors"
+	"flag"
 	"fmt"
 	"io"
 	"time"
@@ -20,11 +21,15 @@ import (
 // skip the history append + telemetry recorder when no row was removed.
 func Unlink(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
-	taskID, rest, err := resolveLinkPositional("unlink", args)
+	leading, rest := splitLeadingPositional(args)
+	parsed, trailing, err := parseLinkArgs(stderr, "unlink", rest)
+	if stderrors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	parsed, trailing, err := parseLinkArgs(stderr, "unlink", rest)
+	taskID, err := resolveLinkPositional("unlink", leading)
 	if err != nil {
 		return err
 	}

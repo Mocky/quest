@@ -120,7 +120,7 @@ func parseCreateArgs(stdin io.Reader, stderr io.Writer, args []string) (createAr
 
 	if err := fs.Parse(args); err != nil {
 		if stderrors.Is(err, flag.ErrHelp) {
-			return createArgs{}, nil, nil
+			return createArgs{}, nil, err
 		}
 		if stderrors.Is(err, errors.ErrUsage) {
 			return createArgs{}, nil, err
@@ -290,6 +290,9 @@ func formatDepError(e batch.SemanticDepError) string {
 // parent status/depth (5) → dep-rule (5) → commit → ack.
 func Create(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	parsed, trailing, err := parseCreateArgs(stdin, stderr, args)
+	if stderrors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

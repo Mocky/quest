@@ -465,6 +465,41 @@ func TestListRejectsUnexpectedPositional(t *testing.T) {
 	}
 }
 
+// TestListHelpShortCircuits pins the STANDARDS.md §--help Convention
+// for list: --help prints usage to stderr, emits nothing to stdout, and
+// does not run the underlying query. The seeded task would surface as
+// `[{}]` on stdout if the query ran with the zero-value filter, which
+// was the historical regression (see qst-18).
+func TestListHelpShortCircuits(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"help alone", []string{"--help"}},
+		// Precedence: --help beats other filters even when they are
+		// syntactically valid. If --help did not short-circuit, the
+		// filter would return the seeded cancelled row.
+		{"help with other flags", []string{"--status", "cancelled", "--help"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := testStore(t)
+			seedListTask(t, s, "proj-a1", "Alpha", "", "cancelled", "", "", "")
+
+			err, stdout, stderr := runList(t, s, plannerCfg(), tc.args)
+			if err != nil {
+				t.Fatalf("List: err = %v, want nil", err)
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, "Usage of list") {
+				t.Errorf("stderr missing usage text; got %q", stderr)
+			}
+		})
+	}
+}
+
 // TestListTextFormat emits a header row and one row per task.
 func TestListTextFormat(t *testing.T) {
 	s, _ := testStore(t)

@@ -38,7 +38,7 @@ func parseBatchArgs(stderr io.Writer, args []string) (batchArgs, error) {
 	partialOK := fs.Bool("partial-ok", false, "create tasks that passed validation even when other lines failed")
 	if err := fs.Parse(rest); err != nil {
 		if stderrors.Is(err, flag.ErrHelp) {
-			return batchArgs{}, nil
+			return batchArgs{}, err
 		}
 		return batchArgs{}, fmt.Errorf("batch: %s: %w", err.Error(), errors.ErrUsage)
 	}
@@ -74,6 +74,9 @@ func parseBatchArgs(stderr io.Writer, args []string) (batchArgs, error) {
 func Batch(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
 	parsed, err := parseBatchArgs(stderr, args)
+	if stderrors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

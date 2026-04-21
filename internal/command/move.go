@@ -53,7 +53,7 @@ func parseMoveArgs(stderr io.Writer, args []string) (moveArgs, []string, error) 
 
 	if err := fs.Parse(args); err != nil {
 		if stderrors.Is(err, flag.ErrHelp) {
-			return moveArgs{}, nil, nil
+			return moveArgs{}, nil, err
 		}
 		if stderrors.Is(err, errors.ErrUsage) {
 			return moveArgs{}, nil, err
@@ -73,6 +73,9 @@ func Move(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	_ = stdin
 	positional, flagArgs := splitLeadingPositional(args)
 	parsed, trailing, err := parseMoveArgs(stderr, flagArgs)
+	if stderrors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

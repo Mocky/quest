@@ -102,7 +102,7 @@ func parseCloseArgs(action closeAction, cfg config.Config, stdin io.Reader, stde
 
 	if err := fs.Parse(args); err != nil {
 		if stderrors.Is(err, flag.ErrHelp) {
-			return closeArgs{}, nil, nil
+			return closeArgs{}, nil, err
 		}
 		if stderrors.Is(err, errors.ErrUsage) {
 			return closeArgs{}, nil, err
@@ -124,6 +124,9 @@ func parseCloseArgs(action closeAction, cfg config.Config, stdin io.Reader, stde
 func closeTask(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer, action closeAction) error {
 	positional, flagArgs := splitLeadingPositional(args)
 	parsed, trailing, err := parseCloseArgs(action, cfg, stdin, stderr, flagArgs)
+	if stderrors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

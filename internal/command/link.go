@@ -56,7 +56,7 @@ func parseLinkArgs(stderr io.Writer, name string, args []string) (linkArgs, []st
 
 	if err := fs.Parse(args); err != nil {
 		if stderrors.Is(err, flag.ErrHelp) {
-			return linkArgs{}, nil, nil
+			return linkArgs{}, nil, err
 		}
 		if stderrors.Is(err, errors.ErrUsage) {
 			return linkArgs{}, nil, err
@@ -66,20 +66,20 @@ func parseLinkArgs(stderr io.Writer, name string, args []string) (linkArgs, []st
 	return parsed, fs.Args(), nil
 }
 
-// resolveLinkPositional unifies the leading positional parsing for
-// `link` and `unlink`. Returns (taskID, rest, error); any further
-// positionals stay in rest and are surfaced as "unexpected positional
-// arguments" once flag parsing runs.
-func resolveLinkPositional(name string, args []string) (string, []string, error) {
-	leading, rest := splitLeadingPositional(args)
+// resolveLinkPositional validates the leading positional for `link` and
+// `unlink` after flag parsing. It is invoked post-parse so --help on a
+// flag-only invocation (e.g. `quest link --help`) short-circuits via
+// flag.ErrHelp before this validation runs, per STANDARDS.md §--help
+// Convention.
+func resolveLinkPositional(name string, leading []string) (string, error) {
 	if len(leading) == 0 {
-		return "", nil, fmt.Errorf("%s: task ID required: %w", name, errors.ErrUsage)
+		return "", fmt.Errorf("%s: task ID required: %w", name, errors.ErrUsage)
 	}
 	taskID := leading[0]
 	if taskID == "" {
-		return "", nil, fmt.Errorf("%s: task ID required: %w", name, errors.ErrUsage)
+		return "", fmt.Errorf("%s: task ID required: %w", name, errors.ErrUsage)
 	}
-	return taskID, rest, nil
+	return taskID, nil
 }
 
 // validateLinkArgs picks the single edge from parsed flags and rejects
@@ -106,11 +106,15 @@ func validateLinkArgs(name string, parsed linkArgs) (batch.Edge, error) {
 // the edge was already present.
 func Link(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
-	taskID, rest, err := resolveLinkPositional("link", args)
+	leading, rest := splitLeadingPositional(args)
+	parsed, trailing, err := parseLinkArgs(stderr, "link", rest)
+	if stderrors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	parsed, trailing, err := parseLinkArgs(stderr, "link", rest)
+	taskID, err := resolveLinkPositional("link", leading)
 	if err != nil {
 		return err
 	}

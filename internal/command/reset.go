@@ -47,7 +47,7 @@ func parseResetArgs(stdin io.Reader, stderr io.Writer, args []string) (resetArgs
 
 	if err := fs.Parse(args); err != nil {
 		if stderrors.Is(err, flag.ErrHelp) {
-			return resetArgs{}, nil, nil
+			return resetArgs{}, nil, err
 		}
 		if stderrors.Is(err, errors.ErrUsage) {
 			return resetArgs{}, nil, err
@@ -64,6 +64,9 @@ func parseResetArgs(stdin io.Reader, stderr io.Writer, args []string) (resetArgs
 func Reset(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	positional, flagArgs := splitLeadingPositional(args)
 	parsed, trailing, err := parseResetArgs(stdin, stderr, flagArgs)
+	if stderrors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

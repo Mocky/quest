@@ -48,6 +48,9 @@ func List(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	_ = stdin
 
 	filter, columns, err := parseListFlags(stderr, args)
+	if stderrors.Is(err, flag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -142,7 +145,7 @@ func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, er
 
 	if err := fs.Parse(args); err != nil {
 		if stderrors.Is(err, flag.ErrHelp) {
-			return store.Filter{}, nil, nil
+			return store.Filter{}, nil, err
 		}
 		return store.Filter{}, nil, fmt.Errorf("list: %s: %w", err.Error(), errors.ErrUsage)
 	}
