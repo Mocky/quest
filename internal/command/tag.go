@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	stderrors "errors"
+	"flag"
 	"fmt"
 	"io"
 	"sort"
@@ -41,14 +42,51 @@ func resolveTagPositional(name string, args []string) (string, string, error) {
 	return args[0], args[1], nil
 }
 
+// parseTagHelpFlags runs `tag` / `untag` args through a FlagSet that
+// has no flags of its own so `--help` anywhere in the argv short-
+// circuits per STANDARDS.md §`--help` Convention. Both commands take
+// two leading positionals (TASK, TAGS) — fs.Parse stops at the first
+// non-flag token, so we strip leading positionals in a loop to let
+// flag.ErrHelp surface regardless of whether `--help` comes before,
+// between, or after the positionals. Returns the collapsed positional
+// slice for resolveTagPositional to validate.
+func parseTagHelpFlags(name string, stderr io.Writer, args []string) ([]string, error) {
+	fs := newFlagSet(name)
+	fs.SetOutput(stderr)
+
+	remaining := args
+	var positional []string
+	for {
+		if err := fs.Parse(remaining); err != nil {
+			if stderrors.Is(err, flag.ErrHelp) {
+				return nil, err
+			}
+			return nil, fmt.Errorf("%s: %s: %w", name, err.Error(), errors.ErrUsage)
+		}
+		leftover := fs.Args()
+		if len(leftover) == 0 {
+			break
+		}
+		positional = append(positional, leftover[0])
+		remaining = leftover[1:]
+	}
+	return positional, nil
+}
+
 // Tag adds tags to a task. Tags are validated pre-tx (exit 2 on first
 // offender), normalized to lowercase, deduplicated, and inserted with
 // INSERT OR IGNORE so repeats are no-ops. History fires only when at
 // least one row changed; the ack always emits the full post-state list.
 func Tag(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
-	_ = stderr
-	id, raw, err := resolveTagPositional("tag", args)
+	positional, err := parseTagHelpFlags("tag", stderr, args)
+	if stderrors.Is(err, flag.ErrHelp) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	id, raw, err := resolveTagPositional("tag", positional)
 	if err != nil {
 		return err
 	}

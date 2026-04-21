@@ -277,3 +277,80 @@ func TestUntagInvalidPatternRejected(t *testing.T) {
 		t.Fatalf("err = %v, want wraps ErrUsage", err)
 	}
 }
+
+// TestTagHelpShortCircuits pins the STANDARDS.md §`--help` Convention
+// for tag. `--help` lands in the third positional slot on the normal
+// `tag TASK TAGS --help` invocation, which the previous resolveTagPositional
+// check rejected before flag parsing ran. Help must print usage to
+// stderr, leave stdout empty, exit 0, and not write any tag rows.
+func TestTagHelpShortCircuits(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"help alone", []string{"--help"}},
+		{"help after ID", []string{"proj-a1", "--help"}},
+		{"help after ID and TAGS", []string{"proj-a1", "tag1,tag2", "--help"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, dbPath := testStore(t)
+			seedTaskWithStatus(t, s, "proj-a1", "A", "", "open")
+
+			err, stdout, stderr := runTag(t, s, plannerCfg(), tc.args)
+			if err != nil {
+				t.Fatalf("Tag: err = %v, want nil", err)
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, "Usage of tag") {
+				t.Errorf("stderr missing usage text; got %q", stderr)
+			}
+			var n int
+			queryOne(t, dbPath, "SELECT COUNT(*) FROM tags WHERE task_id='proj-a1'").Scan(&n)
+			if n != 0 {
+				t.Errorf("tag rows = %d, want 0 (--help must not write tags)", n)
+			}
+		})
+	}
+}
+
+// TestUntagHelpShortCircuits mirrors TestTagHelpShortCircuits for
+// untag. Seeds a pre-existing tag so the test fails if --help wrongly
+// falls through to the DELETE path.
+func TestUntagHelpShortCircuits(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"help alone", []string{"--help"}},
+		{"help after ID", []string{"proj-a1", "--help"}},
+		{"help after ID and TAGS", []string{"proj-a1", "go", "--help"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, dbPath := testStore(t)
+			seedTaskWithStatus(t, s, "proj-a1", "A", "", "open")
+			if err, _, _ := runTag(t, s, plannerCfg(), []string{"proj-a1", "go"}); err != nil {
+				t.Fatalf("seed tag: %v", err)
+			}
+
+			err, stdout, stderr := runUntag(t, s, plannerCfg(), tc.args)
+			if err != nil {
+				t.Fatalf("Untag: err = %v, want nil", err)
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, "Usage of untag") {
+				t.Errorf("stderr missing usage text; got %q", stderr)
+			}
+			var n int
+			queryOne(t, dbPath, "SELECT COUNT(*) FROM tags WHERE task_id='proj-a1' AND tag='go'").Scan(&n)
+			if n != 1 {
+				t.Errorf("tag rows = %d, want 1 (--help must not remove tags)", n)
+			}
+		})
+	}
+}

@@ -3,6 +3,8 @@ package command
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
+	"flag"
 	"fmt"
 	"io"
 
@@ -18,12 +20,23 @@ import (
 // stdout work. `s` is always nil for this descriptor; the explicit
 // check documents the invariant and keeps us from reaching for a store
 // that the dispatcher never opened.
+//
+// A FlagSet with no flags of its own runs before the payload emit so
+// `--help` short-circuits per STANDARDS.md §`--help` Convention; the
+// version payload must not leak to stdout when the caller asked for
+// usage.
 func Version(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = ctx
 	_ = s
-	_ = args
 	_ = stdin
-	_ = stderr
+	fs := newFlagSet("version")
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		if stderrors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return fmt.Errorf("version: %s: %w", err.Error(), errors.ErrUsage)
+	}
 	if cfg.Output.Text {
 		fmt.Fprintln(stdout, buildinfo.Version)
 		return nil

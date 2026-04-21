@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	stderrors "errors"
+	"flag"
 	"fmt"
 	"io"
 	"strings"
@@ -59,10 +60,20 @@ var terminalStatuses = map[string]bool{
 // fail, not accept.
 func Accept(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
-	positional, rest := splitLeadingPositional(args)
-	if len(rest) > 0 {
-		return fmt.Errorf("accept: unexpected arguments: %w", errors.ErrUsage)
+	positional, flagArgs := splitLeadingPositional(args)
+	// FlagSet has no flags of its own — accept takes only the positional
+	// ID — but the parse step is how `--help` short-circuits per
+	// STANDARDS.md §`--help` Convention. Any flag-shaped residue (e.g.
+	// `--foo`) fails here as a usage error before positional validation.
+	fs := newFlagSet("accept")
+	fs.SetOutput(stderr)
+	if err := fs.Parse(flagArgs); err != nil {
+		if stderrors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return fmt.Errorf("accept: %s: %w", err.Error(), errors.ErrUsage)
 	}
+	positional = append(positional, fs.Args()...)
 	id, err := resolveWorkerTaskID("accept", positional)
 	if err != nil {
 		return err
