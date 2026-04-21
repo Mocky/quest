@@ -642,7 +642,7 @@ func TestShowJSONHasRequiredFields(t *testing.T) {
     // assert that every field listed below is present.
     required := []string{
         "id", "title", "description", "context", "type", "status",
-        "role", "tier", "tags", "parent", "acceptance_criteria", "metadata",
+        "role", "tier", "severity", "tags", "parent", "acceptance_criteria", "metadata",
         "owner_session", "started_at", "completed_at",
         "dependencies", "prs", "commits", "notes",
         "handoff", "handoff_session", "handoff_written_at",
