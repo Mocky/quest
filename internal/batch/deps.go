@@ -167,9 +167,9 @@ func ValidateSemantic(ctx context.Context, s store.Store, source TaskShape, edge
 // edges (treated as outgoing from sourceID). The returned path starts
 // at sourceID, walks the chain targetID → … back to sourceID, and
 // ends with targetID again to make the cycle explicit in error
-// messages (`A -> B -> C -> A`). cross-cutting.md §Precondition-failed
-// events §13.3 caps path lengths at 10 IDs upstream via the telemetry
-// truncator — DetectCycle returns the full path; caller truncates.
+// messages (`A -> B -> C -> A`). OTEL.md §13.3 caps path lengths at
+// 10 IDs upstream via the telemetry truncator — DetectCycle returns
+// the full path; caller truncates.
 func DetectCycle(ctx context.Context, s store.Store, sourceID, targetID string, inFlight []Edge) ([]string, bool) {
 	if sourceID == targetID {
 		return []string{sourceID, targetID}, true

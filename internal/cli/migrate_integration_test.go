@@ -251,10 +251,10 @@ func TestPreMigrationSnapshotFailureAbortsMigration(t *testing.T) {
 	}
 }
 
-// TestFreshInitDoesNotWriteSnapshot pins the §5.2 carve-out from
-// docs/backup-plan.md: when from == 0 (a fresh init), no pre-
-// migration snapshot is taken because the prior-version file has no
-// recoverable content.
+// TestFreshInitDoesNotWriteSnapshot pins the fresh-init carve-out
+// from quest-spec.md §Storage > Pre-migration snapshot: when
+// from == 0 (a fresh init), no pre-migration snapshot is taken
+// because the prior-version file has no recoverable content.
 func TestFreshInitDoesNotWriteSnapshot(t *testing.T) {
 	root := t.TempDir()
 	orig, _ := os.Getwd()

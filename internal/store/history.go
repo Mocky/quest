@@ -11,7 +11,7 @@ import (
 
 // AppendHistory writes one row to the history table inside the
 // transaction tx. Every state-changing mutation calls this exactly
-// once per cross-cutting.md §History recording; idempotent no-ops
+// once per quest-spec.md §History field; idempotent no-ops
 // (duplicate tag add, missing tag remove, duplicate PR URL) skip the
 // call entirely.
 //
@@ -62,9 +62,8 @@ func AppendHistory(ctx context.Context, tx *Tx, h History) error {
 }
 
 // nullable converts an empty Go string to sql.NullString{} so the
-// INSERT persists SQL NULL, not ”. cross-cutting.md §Nullable TEXT
-// columns keeps the conversion rule at the write path so direct-SQL
-// inspection sees NULL.
+// INSERT persists SQL NULL, not "". Keeping the conversion rule at
+// the write path ensures direct-SQL inspection sees NULL.
 func nullable(s string) any {
 	if s == "" {
 		return sql.NullString{}

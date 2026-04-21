@@ -63,7 +63,7 @@ func TestBatchOutputShapeOrder(t *testing.T) {
 }
 
 // TestBatchInvalidLinkTypeCodeRecognized pins the invalid_link_type
-// code added in the cross-cutting deviations as a phase-4 (semantic)
+// code from quest-spec.md §Batch error output as a phase-4 (semantic)
 // emission. The code constant must exist and be the literal string
 // callers parse from the stderr JSONL.
 func TestBatchInvalidLinkTypeCodeRecognized(t *testing.T) {

@@ -41,7 +41,7 @@ var (
 
 // List handles `quest list [flags]`. The filter flags compose AND
 // across dimensions and OR within a dimension (except --tag, which
-// is AND within as well). See cross-cutting.md §Queries.
+// is AND within as well). See quest-spec.md §Queries.
 func List(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	_ = stdin
 
@@ -163,7 +163,7 @@ func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, er
 		columns = columnsFlagRaw
 	}
 
-	// Default status filter (cross-cutting.md §Default --status filter).
+	// Default status filter (quest-spec.md §Queries > quest list > --status).
 	if !statusesSet {
 		filter.Statuses = append([]string{}, listDefaultStatuses...)
 	}

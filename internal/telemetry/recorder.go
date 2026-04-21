@@ -279,10 +279,10 @@ func RecordDispatchError(ctx context.Context, err error, stderr io.Writer) int {
 	return errors.ExitCode(err)
 }
 
-// RecordPreconditionFailed emits the §13.3 quest.precondition.failed
-// span event with quest.precondition (bounded enum),
-// quest.blocked_by_count, and a truncated quest.blocked_by_ids. Called
-// on every exit-5 path in handlers per cross-cutting.md.
+// RecordPreconditionFailed emits the OTEL.md §13.3
+// quest.precondition.failed span event with quest.precondition
+// (bounded enum), quest.blocked_by_count, and a truncated
+// quest.blocked_by_ids. Called on every exit-5 path in handlers.
 func RecordPreconditionFailed(ctx context.Context, precondition string, blockedByIDs []string) {
 	span := trace.SpanFromContext(ctx)
 	if nonRecording(span) {

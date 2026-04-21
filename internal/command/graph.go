@@ -20,10 +20,9 @@ import (
 
 // graphNode is the JSON shape of one entry in the `nodes` array. Field
 // order matches spec §quest graph: id, title, type, status, tier, role,
-// children. Tier and role are *string so an unset value emits JSON null
-// (cross-cutting.md §Nullable TEXT columns). External nodes appear
-// with the same shape but children is always []; outgoing edges are
-// not expanded.
+// children. Tier and role are *string so an unset value emits JSON
+// null instead of an empty string. External nodes appear with the same
+// shape but children is always []; outgoing edges are not expanded.
 type graphNode struct {
 	ID       string   `json:"id"`
 	Title    string   `json:"title"`

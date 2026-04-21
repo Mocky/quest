@@ -50,11 +50,11 @@ type TaskJSON struct {
 }
 
 // HistoryEntry is one row in TaskJSON.History. Payload keys are
-// flattened into the top level via MarshalJSON per cross-cutting.md
-// §History `payload` flattening — the stored payload JSON is merged
-// with the canonical timestamp/role/session/action fields so consumers
-// see `reason`/`fields`/`content`/... as siblings of `action`. Same
-// shape command/show.go historyEntry produces.
+// flattened into the top level via MarshalJSON — the stored payload
+// JSON is merged with the canonical timestamp/role/session/action
+// fields so consumers see `reason`/`fields`/`content`/... as siblings
+// of `action`, matching the shape pinned in quest-spec.md §History
+// field. Same shape command/show.go historyEntry produces.
 type HistoryEntry struct {
 	Timestamp string
 	Role      *string

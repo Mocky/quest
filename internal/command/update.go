@@ -314,8 +314,8 @@ func parseUpdateArgs(cfg config.Config, stdin io.Reader, stderr io.Writer, args 
 
 // updateState is the slice of the task row Update needs for the
 // precondition ladder plus the pre-update old values for the
-// field_updated history entries. Nullable columns arrive as empty
-// strings per cross-cutting.md §Nullable TEXT columns.
+// field_updated history entries. Nullable columns arrive as empty Go
+// strings — the read path translates SQL NULL back to "".
 type updateState struct {
 	status             string
 	ownerSession       string

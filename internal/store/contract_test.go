@@ -58,8 +58,9 @@ func seedTaskRow(t *testing.T, s store.Store, id string) {
 //   - Every action enum value is non-empty so the wire contract has
 //     no silent regressions.
 //   - AppendHistory persists empty Role / Session as SQL NULL via the
-//     single-call-site nullable() helper. cross-cutting.md §Nullable
-//     TEXT columns guarantees direct-SQL inspection sees NULL, not "".
+//     single-call-site nullable() helper so direct-SQL inspection sees
+//     NULL, not "" — matching the §History field contract ("Recorded
+//     as `null` if unset").
 //   - Round-tripping through GetHistory preserves the action and
 //     restores empty Role/Session as Go zero strings (the rendering
 //     layer in command/show.go re-emits them as JSON null via *string).

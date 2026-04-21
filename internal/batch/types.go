@@ -86,8 +86,8 @@ const (
 // sets live alongside ValidateSemantic's five codes — five of those
 // (cycle, blocked_by_cancelled, retry_target_status,
 // source_type_required, unknown_task_id) also appear below with a
-// different phase discriminator per cross-cutting §deliberate
-// deviations.
+// different phase discriminator per quest-spec.md §Batch error
+// output.
 const (
 	BatchCodeEmptyFile          = "empty_file"
 	BatchCodeMalformedJSON      = "malformed_json"

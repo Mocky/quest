@@ -363,8 +363,9 @@ func TestValidateSemanticCollectsAllErrors(t *testing.T) {
 }
 
 // TestValidateSemanticErrorCodes pins the full SemanticDepError code
-// set per cross-cutting.md — a change to the enum is a contract
-// change that must update callers (CLI stderr + batch stderr JSONL).
+// set per quest-spec.md §Batch error output — a change to the enum is
+// a contract change that must update callers (CLI stderr + batch
+// stderr JSONL).
 func TestValidateSemanticErrorCodes(t *testing.T) {
 	want := []string{
 		batch.CodeCycle,

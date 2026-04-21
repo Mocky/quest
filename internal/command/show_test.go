@@ -860,7 +860,8 @@ func firstLine(s string) string {
 
 // TestShowNullHistoryRoleSession pins NULL round-trip: storing an
 // empty role/session should surface as JSON null (via *string), never
-// "". Proves cross-cutting.md §Nullable TEXT columns.
+// "". Matches the quest-spec.md §History field contract ("Recorded as
+// `null` if unset").
 func TestShowNullHistoryRoleSession(t *testing.T) {
 	s, _ := testStore(t)
 	seedMinimalTask(t, s, "proj-a1", "Alpha")

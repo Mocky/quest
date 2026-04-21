@@ -4,7 +4,8 @@
 // and Class walkers that use stdlib errors.Is through wrapped chains,
 // Retryable for exit-7 detection, UserMessage for the sanitized
 // stderr one-liner, and EmitStderr as the sole formatter of the
-// canonical two-line tail defined in cross-cutting.md §Error messages.
+// canonical two-line tail defined in OBSERVABILITY.md §Stderr:
+// Diagnostic Channel.
 // The exit codes 1–7 and class strings are pinned by
 // TestExitCodeStability per STANDARDS.md §CLI Output Contract Tests —
 // renumbering is a breaking change that must ship with a spec update.

@@ -17,7 +17,7 @@ package store
 // unmarshals them back into empty Go strings. For JSON encoding, a
 // pointer-valued field would emit `null` natively; storing strings
 // keeps handler code simple and delegates null emission to the
-// rendering layer per cross-cutting.md §Nullable TEXT columns.
+// rendering layer.
 type Task struct {
 	ID                 string         `json:"id"`
 	Title              string         `json:"title"`
@@ -99,7 +99,7 @@ type Dependency struct {
 }
 
 // Note is one row of the notes table. Timestamps are RFC3339 UTC per
-// cross-cutting.md §Timestamps.
+// quest-spec.md §Output & Error Conventions.
 type Note struct {
 	Timestamp string `json:"timestamp"`
 	Body      string `json:"body"`

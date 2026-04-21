@@ -6,6 +6,5 @@
 // `--reason`, `--acceptance-criteria`). The Resolver carries
 // per-invocation state so the second `@-` on one call rejects with
 // exit 2 and a pointer to the flag that already consumed stdin
-// (cross-cutting.md §`@file` input). Phase 6 lands the implementation
-// alongside worker-command handlers.
+// (quest-spec.md §Input Conventions > Path resolution).
 package input

@@ -67,10 +67,10 @@ type taskRef struct {
 }
 
 // historyEntry renders one history row with its action-specific payload
-// flattened into the top level (cross-cutting.md §History `payload`
-// flattening). Storage keeps the payload as an opaque JSON blob; the
-// spec §History field shows payload keys (`reason`, `content`, `fields`,
-// ...) as siblings of timestamp/role/session/action in emitted output.
+// flattened into the top level. Storage keeps the payload as an opaque
+// JSON blob; quest-spec.md §History field shows payload keys (`reason`,
+// `content`, `fields`, ...) as siblings of timestamp/role/session/action
+// in emitted output.
 type historyEntry struct {
 	Timestamp string         `json:"timestamp"`
 	Role      *string        `json:"role"`

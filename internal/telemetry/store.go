@@ -194,10 +194,9 @@ func recordTxMetrics(ctx context.Context, tx *store.Tx, total time.Duration, loc
 }
 
 // durationMS converts microseconds to a sub-millisecond float so fast
-// transactions don't truncate to 0 (cross-cutting.md §Duration
-// calculation). Microseconds is the smallest unit Go's time.Duration
-// helpers expose; dividing keeps the unit "ms" for the OTEL histogram
-// regardless of how short the transaction was.
+// transactions don't truncate to 0. Microseconds is the smallest unit
+// Go's time.Duration helpers expose; dividing keeps the unit "ms" for
+// the OTEL histogram regardless of how short the transaction was.
 func durationMS(micros int64) float64 {
 	return float64(micros) / 1000.0
 }

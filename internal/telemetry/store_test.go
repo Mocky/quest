@@ -229,7 +229,7 @@ func TestStoreSpanSuccess(t *testing.T) {
 	}
 }
 
-// TestLockTimeoutAttrsPrecision pins cross-cutting.md §Duration
+// TestLockTimeoutAttrsPrecision pins the sub-millisecond duration
 // calculation for the lock-timeout rollback path: quest.lock.wait_actual_ms
 // is a Float64 produced by durationMS(LockWait.Microseconds()) so a
 // sub-millisecond LockWait (the typical case for a commit-time

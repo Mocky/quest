@@ -96,10 +96,10 @@ func UserMessage(err error) string {
 }
 
 // EmitStderr writes the canonical two-line error tail defined by
-// cross-cutting.md §Error messages: the `quest: <class>: <actionable
-// message>` line followed by `quest: exit N (<class>)`. This is the
-// only place that formats that tail — handlers and the dispatcher
-// route every non-zero exit path through here (via
+// OBSERVABILITY.md §Stderr: Diagnostic Channel: the `quest: <class>:
+// <actionable message>` line followed by `quest: exit N (<class>)`.
+// This is the only place that formats that tail — handlers and the
+// dispatcher route every non-zero exit path through here (via
 // telemetry.RecordDispatchError once the dispatcher lands) so the
 // contract stays in one spot.
 func EmitStderr(err error, w io.Writer) {

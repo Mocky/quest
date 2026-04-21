@@ -448,10 +448,9 @@ func checkCreateParent(ctx context.Context, tx *store.Tx, parentID string) error
 }
 
 // insertTaskRow writes the task row with every user-set field. All
-// nullable TEXT columns follow cross-cutting.md §Nullable TEXT
-// columns: empty Go string → sql.NullString{} → SQL NULL. Metadata
-// is always a valid JSON object; the empty case ("{}") is the
-// schema default.
+// nullable TEXT columns follow the write-path convention: empty Go
+// string → sql.NullString{} → SQL NULL. Metadata is always a valid
+// JSON object; the empty case ("{}") is the schema default.
 func insertTaskRow(ctx context.Context, tx *store.Tx, a createArgs, parentID, id, createdAt string) error {
 	description := ""
 	if a.Description != nil {

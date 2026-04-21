@@ -27,11 +27,11 @@ type scanner interface {
 }
 
 // scanTask decodes one tasks row into a Task. Nullable TEXT columns
-// become empty Go strings per cross-cutting.md §Nullable TEXT columns;
-// the rendering layer re-emits them as JSON null via *string. Metadata
-// is always a JSON object on disk (NOT NULL DEFAULT '{}') so the
-// unmarshal always produces a non-nil map — but guard the nil case so
-// accidentally-empty TEXT never leaks as `null` in output.
+// become empty Go strings; the rendering layer re-emits them as JSON
+// null via *string. Metadata is always a JSON object on disk (NOT
+// NULL DEFAULT '{}') so the unmarshal always produces a non-nil map —
+// but guard the nil case so accidentally-empty TEXT never leaks as
+// `null` in output.
 func scanTask(s scanner) (Task, error) {
 	var (
 		t                                             Task
