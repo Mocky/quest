@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -161,13 +163,16 @@ func TestDispatcherWritesPreMigrationSnapshot(t *testing.T) {
 		t.Fatalf("second list: exit=%d stderr=%s", exit, errb)
 	}
 
-	// Find the snapshot file.
-	matches, err := filepath.Glob(filepath.Join(cfg.Workspace.Root, ".quest", "backups", "pre-v2-*.db"))
+	// Find the snapshot file. The snapshot name carries the target
+	// schema version (see store.WritePreMigrationSnapshot) so this
+	// tracks SupportedSchemaVersion automatically.
+	snapPattern := fmt.Sprintf("pre-v%d-*.db", store.SupportedSchemaVersion)
+	matches, err := filepath.Glob(filepath.Join(cfg.Workspace.Root, ".quest", "backups", snapPattern))
 	if err != nil {
 		t.Fatalf("glob backups: %v", err)
 	}
 	if len(matches) != 1 {
-		t.Fatalf("pre-v2 snapshot count = %d, want 1; matches=%v", len(matches), matches)
+		t.Fatalf("%s snapshot count = %d, want 1; matches=%v", snapPattern, len(matches), matches)
 	}
 
 	// The snapshot's schema_version should be 1 — the pre-migration
@@ -194,8 +199,9 @@ func TestDispatcherWritesPreMigrationSnapshot(t *testing.T) {
 	if err := live.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&v); err != nil {
 		t.Fatalf("read live schema_version: %v", err)
 	}
-	if v != "2" {
-		t.Errorf("live schema_version = %q, want 2", v)
+	wantLive := strconv.Itoa(store.SupportedSchemaVersion)
+	if v != wantLive {
+		t.Errorf("live schema_version = %q, want %q", v, wantLive)
 	}
 }
 

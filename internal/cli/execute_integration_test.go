@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -16,6 +17,7 @@ import (
 
 	"github.com/mocky/quest/internal/cli"
 	"github.com/mocky/quest/internal/config"
+	"github.com/mocky/quest/internal/store"
 )
 
 // setupWorkspace creates a .quest/ directory with a valid config.toml
@@ -114,8 +116,9 @@ func TestExecuteDispatchReachesHandler(t *testing.T) {
 	if err := db.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&v); err != nil {
 		t.Fatalf("query schema_version: %v", err)
 	}
-	if v != "2" {
-		t.Fatalf("schema_version = %q, want 2", v)
+	wantV := strconv.Itoa(store.SupportedSchemaVersion)
+	if v != wantV {
+		t.Fatalf("schema_version = %q, want %q", v, wantV)
 	}
 }
 

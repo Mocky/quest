@@ -20,6 +20,8 @@
 ### Fixed
 ### Schema
 
+- Schema v3: added `CHECK` constraints on `tasks.status`, `tasks.type`, `dependencies.link_type`, and `history.action`. Previously the valid enum set was enforced only by Go-level guards in command handlers, so a future code path that bypassed them -- or any direct `sqlite3` write -- could plant an invalid value (the `complete` vs `completed` drift fixed by schema v2 is the precedent). Migrations now run on a dedicated connection with `PRAGMA foreign_keys=OFF` so the documented CREATE/INSERT/DROP/RENAME recreation pattern can retire the old tables; `PRAGMA foreign_key_check` audits integrity inside the transaction before commit, preserving the forward-only-never-partial contract. Existing `.quest/quest.db` files migrate automatically on next invocation.
+
 ## [v0.1.0] - 2026-04-19
 
 Initial release. Implements the v4 behavioral contract in [`docs/quest-spec.md`](docs/quest-spec.md).

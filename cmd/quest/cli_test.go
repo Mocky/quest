@@ -10,10 +10,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/mocky/quest/internal/store"
 )
 
 var questBin string
@@ -155,8 +158,9 @@ func TestInitHappyPath(t *testing.T) {
 	if err := db.QueryRow("SELECT value FROM meta WHERE key='schema_version'").Scan(&version); err != nil {
 		t.Fatalf("query schema_version: %v", err)
 	}
-	if version != "2" {
-		t.Errorf("schema_version = %q, want 2", version)
+	wantVersion := strconv.Itoa(store.SupportedSchemaVersion)
+	if version != wantVersion {
+		t.Errorf("schema_version = %q, want %q", version, wantVersion)
 	}
 
 	wantTables := []string{

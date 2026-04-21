@@ -6,8 +6,10 @@ import (
 	"context"
 	"database/sql"
 	stderrors "errors"
+	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -17,6 +19,19 @@ import (
 	"github.com/mocky/quest/internal/errors"
 	"github.com/mocky/quest/internal/store"
 )
+
+// readMigrationFile returns the raw SQL of the named embedded migration
+// read from disk (relative to the store package's test CWD). Used by
+// tests that need to apply a specific subset of migrations rather than
+// the full embedded set.
+func readMigrationFile(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("migrations", name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return data
+}
 
 func TestMigrateFreshAppliesEverySchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "quest.db")
@@ -146,9 +161,12 @@ func TestMigrateRefusesNewerSchema(t *testing.T) {
 
 // TestMigrateV2RenamesCompleteStatusRows exercises migration 002 on a
 // DB that still carries pre-rename `status = 'complete'` rows from a
-// v1-era binary. Bootstrap: let Migrate build schema v1 (and higher),
-// then roll schema_version back to 1 and seed rows with the old value
-// — the next Migrate call replays 002+ against them.
+// v1-era binary. Bootstrap: apply migration 001 only (so the physical
+// schema is truly v1 and accepts a `complete` seed), write the legacy
+// rows, then run the full Migrate which replays 002+. The earlier
+// shortcut of running all migrations and rolling schema_version back
+// broke once 003 added a CHECK on status -- the CHECK would reject the
+// seed under a physical v3 schema even though the meta row said v1.
 func TestMigrateV2RenamesCompleteStatusRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "quest.db")
 	s, err := store.Open(path)
@@ -156,16 +174,17 @@ func TestMigrateV2RenamesCompleteStatusRows(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer s.Close()
-	if _, err := store.Migrate(context.Background(), s); err != nil {
-		t.Fatalf("initial Migrate: %v", err)
+
+	v1only := fstest.MapFS{
+		"001_initial.sql": &fstest.MapFile{Data: readMigrationFile(t, "001_initial.sql")},
+	}
+	if _, err := store.MigrateFromFS(context.Background(), s, v1only); err != nil {
+		t.Fatalf("v1-only Migrate: %v", err)
 	}
 
 	db, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
-	}
-	if _, err := db.Exec(`UPDATE meta SET value = '1' WHERE key = 'schema_version'`); err != nil {
-		t.Fatalf("reset schema_version: %v", err)
 	}
 	if _, err := db.Exec(
 		`INSERT INTO tasks(id, title, status, created_at) VALUES
@@ -217,8 +236,9 @@ func TestMigrateV2RenamesCompleteStatusRows(t *testing.T) {
 	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
 		t.Fatalf("select schema_version: %v", err)
 	}
-	if version != "2" {
-		t.Errorf("schema_version = %q, want '2'", version)
+	wantVersion := strconv.Itoa(store.SupportedSchemaVersion)
+	if version != wantVersion {
+		t.Errorf("schema_version = %q, want %q", version, wantVersion)
 	}
 }
 
@@ -338,5 +358,269 @@ INSERT INTO nonexistent_table(id) VALUES (1);
 	}
 	if v != store.SupportedSchemaVersion {
 		t.Errorf("schema_version after recovery = %d, want %d", v, store.SupportedSchemaVersion)
+	}
+}
+
+// TestMigrateV3CheckConstraintsRejectInvalidEnums pins that after
+// migration 003 the DB itself rejects out-of-enum values on
+// tasks.status, tasks.type, dependencies.link_type, and history.action.
+// Every case goes through a direct `sql` INSERT, not through the Go
+// command handlers, so the guarantee is at the storage boundary rather
+// than in handler code that a future path could bypass.
+func TestMigrateV3CheckConstraintsRejectInvalidEnums(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quest.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	if _, err := store.Migrate(context.Background(), s); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Seed one valid task so the FK-bearing side tables (dependencies,
+	// history) have a real task_id to point at; the CHECK violations
+	// below fire before any FK check would, but using a real ID keeps
+	// the test focused on the CHECK outcome.
+	if _, err := db.Exec(
+		`INSERT INTO tasks(id, title, status, type, created_at)
+		 VALUES ('proj-a1', 'ok', 'open', 'task', '2026-04-21T00:00:00Z')`); err != nil {
+		t.Fatalf("seed valid task: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		stmt string
+		args []any
+	}{
+		{
+			name: "tasks.status out of enum",
+			stmt: `INSERT INTO tasks(id, title, status, created_at) VALUES (?,?,?,?)`,
+			args: []any{"proj-a2", "bad", "complete", "2026-04-21T00:00:00Z"},
+		},
+		{
+			name: "tasks.type out of enum",
+			stmt: `INSERT INTO tasks(id, title, type, created_at) VALUES (?,?,?,?)`,
+			args: []any{"proj-a3", "bad", "feature", "2026-04-21T00:00:00Z"},
+		},
+		{
+			name: "dependencies.link_type out of enum",
+			stmt: `INSERT INTO dependencies(task_id, target_id, link_type, created_at) VALUES (?,?,?,?)`,
+			args: []any{"proj-a1", "proj-a1", "related-to", "2026-04-21T00:00:00Z"},
+		},
+		{
+			name: "history.action out of enum",
+			stmt: `INSERT INTO history(task_id, timestamp, action) VALUES (?,?,?)`,
+			args: []any{"proj-a1", "2026-04-21T00:00:00Z", "commented"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := db.Exec(tc.stmt, tc.args...)
+			if err == nil {
+				t.Fatalf("insert succeeded, want CHECK constraint failure")
+			}
+			if !strings.Contains(err.Error(), "CHECK constraint failed") {
+				t.Errorf("err = %v, want CHECK constraint failure", err)
+			}
+		})
+	}
+}
+
+// TestMigrateV3AcceptsEveryEnumValue pins the inverse: every value the
+// spec lists as valid must pass the CHECK on each column. If a future
+// migration mistypes an entry in the constraint list (or the spec adds
+// a value without a matching migration bump), this test fails loudly
+// instead of silently shipping a half-enforced enum.
+func TestMigrateV3AcceptsEveryEnumValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quest.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	if _, err := store.Migrate(context.Background(), s); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	validStatuses := []string{"open", "accepted", "completed", "failed", "cancelled"}
+	validTypes := []string{"task", "bug"}
+	validLinks := []string{"blocked-by", "caused-by", "discovered-from", "retry-of"}
+	validActions := []string{
+		"created", "accepted", "completed", "failed", "cancelled",
+		"reset", "moved", "note_added", "pr_added", "field_updated",
+		"linked", "unlinked", "tagged", "untagged", "handoff_set",
+	}
+
+	// Seed one parent task each iteration covers status + type
+	// combinations; status iterated first because more values.
+	for i, st := range validStatuses {
+		id := "proj-s" + strconv.Itoa(i)
+		if _, err := db.Exec(
+			`INSERT INTO tasks(id, title, status, type, created_at) VALUES (?,?,?,?,?)`,
+			id, "status-"+st, st, "task", "2026-04-21T00:00:00Z"); err != nil {
+			t.Errorf("status %q rejected: %v", st, err)
+		}
+	}
+	for i, ty := range validTypes {
+		id := "proj-t" + strconv.Itoa(i)
+		if _, err := db.Exec(
+			`INSERT INTO tasks(id, title, status, type, created_at) VALUES (?,?,?,?,?)`,
+			id, "type-"+ty, "open", ty, "2026-04-21T00:00:00Z"); err != nil {
+			t.Errorf("type %q rejected: %v", ty, err)
+		}
+	}
+
+	// Use the first seeded task as FK target for dependency / history rows.
+	parent := "proj-s0"
+	for _, lt := range validLinks {
+		if _, err := db.Exec(
+			`INSERT INTO dependencies(task_id, target_id, link_type, created_at) VALUES (?,?,?,?)`,
+			parent, parent, lt, "2026-04-21T00:00:00Z"); err != nil {
+			t.Errorf("link_type %q rejected: %v", lt, err)
+		}
+	}
+	for _, ac := range validActions {
+		if _, err := db.Exec(
+			`INSERT INTO history(task_id, timestamp, action) VALUES (?,?,?)`,
+			parent, "2026-04-21T00:00:00Z", ac); err != nil {
+			t.Errorf("action %q rejected: %v", ac, err)
+		}
+	}
+}
+
+// TestMigrateV3PreservesV2Data pins the forward-only invariant for the
+// table-recreation pattern used in 003: rows seeded at v2 (valid under
+// the new CHECK constraints) survive the migration intact, including
+// side-table FK references, indexes, and the history autoincrement id.
+func TestMigrateV3PreservesV2Data(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quest.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// Apply only 001 + 002 so the schema is a true v2 (no CHECKs yet)
+	// and accepts the seed below without interference from 003.
+	v2only := fstest.MapFS{
+		"001_initial.sql":                &fstest.MapFile{Data: readMigrationFile(t, "001_initial.sql")},
+		"002_rename_status_complete.sql": &fstest.MapFile{Data: readMigrationFile(t, "002_rename_status_complete.sql")},
+	}
+	if _, err := store.MigrateFromFS(context.Background(), s, v2only); err != nil {
+		t.Fatalf("v2-only Migrate: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO tasks(id, title, status, type, role, tier, created_at) VALUES
+			('proj-p1', 'parent', 'open',      'task', 'coder', 'T3', '2026-04-21T00:00:00Z'),
+			('proj-p2', 'child',  'accepted',  'bug',  'coder', 'T2', '2026-04-21T00:01:00Z');
+		INSERT INTO dependencies(task_id, target_id, link_type, created_at) VALUES
+			('proj-p2', 'proj-p1', 'blocked-by',      '2026-04-21T00:02:00Z'),
+			('proj-p2', 'proj-p1', 'caused-by',       '2026-04-21T00:02:00Z'),
+			('proj-p2', 'proj-p1', 'discovered-from', '2026-04-21T00:02:00Z'),
+			('proj-p2', 'proj-p1', 'retry-of',        '2026-04-21T00:02:00Z');
+		INSERT INTO history(task_id, timestamp, action, payload) VALUES
+			('proj-p1', '2026-04-21T00:00:00Z', 'created',       '{}'),
+			('proj-p2', '2026-04-21T00:01:00Z', 'created',       '{}'),
+			('proj-p2', '2026-04-21T00:01:30Z', 'accepted',      '{}'),
+			('proj-p2', '2026-04-21T00:01:40Z', 'field_updated', '{"fields":{"tier":{"from":"T3","to":"T2"}}}'),
+			('proj-p1', '2026-04-21T00:02:00Z', 'tagged',        '{"tag":"code-review"}');
+	`); err != nil {
+		t.Fatalf("seed v2 rows: %v", err)
+	}
+	_ = db.Close()
+
+	// Run full Migrate: since stored version is 2 and head is 3, only
+	// migration 003 should replay.
+	applied, err := store.Migrate(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Migrate to v3: %v", err)
+	}
+	if applied != 1 {
+		t.Fatalf("applied = %d, want 1 (only 003 replays)", applied)
+	}
+
+	db, err = sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer db.Close()
+
+	var taskCount, depCount, historyCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tasks`).Scan(&taskCount); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if taskCount != 2 {
+		t.Errorf("tasks count = %d, want 2", taskCount)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM dependencies`).Scan(&depCount); err != nil {
+		t.Fatalf("count dependencies: %v", err)
+	}
+	if depCount != 4 {
+		t.Errorf("dependencies count = %d, want 4", depCount)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM history`).Scan(&historyCount); err != nil {
+		t.Fatalf("count history: %v", err)
+	}
+	if historyCount != 5 {
+		t.Errorf("history count = %d, want 5", historyCount)
+	}
+
+	// Spot-check that the indexes survived the recreation. Listing the
+	// index names via sqlite_master is cheaper than exercising queries.
+	wantIndexes := []string{
+		"idx_tasks_parent", "idx_tasks_status", "idx_tasks_status_role",
+		"idx_dependencies_target",
+		"idx_history_task_timestamp", "idx_history_timestamp",
+	}
+	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'`)
+	if err != nil {
+		t.Fatalf("sqlite_master index query: %v", err)
+	}
+	defer rows.Close()
+	have := map[string]bool{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		have[n] = true
+	}
+	for _, name := range wantIndexes {
+		if !have[name] {
+			t.Errorf("missing index %q after v3 (got %v)", name, sortedKeys(have))
+		}
+	}
+
+	// Parent/child FK survives the tasks recreation -- flip-update the
+	// parent id and rely on ON UPDATE CASCADE to rewrite the child's
+	// parent pointer. If the FK were dropped by the rename, the child
+	// would end up orphaned.
+	if _, err := db.Exec(`UPDATE tasks SET id = 'proj-p1x' WHERE id = 'proj-p1'`); err != nil {
+		t.Fatalf("rename parent: %v", err)
+	}
+	var depTarget string
+	if err := db.QueryRow(`SELECT target_id FROM dependencies WHERE link_type = 'blocked-by'`).Scan(&depTarget); err != nil {
+		t.Fatalf("read dependency after rename: %v", err)
+	}
+	if depTarget != "proj-p1x" {
+		t.Errorf("dependency target_id = %q after CASCADE, want 'proj-p1x'", depTarget)
 	}
 }

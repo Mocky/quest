@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -20,7 +21,7 @@ var migrationsFS embed.FS
 // can operate against. Bumped by every migration that lands.
 // Task 3.2's TestMigrationSequenceContiguous asserts the highest
 // numeric migration prefix equals this constant.
-const SupportedSchemaVersion = 2
+const SupportedSchemaVersion = 3
 
 // Migrate applies every pending SQL migration in a single transaction
 // and returns the count of migration files actually executed. Callers
@@ -78,12 +79,40 @@ func migrate(ctx context.Context, s Store, src fs.FS) (int, error) {
 		return 0, nil
 	}
 
+	// Migrations that recreate tables to add CHECK constraints (see
+	// 003) follow the SQLite-documented CREATE/INSERT/DROP/RENAME
+	// pattern, which leaves FK references transiently pointing at the
+	// dropped-then-renamed table. The commit-time FK check fires on
+	// those dangling bindings even with PRAGMA defer_foreign_keys=ON,
+	// so the recommended 12-step procedure disables foreign_keys at the
+	// connection level before the transaction opens (inside a tx the
+	// PRAGMA is a no-op per SQLite docs). Acquire a dedicated connection
+	// so the PRAGMA toggle is scoped to migration work and does not leak
+	// to other pool users, and restore the connection to foreign_keys=ON
+	// before releasing it so conn.go's per-connection hook invariant
+	// still holds for subsequent callers.
+	conn, err := impl.db.Conn(ctx)
+	if err != nil {
+		return 0, classifyDriverErr(err)
+	}
+	defer func() {
+		// Best-effort restore: if the PRAGMA fails we still want to
+		// release the connection rather than leak it, and the
+		// connection hook will re-apply foreign_keys=ON on the next
+		// fresh connection the pool opens.
+		_, _ = conn.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		_ = conn.Close()
+	}()
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return 0, classifyDriverErr(err)
+	}
+
 	// BeginTx with nil options issues BEGIN IMMEDIATE due to the
 	// DSN's _txlock=immediate; migrations therefore already hold the
 	// write lock without going through BeginImmediate (which would
 	// otherwise tag this as quest.store.tx{tx_kind=...} — see Task
 	// 3.2's rationale for excluding migrations from that histogram).
-	tx, err := impl.db.BeginTx(ctx, nil)
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, classifyDriverErr(err)
 	}
@@ -113,6 +142,20 @@ func migrate(ctx context.Context, s Store, src fs.FS) (int, error) {
 		}
 		applied++
 	}
+	// Before commit, audit FK integrity. Migrations were run with FK
+	// enforcement off so the table-recreation pattern could leave
+	// references dangling mid-migration; foreign_key_check runs the full
+	// audit regardless of the foreign_keys PRAGMA and surfaces any
+	// row that violates a declared FK. Any violation rolls the
+	// transaction back to preserve the forward-only-never-partial
+	// contract.
+	if violations, err := collectFKViolations(ctx, tx); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	} else if len(violations) > 0 {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("%w: migration left foreign key violations: %s", errors.ErrGeneral, strings.Join(violations, "; "))
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, classifyDriverErr(err)
 	}
@@ -122,6 +165,33 @@ func migrate(ctx context.Context, s Store, src fs.FS) (int, error) {
 		"applied_count", applied,
 	)
 	return applied, nil
+}
+
+// collectFKViolations runs PRAGMA foreign_key_check inside tx and
+// returns one descriptive string per violating row. The PRAGMA reports
+// columns (table, rowid, parent, fkid); the first three are enough to
+// locate the offending row for diagnosis. A driver error from the
+// PRAGMA itself (rather than a violation) is returned as the error
+// return so callers can distinguish "integrity broken" from "couldn't
+// check integrity."
+func collectFKViolations(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return nil, fmt.Errorf("%w: foreign_key_check query: %s", errors.ErrGeneral, err.Error())
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var table, rowID, parent, fkID sql.NullString
+		if err := rows.Scan(&table, &rowID, &parent, &fkID); err != nil {
+			return nil, fmt.Errorf("%w: foreign_key_check scan: %s", errors.ErrGeneral, err.Error())
+		}
+		out = append(out, fmt.Sprintf("%s(rowid=%s) -> %s", table.String, rowID.String, parent.String))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: foreign_key_check rows: %s", errors.ErrGeneral, err.Error())
+	}
+	return out, nil
 }
 
 type migration struct {
