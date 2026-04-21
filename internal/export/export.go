@@ -32,6 +32,7 @@ type TaskJSON struct {
 	Status             string             `json:"status"`
 	Role               *string            `json:"role"`
 	Tier               *string            `json:"tier"`
+	Severity           *string            `json:"severity"`
 	Tags               []string           `json:"tags"`
 	Parent             *string            `json:"parent"`
 	AcceptanceCriteria *string            `json:"acceptance_criteria"`
@@ -326,6 +327,7 @@ func buildTaskJSON(t store.Task, history []store.History) TaskJSON {
 		Status:             t.Status,
 		Role:               nullString(t.Role),
 		Tier:               nullString(t.Tier),
+		Severity:           nullString(t.Severity),
 		Tags:               tags,
 		Parent:             nullString(t.Parent),
 		AcceptanceCriteria: nullString(t.AcceptanceCriteria),

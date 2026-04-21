@@ -91,3 +91,41 @@ func TestValidateTierMessage(t *testing.T) {
 		t.Errorf("ValidateTier message prefix = %q, want %q", got, want)
 	}
 }
+
+// TestValidateSeverity pins the spec §Planning fields severity enum.
+// Every ValidSeverities entry and the empty string must pass; anything
+// else — including casing variants — must return ErrUsage. The loop
+// over ValidSeverities auto-extends coverage if the list grows.
+func TestValidateSeverity(t *testing.T) {
+	for _, ok := range ValidSeverities {
+		if err := ValidateSeverity(ok); err != nil {
+			t.Errorf("ValidateSeverity(%q) = %v, want nil", ok, err)
+		}
+	}
+	if err := ValidateSeverity(""); err != nil {
+		t.Errorf("ValidateSeverity(\"\") = %v, want nil", err)
+	}
+	for _, bad := range []string{"Critical", "CRITICAL", "urgent", "trivial", "0"} {
+		err := ValidateSeverity(bad)
+		if err == nil {
+			t.Errorf("ValidateSeverity(%q) = nil, want error", bad)
+			continue
+		}
+		if !stderrors.Is(err, errors.ErrUsage) {
+			t.Errorf("ValidateSeverity(%q) error = %v, want ErrUsage", bad, err)
+		}
+	}
+}
+
+// TestValidateSeverityMessage pins the stderr tail so agents grepping
+// for the rejection hint remain stable.
+func TestValidateSeverityMessage(t *testing.T) {
+	err := ValidateSeverity("urgent")
+	if err == nil {
+		t.Fatal("ValidateSeverity(\"urgent\") = nil, want error")
+	}
+	want := `unknown severity "urgent" (want one of critical, high, medium, low)`
+	if got := err.Error(); got[:len(want)] != want {
+		t.Errorf("ValidateSeverity message prefix = %q, want %q", got, want)
+	}
+}

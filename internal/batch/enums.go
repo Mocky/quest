@@ -20,6 +20,12 @@ var ValidTypes = []string{"task", "bug"}
 // accepted by one command is accepted by all.
 var ValidTiers = []string{"T0", "T1", "T2", "T3", "T4", "T5", "T6"}
 
+// ValidSeverities is the spec §Planning fields severity enum —
+// case-sensitive lowercase values accepted by `quest create --severity`,
+// `quest update --severity`, the `severity` field of a batch line, and
+// `quest list --severity`.
+var ValidSeverities = []string{"critical", "high", "medium", "low"}
+
 // ValidateType returns nil when t is empty ("unset", the default is
 // `task`) or matches one of ValidTypes. Otherwise it returns an
 // ErrUsage-wrapped error naming the offending value and the allowed
@@ -52,6 +58,22 @@ func ValidateTier(t string) error {
 	}
 	return fmt.Errorf("unknown tier %q (want one of %s): %w",
 		t, strings.Join(ValidTiers, ", "), errors.ErrUsage)
+}
+
+// ValidateSeverity mirrors ValidateType for the severity enum. Empty
+// returns nil so unset severities pass through; non-empty values must
+// match exactly (case-sensitive) one of ValidSeverities.
+func ValidateSeverity(s string) error {
+	if s == "" {
+		return nil
+	}
+	for _, v := range ValidSeverities {
+		if s == v {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown severity %q (want one of %s): %w",
+		s, strings.Join(ValidSeverities, ", "), errors.ErrUsage)
 }
 
 // MaxTitleBytes is the spec §Field constraints cap on `title` —

@@ -510,11 +510,12 @@ func RecordCancelOutcome(ctx context.Context, taskID string, recursive bool, can
 // a stable string. Tag and parent filters are deliberately absent
 // (OTEL.md §4.3 — unbounded cardinality).
 type QueryFilter struct {
-	Status []string
-	Role   []string
-	Tier   []string
-	Type   []string
-	Ready  bool
+	Status   []string
+	Role     []string
+	Tier     []string
+	Type     []string
+	Severity []string
+	Ready    bool
 }
 
 // RecordQueryResult records dept.quest.query.result_count{command} +
@@ -538,6 +539,9 @@ func RecordQueryResult(ctx context.Context, operation string, resultCount int, f
 		}
 		if v := joinSorted(filter.Type); v != "" {
 			attrs = append(attrs, attribute.String("quest.query.filter.type", v))
+		}
+		if v := joinSorted(filter.Severity); v != "" {
+			attrs = append(attrs, attribute.String("quest.query.filter.severity", v))
 		}
 		if filter.Ready {
 			attrs = append(attrs, attribute.Bool("quest.query.ready", true))

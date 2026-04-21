@@ -27,6 +27,7 @@ type Task struct {
 	Status             string         `json:"status"`
 	Role               string         `json:"role"`
 	Tier               string         `json:"tier"`
+	Severity           string         `json:"severity"`
 	Tags               []string       `json:"tags"`
 	Parent             string         `json:"parent"`
 	AcceptanceCriteria string         `json:"acceptance_criteria"`
@@ -122,12 +123,13 @@ type PR struct {
 // columns. Fields not requested remain zero-valued on the returned
 // Task.
 type Filter struct {
-	Statuses []string
-	Parents  []string
-	Tags     []string
-	Roles    []string
-	Types    []string
-	Tiers    []string
-	Ready    bool
-	Columns  []string
+	Statuses   []string
+	Parents    []string
+	Tags       []string
+	Roles      []string
+	Types      []string
+	Tiers      []string
+	Severities []string
+	Ready      bool
+	Columns    []string
 }

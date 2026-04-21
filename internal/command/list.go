@@ -31,11 +31,12 @@ var (
 // Bounded enums for filter flags — used by the unknown-value rejection
 // checks and the cli.Suggest "did you mean" hint.
 var (
-	validListStatuses = []string{"open", "accepted", "completed", "failed", "cancelled"}
-	validListTypes    = []string{"task", "bug"}
-	validListTiers    = []string{"T0", "T1", "T2", "T3", "T4", "T5", "T6"}
-	validListColumns  = []string{
-		"id", "title", "status", "type", "tier", "role",
+	validListStatuses   = []string{"open", "accepted", "completed", "failed", "cancelled"}
+	validListTypes      = []string{"task", "bug"}
+	validListTiers      = []string{"T0", "T1", "T2", "T3", "T4", "T5", "T6"}
+	validListSeverities = []string{"critical", "high", "medium", "low"}
+	validListColumns    = []string{
+		"id", "title", "status", "type", "tier", "role", "severity",
 		"tags", "parent", "blocked-by", "children",
 	}
 )
@@ -62,11 +63,12 @@ func List(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 		return err
 	}
 	telemetry.RecordQueryResult(ctx, "list", len(tasks), telemetry.QueryFilter{
-		Status: filter.Statuses,
-		Role:   filter.Roles,
-		Tier:   filter.Tiers,
-		Type:   filter.Types,
-		Ready:  filter.Ready,
+		Status:   filter.Statuses,
+		Role:     filter.Roles,
+		Tier:     filter.Tiers,
+		Type:     filter.Types,
+		Severity: filter.Severities,
+		Ready:    filter.Ready,
 	})
 
 	enriched, err := enrichForColumns(ctx, s, tasks, columns)
@@ -123,6 +125,8 @@ func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, er
 		addCSV(&filter.Types, nil))
 	fs.Func("tier", "TIERS (comma-separated; repeatable)",
 		addCSV(&filter.Tiers, nil))
+	fs.Func("severity", "SEVERITIES (comma-separated; repeatable)",
+		addCSV(&filter.Severities, nil))
 	fs.Func("columns", "COLS (comma-separated)", func(v string) error {
 		columnsProvided = true
 		for _, part := range strings.Split(v, ",") {
@@ -153,6 +157,9 @@ func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, er
 		return store.Filter{}, nil, err
 	}
 	if err := rejectUnknown("tier", filter.Tiers, validListTiers); err != nil {
+		return store.Filter{}, nil, err
+	}
+	if err := rejectUnknown("severity", filter.Severities, validListSeverities); err != nil {
 		return store.Filter{}, nil, err
 	}
 
@@ -226,6 +233,8 @@ func enrichForColumns(ctx context.Context, s store.Store, tasks []store.Task, co
 				row.cells[c] = nullString(t.Tier)
 			case "role":
 				row.cells[c] = nullString(t.Role)
+			case "severity":
+				row.cells[c] = nullString(t.Severity)
 			case "parent":
 				row.cells[c] = nullString(t.Parent)
 			case "tags":

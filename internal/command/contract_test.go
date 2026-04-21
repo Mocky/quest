@@ -69,7 +69,7 @@ func TestShowJSONHasRequiredFields(t *testing.T) {
 	}
 	required := []string{
 		"id", "title", "description", "context", "type", "status",
-		"role", "tier", "tags", "parent", "acceptance_criteria",
+		"role", "tier", "severity", "tags", "parent", "acceptance_criteria",
 		"metadata", "owner_session", "started_at", "completed_at",
 		"dependencies", "prs", "notes", "handoff", "handoff_session",
 		"handoff_written_at", "debrief",
@@ -527,7 +527,7 @@ func TestGraphOutputShape(t *testing.T) {
 		if len(resp.Nodes) != 1 {
 			t.Fatalf("nodes = %d, want 1", len(resp.Nodes))
 		}
-		for _, k := range []string{"id", "title", "type", "status", "tier", "role", "children"} {
+		for _, k := range []string{"id", "title", "type", "status", "tier", "role", "severity", "children"} {
 			if _, ok := resp.Nodes[0][k]; !ok {
 				t.Errorf("node missing %q: %v", k, resp.Nodes[0])
 			}

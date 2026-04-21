@@ -37,6 +37,7 @@ type showResponse struct {
 	Status             string             `json:"status"`
 	Role               *string            `json:"role"`
 	Tier               *string            `json:"tier"`
+	Severity           *string            `json:"severity"`
 	Tags               []string           `json:"tags"`
 	Parent             *taskRef           `json:"parent"`
 	AcceptanceCriteria *string            `json:"acceptance_criteria"`
@@ -230,6 +231,7 @@ func buildShowResponse(ctx context.Context, s store.Store, t store.Task) (showRe
 		Status:             t.Status,
 		Role:               nullString(t.Role),
 		Tier:               nullString(t.Tier),
+		Severity:           nullString(t.Severity),
 		Tags:               t.Tags,
 		Parent:             parent,
 		AcceptanceCriteria: nullString(t.AcceptanceCriteria),

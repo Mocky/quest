@@ -547,14 +547,15 @@ func TestMigrateV3PreservesV2Data(t *testing.T) {
 	}
 	_ = db.Close()
 
-	// Run full Migrate: since stored version is 2 and head is 3, only
-	// migration 003 should replay.
+	// Run full Migrate: stored version is 2; migrations 003 and above
+	// replay. Assert the count matches the remaining head distance so the
+	// test tolerates future migration bumps without another edit.
 	applied, err := store.Migrate(context.Background(), s)
 	if err != nil {
-		t.Fatalf("Migrate to v3: %v", err)
+		t.Fatalf("Migrate to head: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("applied = %d, want 1 (only 003 replays)", applied)
+	if want := store.SupportedSchemaVersion - 2; applied != want {
+		t.Fatalf("applied = %d, want %d (every migration from 003 up replays)", applied, want)
 	}
 
 	db, err = sql.Open("sqlite", "file:"+path)
@@ -622,5 +623,255 @@ func TestMigrateV3PreservesV2Data(t *testing.T) {
 	}
 	if depTarget != "proj-p1x" {
 		t.Errorf("dependency target_id = %q after CASCADE, want 'proj-p1x'", depTarget)
+	}
+}
+
+// TestMigrateV4AddsSeverityColumn pins migration 004: a fresh DB landed
+// at head has a nullable severity column on tasks, and the column
+// defaults to NULL for newly-inserted rows that do not set it.
+func TestMigrateV4AddsSeverityColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quest.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	if _, err := store.Migrate(context.Background(), s); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// PRAGMA table_info confirms the column is present and nullable.
+	rows, err := db.Query(`PRAGMA table_info(tasks)`)
+	if err != nil {
+		t.Fatalf("table_info: %v", err)
+	}
+	defer rows.Close()
+	var (
+		found      bool
+		nullable   bool
+		columnType string
+	)
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			colType string
+			notNull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if name == "severity" {
+			found = true
+			nullable = notNull == 0
+			columnType = colType
+		}
+	}
+	if !found {
+		t.Fatalf("severity column missing from tasks")
+	}
+	if !nullable {
+		t.Errorf("severity column is NOT NULL, want nullable")
+	}
+	if columnType != "TEXT" {
+		t.Errorf("severity column type = %q, want TEXT", columnType)
+	}
+
+	// Insert a row without specifying severity; confirm it lands as NULL.
+	if _, err := db.Exec(
+		`INSERT INTO tasks(id, title, created_at) VALUES ('proj-a1', 'Alpha', '2026-04-21T00:00:00Z')`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	var sevIsNull bool
+	if err := db.QueryRow(`SELECT severity IS NULL FROM tasks WHERE id = 'proj-a1'`).Scan(&sevIsNull); err != nil {
+		t.Fatalf("query severity: %v", err)
+	}
+	if !sevIsNull {
+		t.Errorf("severity for unset row is not NULL")
+	}
+}
+
+// TestMigrateV4SeverityCheckConstraint pins that after migration 004
+// the DB itself rejects out-of-enum severity values, mirroring the
+// precedent set by 003 for status/type/link_type/action.
+func TestMigrateV4SeverityCheckConstraint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quest.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	if _, err := store.Migrate(context.Background(), s); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Every spec-valid severity is accepted, plus NULL (unset).
+	valid := []string{"critical", "high", "medium", "low"}
+	for i, sev := range valid {
+		id := "proj-v" + strconv.Itoa(i)
+		if _, err := db.Exec(
+			`INSERT INTO tasks(id, title, severity, created_at) VALUES (?,?,?,?)`,
+			id, "v-"+sev, sev, "2026-04-21T00:00:00Z"); err != nil {
+			t.Errorf("severity %q rejected: %v", sev, err)
+		}
+	}
+	if _, err := db.Exec(
+		`INSERT INTO tasks(id, title, created_at) VALUES ('proj-vnull', 'null', '2026-04-21T00:00:00Z')`); err != nil {
+		t.Errorf("NULL severity rejected: %v", err)
+	}
+
+	// Out-of-enum values and wrong casing are rejected at SQL boundary.
+	bad := []string{"CRITICAL", "Critical", "urgent", "trivial", ""}
+	for i, sev := range bad {
+		id := "proj-b" + strconv.Itoa(i)
+		_, err := db.Exec(
+			`INSERT INTO tasks(id, title, severity, created_at) VALUES (?,?,?,?)`,
+			id, "b-"+sev, sev, "2026-04-21T00:00:00Z")
+		if err == nil {
+			t.Errorf("severity %q accepted, want CHECK failure", sev)
+			continue
+		}
+		if !strings.Contains(err.Error(), "CHECK constraint failed") {
+			t.Errorf("severity %q: err = %v, want CHECK failure", sev, err)
+		}
+	}
+}
+
+// TestMigrateV4PreservesV3Data pins the forward-only invariant for
+// migration 004: rows seeded at v3 survive the table recreation, every
+// index returns, the FK to parent still CASCADEs on rename, and the
+// severity column is left NULL for every pre-migration row.
+func TestMigrateV4PreservesV3Data(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quest.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// Apply 001..003 so the schema is a true v3 (no severity column yet).
+	v3only := fstest.MapFS{
+		"001_initial.sql":                &fstest.MapFile{Data: readMigrationFile(t, "001_initial.sql")},
+		"002_rename_status_complete.sql": &fstest.MapFile{Data: readMigrationFile(t, "002_rename_status_complete.sql")},
+		"003_enum_check_constraints.sql": &fstest.MapFile{Data: readMigrationFile(t, "003_enum_check_constraints.sql")},
+	}
+	if _, err := store.MigrateFromFS(context.Background(), s, v3only); err != nil {
+		t.Fatalf("v3-only Migrate: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO tasks(id, title, status, type, role, tier, created_at) VALUES
+			('proj-p1', 'parent', 'open',     'task', 'coder', 'T3', '2026-04-21T00:00:00Z'),
+			('proj-p2', 'child',  'accepted', 'bug',  'coder', 'T2', '2026-04-21T00:01:00Z');
+		INSERT INTO dependencies(task_id, target_id, link_type, created_at) VALUES
+			('proj-p2', 'proj-p1', 'blocked-by', '2026-04-21T00:02:00Z');
+		INSERT INTO history(task_id, timestamp, action, payload) VALUES
+			('proj-p1', '2026-04-21T00:00:00Z', 'created', '{}'),
+			('proj-p2', '2026-04-21T00:01:00Z', 'created', '{}');
+	`); err != nil {
+		t.Fatalf("seed v3 rows: %v", err)
+	}
+	_ = db.Close()
+
+	applied, err := store.Migrate(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Migrate to v4: %v", err)
+	}
+	if applied != 1 {
+		t.Fatalf("applied = %d, want 1 (only 004 replays)", applied)
+	}
+
+	db, err = sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer db.Close()
+
+	var taskCount, depCount, historyCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tasks`).Scan(&taskCount); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if taskCount != 2 {
+		t.Errorf("tasks count = %d, want 2", taskCount)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM dependencies`).Scan(&depCount); err != nil {
+		t.Fatalf("count dependencies: %v", err)
+	}
+	if depCount != 1 {
+		t.Errorf("dependencies count = %d, want 1", depCount)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM history`).Scan(&historyCount); err != nil {
+		t.Fatalf("count history: %v", err)
+	}
+	if historyCount != 2 {
+		t.Errorf("history count = %d, want 2", historyCount)
+	}
+
+	// Every pre-migration row has severity=NULL.
+	var nullSeverities int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE severity IS NULL`).Scan(&nullSeverities); err != nil {
+		t.Fatalf("count null severities: %v", err)
+	}
+	if nullSeverities != 2 {
+		t.Errorf("null severities = %d, want 2", nullSeverities)
+	}
+
+	// Indexes present after recreation.
+	wantIndexes := []string{
+		"idx_tasks_parent", "idx_tasks_status", "idx_tasks_status_role",
+	}
+	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'`)
+	if err != nil {
+		t.Fatalf("sqlite_master index query: %v", err)
+	}
+	defer rows.Close()
+	have := map[string]bool{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		have[n] = true
+	}
+	for _, name := range wantIndexes {
+		if !have[name] {
+			t.Errorf("missing index %q after v4 (got %v)", name, sortedKeys(have))
+		}
+	}
+
+	// Parent FK still CASCADEs after recreation.
+	if _, err := db.Exec(`UPDATE tasks SET id = 'proj-p1x' WHERE id = 'proj-p1'`); err != nil {
+		t.Fatalf("rename parent: %v", err)
+	}
+	var depTarget string
+	if err := db.QueryRow(`SELECT target_id FROM dependencies WHERE link_type = 'blocked-by'`).Scan(&depTarget); err != nil {
+		t.Fatalf("read dependency after rename: %v", err)
+	}
+	if depTarget != "proj-p1x" {
+		t.Errorf("dependency target_id = %q after CASCADE, want 'proj-p1x'", depTarget)
+	}
+
+	// Type / status CHECK constraints from v3 survive.
+	if _, err := db.Exec(
+		`INSERT INTO tasks(id, title, status, created_at) VALUES ('proj-bad', 'bad', 'complete', '2026-04-21T00:00:00Z')`); err == nil {
+		t.Errorf("insert with status='complete' accepted after v4, want CHECK failure (v3 constraint must survive)")
 	}
 }

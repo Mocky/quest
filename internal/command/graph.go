@@ -30,6 +30,7 @@ type graphNode struct {
 	Status   string   `json:"status"`
 	Tier     *string  `json:"tier"`
 	Role     *string  `json:"role"`
+	Severity *string  `json:"severity"`
 	Children []string `json:"children"`
 }
 
@@ -137,6 +138,7 @@ func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string,
 			Status:   ext.Status,
 			Tier:     nullString(ext.Tier),
 			Role:     nullString(ext.Role),
+			Severity: nullString(ext.Severity),
 			Children: []string{},
 		})
 	}
@@ -154,6 +156,7 @@ func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string,
 			Status:   t.Status,
 			Tier:     nullString(t.Tier),
 			Role:     nullString(t.Role),
+			Severity: nullString(t.Severity),
 			Children: cs,
 		})
 	}

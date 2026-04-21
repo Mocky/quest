@@ -94,6 +94,9 @@ func buildMetadataRows(resp showResponse) []metaRow {
 	if len(resp.Tags) > 0 {
 		rows = append(rows, metaRow{key: "tags", value: strings.Join(resp.Tags, ", ")})
 	}
+	if resp.Severity != nil {
+		rows = append(rows, metaRow{key: "severity", value: *resp.Severity})
+	}
 	if exec := formatExec(resp.Tier, resp.Role, resp.OwnerSession); exec != "" {
 		rows = append(rows, metaRow{key: "exec", value: exec})
 	}

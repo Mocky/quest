@@ -130,6 +130,7 @@ func parseOneLine(r rawLine) (BatchLine, []BatchError) {
 	_ = decodeString(outer, "type", &line.Type)
 	_ = decodeString(outer, "tier", &line.Tier)
 	_ = decodeString(outer, "role", &line.Role)
+	_ = decodeString(outer, "severity", &line.Severity)
 	_ = decodeString(outer, "acceptance_criteria", &line.AcceptanceCriteria)
 
 	if raw, ok := outer["tags"]; ok {

@@ -53,6 +53,7 @@ func PhaseSemantic(ctx context.Context, s store.Store, lines []BatchLine, valid 
 		errs = append(errs, linkTypeErrors(line)...)
 		errs = append(errs, typeEnumErrors(line)...)
 		errs = append(errs, tierEnumErrors(line)...)
+		errs = append(errs, severityEnumErrors(line)...)
 		errs = append(errs, titleTooLongErrors(line)...)
 		errs = append(errs, parentNotOpenErrors(ctx, s, line, parentStatusCache)...)
 		errs = append(errs, semanticDepErrors(ctx, s, line)...)
@@ -113,6 +114,24 @@ func tierEnumErrors(line BatchLine) []BatchError {
 			Code:    BatchCodeInvalidTier,
 			Field:   "tier",
 			Value:   line.Tier,
+			Message: err.Error(),
+		}}
+	}
+	return nil
+}
+
+// severityEnumErrors mirrors the type/tier enum checks for the
+// severity enum. Empty severity is permitted (nullable column); any
+// non-empty string outside the four lowercase enum values emits
+// invalid_severity.
+func severityEnumErrors(line BatchLine) []BatchError {
+	if err := ValidateSeverity(line.Severity); err != nil {
+		return []BatchError{{
+			Line:    line.LineNo,
+			Phase:   PhaseNameSemantic,
+			Code:    BatchCodeInvalidSeverity,
+			Field:   "severity",
+			Value:   line.Severity,
 			Message: err.Error(),
 		}}
 	}

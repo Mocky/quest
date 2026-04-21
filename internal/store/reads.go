@@ -15,7 +15,7 @@ import (
 // GetTask scans line up with the SELECT. Order matches scanTask's scan
 // destinations.
 const selectTaskColumns = `id, title, description, context, type, status,
-	role, tier, acceptance_criteria, metadata, parent,
+	role, tier, severity, acceptance_criteria, metadata, parent,
 	owner_session, started_at, completed_at,
 	handoff, handoff_session, handoff_written_at, debrief, created_at`
 
@@ -35,14 +35,14 @@ type scanner interface {
 func scanTask(s scanner) (Task, error) {
 	var (
 		t                                             Task
-		role, tier, acceptCrit, parent                sql.NullString
+		role, tier, severity, acceptCrit, parent      sql.NullString
 		ownerSess, startedAt, completedAt             sql.NullString
 		handoff, handoffSess, handoffWritten, debrief sql.NullString
 		metadataJSON                                  string
 	)
 	if err := s.Scan(
 		&t.ID, &t.Title, &t.Description, &t.Context, &t.Type, &t.Status,
-		&role, &tier, &acceptCrit, &metadataJSON, &parent,
+		&role, &tier, &severity, &acceptCrit, &metadataJSON, &parent,
 		&ownerSess, &startedAt, &completedAt,
 		&handoff, &handoffSess, &handoffWritten, &debrief, &t.CreatedAt,
 	); err != nil {
@@ -50,6 +50,7 @@ func scanTask(s scanner) (Task, error) {
 	}
 	t.Role = role.String
 	t.Tier = tier.String
+	t.Severity = severity.String
 	t.AcceptanceCriteria = acceptCrit.String
 	t.Parent = parent.String
 	t.OwnerSession = ownerSess.String
@@ -154,6 +155,7 @@ func (s *sqliteStore) ListTasks(ctx context.Context, filter Filter) ([]Task, err
 	addIn("t.role", filter.Roles)
 	addIn("t.type", filter.Types)
 	addIn("t.tier", filter.Tiers)
+	addIn("t.severity", filter.Severities)
 	for _, tag := range filter.Tags {
 		conds = append(conds,
 			"t.id IN (SELECT task_id FROM tags WHERE tag = ?)")

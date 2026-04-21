@@ -34,6 +34,7 @@ type graphNodeT struct {
 	Status   string   `json:"status"`
 	Tier     *string  `json:"tier"`
 	Role     *string  `json:"role"`
+	Severity *string  `json:"severity"`
 	Children []string `json:"children"`
 }
 

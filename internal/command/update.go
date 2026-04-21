@@ -55,6 +55,7 @@ type updateArgs struct {
 	Type               *string
 	Tier               *string
 	Role               *string
+	Severity           *string
 	AcceptanceCriteria *string
 	Meta               []string
 }
@@ -64,7 +65,7 @@ type updateArgs struct {
 func (a updateArgs) hasElevated() bool {
 	return a.Title != nil || a.Description != nil || a.Context != nil ||
 		a.Type != nil || a.Tier != nil || a.Role != nil ||
-		a.AcceptanceCriteria != nil || len(a.Meta) > 0
+		a.Severity != nil || a.AcceptanceCriteria != nil || len(a.Meta) > 0
 }
 
 // blockedOnTerminalState lists every flag that is not --note / --pr /
@@ -91,6 +92,9 @@ func (a updateArgs) blockedOnTerminalState() []string {
 	}
 	if a.Role != nil {
 		blocked = append(blocked, "--role")
+	}
+	if a.Severity != nil {
+		blocked = append(blocked, "--severity")
 	}
 	if a.AcceptanceCriteria != nil {
 		blocked = append(blocked, "--acceptance-criteria")
@@ -292,6 +296,7 @@ func parseUpdateArgs(cfg config.Config, stdin io.Reader, stderr io.Writer, args 
 	fs.Func("type", "change the task type", setRaw(&parsed.Type, "--type", false))
 	fs.Func("tier", "change the model tier", setRaw(&parsed.Tier, "--tier", false))
 	fs.Func("role", "change the assigned role", setRaw(&parsed.Role, "--role", false))
+	fs.Func("severity", "change the triage severity", setRaw(&parsed.Severity, "--severity", false))
 	fs.Func("acceptance-criteria", "update verification conditions", setRaw(&parsed.AcceptanceCriteria, "--acceptance-criteria", true))
 	fs.Func("meta", "set metadata field KEY=VALUE (repeatable)", func(v string) error {
 		parsed.Meta = append(parsed.Meta, v)
@@ -325,19 +330,20 @@ type updateState struct {
 	description        string
 	contextVal         string
 	role               string
+	severity           string
 	acceptanceCriteria string
 	metadataJSON       string
 }
 
 func loadUpdateState(ctx context.Context, tx *store.Tx, id string) (updateState, error) {
 	var (
-		cur                             updateState
-		owner, tier, typ, role, accCrit sql.NullString
+		cur                                  updateState
+		owner, tier, typ, role, sev, accCrit sql.NullString
 	)
 	err := tx.QueryRowContext(ctx,
-		`SELECT status, owner_session, tier, type, title, description, context, role, acceptance_criteria, metadata
+		`SELECT status, owner_session, tier, type, title, description, context, role, severity, acceptance_criteria, metadata
 		 FROM tasks WHERE id = ?`, id).
-		Scan(&cur.status, &owner, &tier, &typ, &cur.title, &cur.description, &cur.contextVal, &role, &accCrit, &cur.metadataJSON)
+		Scan(&cur.status, &owner, &tier, &typ, &cur.title, &cur.description, &cur.contextVal, &role, &sev, &accCrit, &cur.metadataJSON)
 	if err != nil {
 		if stderrors.Is(err, sql.ErrNoRows) {
 			return updateState{}, fmt.Errorf("%w: task %q", errors.ErrNotFound, id)
@@ -348,6 +354,7 @@ func loadUpdateState(ctx context.Context, tx *store.Tx, id string) (updateState,
 	cur.tier = tier.String
 	cur.typeVal = typ.String
 	cur.role = role.String
+	cur.severity = sev.String
 	cur.acceptanceCriteria = accCrit.String
 	return cur, nil
 }
@@ -387,6 +394,9 @@ func validateUpdateUsage(a updateArgs) error {
 	if err := check("--role", a.Role); err != nil {
 		return err
 	}
+	if err := check("--severity", a.Severity); err != nil {
+		return err
+	}
 	if err := check("--acceptance-criteria", a.AcceptanceCriteria); err != nil {
 		return err
 	}
@@ -398,6 +408,11 @@ func validateUpdateUsage(a updateArgs) error {
 	if a.Tier != nil {
 		if err := batch.ValidateTier(*a.Tier); err != nil {
 			return fmt.Errorf("update: --tier: %w", err)
+		}
+	}
+	if a.Severity != nil {
+		if err := batch.ValidateSeverity(*a.Severity); err != nil {
+			return fmt.Errorf("update: --severity: %w", err)
 		}
 	}
 	for _, kv := range a.Meta {
@@ -484,6 +499,11 @@ func applyUpdate(ctx context.Context, tx *store.Tx, id string, cfg config.Config
 	}
 	if a.Role != nil {
 		if err := addSet("role", cur.role, *a.Role, true); err != nil {
+			return err
+		}
+	}
+	if a.Severity != nil {
+		if err := addSet("severity", cur.severity, *a.Severity, true); err != nil {
 			return err
 		}
 	}

@@ -150,14 +150,15 @@ func createOne(ctx context.Context, tx *store.Tx, line BatchLine, parentID strin
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO tasks(
 			id, title, description, context, type, status,
-			role, tier, acceptance_criteria, metadata, parent,
+			role, tier, severity, acceptance_criteria, metadata, parent,
 			created_at
 		) VALUES (?, ?, ?, ?, ?, 'open',
-			?, ?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?,
 			?)`,
 		id, line.Title, line.Description, line.Context, taskType,
 		nullable(line.Role),
 		nullable(line.Tier),
+		nullable(line.Severity),
 		nullable(line.AcceptanceCriteria),
 		metadataJSON,
 		nullable(parentID),
@@ -253,6 +254,9 @@ func createdPayload(line BatchLine, parentID string, tags []string, taskType str
 	}
 	if line.Role != "" {
 		payload["role"] = line.Role
+	}
+	if line.Severity != "" {
+		payload["severity"] = line.Severity
 	}
 	if taskType != "" && taskType != "task" {
 		payload["type"] = taskType

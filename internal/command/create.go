@@ -41,6 +41,7 @@ type createArgs struct {
 	Type               *string
 	Tier               *string
 	Role               *string
+	Severity           *string
 	Tag                *string
 	AcceptanceCriteria *string
 	Meta               []string
@@ -95,6 +96,7 @@ func parseCreateArgs(stdin io.Reader, stderr io.Writer, args []string) (createAr
 	fs.Func("type", "task type: task (default) or bug", setText(&parsed.Type, "--type", false))
 	fs.Func("tier", "model tier (T0-T6)", setText(&parsed.Tier, "--tier", false))
 	fs.Func("role", "assigned role", setText(&parsed.Role, "--role", false))
+	fs.Func("severity", "triage severity (critical|high|medium|low)", setText(&parsed.Severity, "--severity", false))
 	fs.Func("tag", "comma-separated tag list (single flag, not repeatable)", func(v string) error {
 		if parsed.Tag != nil {
 			return fmt.Errorf("create: --tag: repeated; pass one comma-separated list: %w", errors.ErrUsage)
@@ -170,6 +172,9 @@ func validateCreateArgs(a createArgs) error {
 	if err := checkNonEmpty("--role", a.Role); err != nil {
 		return err
 	}
+	if err := checkNonEmpty("--severity", a.Severity); err != nil {
+		return err
+	}
 	if err := checkNonEmpty("--acceptance-criteria", a.AcceptanceCriteria); err != nil {
 		return err
 	}
@@ -181,6 +186,11 @@ func validateCreateArgs(a createArgs) error {
 	if a.Tier != nil {
 		if err := batch.ValidateTier(*a.Tier); err != nil {
 			return fmt.Errorf("create: --tier: %w", err)
+		}
+	}
+	if a.Severity != nil {
+		if err := batch.ValidateSeverity(*a.Severity); err != nil {
+			return fmt.Errorf("create: --severity: %w", err)
 		}
 	}
 	// Per-dep-flag non-empty checks. Repeatable --blocked-by
@@ -471,14 +481,15 @@ func insertTaskRow(ctx context.Context, tx *store.Tx, a createArgs, parentID, id
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO tasks(
 			id, title, description, context, type, status,
-			role, tier, acceptance_criteria, metadata, parent,
+			role, tier, severity, acceptance_criteria, metadata, parent,
 			created_at
 		) VALUES (?, ?, ?, ?, ?, 'open',
-			?, ?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?,
 			?)`,
 		id, *a.Title, description, contextVal, taskType,
 		nullableFromPtr(a.Role),
 		nullableFromPtr(a.Tier),
+		nullableFromPtr(a.Severity),
 		nullableFromPtr(a.AcceptanceCriteria),
 		metadataJSON,
 		nullableFromString(parentID),
@@ -519,6 +530,9 @@ func createdHistoryPayload(a createArgs, tags []string, edges []batch.Edge, pare
 	}
 	if a.Role != nil && *a.Role != "" {
 		payload["role"] = *a.Role
+	}
+	if a.Severity != nil && *a.Severity != "" {
+		payload["severity"] = *a.Severity
 	}
 	if a.Type != nil && *a.Type != "task" {
 		payload["type"] = *a.Type

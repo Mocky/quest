@@ -17,6 +17,7 @@ type BatchLine struct {
 	Type               string
 	Tier               string
 	Role               string
+	Severity           string
 	AcceptanceCriteria string
 	Tags               []string
 	Meta               map[string]any
@@ -108,6 +109,7 @@ const (
 	BatchCodeInvalidLinkType    = "invalid_link_type"
 	BatchCodeInvalidType        = "invalid_type"
 	BatchCodeInvalidTier        = "invalid_tier"
+	BatchCodeInvalidSeverity    = "invalid_severity"
 	BatchCodeFieldTooLong       = "field_too_long"
 	BatchCodeParentNotOpen      = "parent_not_open"
 )
