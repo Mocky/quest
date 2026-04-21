@@ -277,6 +277,40 @@ A `--color` flag is deliberately not defined. Text-mode output is plain; humans 
 
 `.quest/config.toml` fields do not get flag overrides. They are immutable for the life of the project; the only way to change `id_prefix` or `elevated_roles` is to edit the file directly.
 
+### Help Rendering
+
+`--help` on any subcommand renders usage text using the same flag conventions used throughout the spec, README, and command examples.
+
+- **Long flags** (multi-character names) render as `--name`.
+- **Short flags** (single-character names, e.g., `-r` on `quest cancel`) render as `-r`. The short/long distinction is POSIX-standard and preserved here.
+
+Go's stdlib `flag.PrintDefaults` prefixes every flag with a single dash regardless of name length. Without a shared rendering helper, help output diverges from documentation — users read `--status` in the spec, type `--status`, then see `-status` in `--help`, and reasonably wonder which form is correct. Every subcommand's `FlagSet` renders help output through one shared helper so the convention is applied uniformly and new commands inherit it without per-command boilerplate.
+
+Example shape (`quest list --help`):
+
+```
+Usage of list:
+  --columns value
+        COLS (comma-separated)
+  --ready
+        only tasks whose next transition has no unmet preconditions
+  --status value
+        STATUSES (comma-separated; repeatable)
+```
+
+A subcommand that exposes a short flag (e.g., `quest cancel -r`) renders the short form with a single dash alongside its long flags:
+
+```
+Usage of cancel:
+  -r    recursively cancel all descendants
+  --reason value
+        why the task was cancelled (supports @file/@-)
+```
+
+STANDARDS.md does not (yet) document a policy for when a short flag should exist — today only `quest cancel` exposes one. If a short-flag policy is added later, the renderer inherits it: whichever name a flag is declared with dictates its dash prefix, so new short flags pick up the single-dash rendering automatically.
+
+**Out of scope:** error messages from flag parsing (e.g., `flag provided but not defined: -text`). Go's stdlib renders these independently of the `Usage` function, so the shared helper does not affect them. Fixing them requires a separate effort and is deferred to a follow-up if it becomes a pain point.
+
 ### Validation
 
 The `Validate()` method on `Config` checks constraints and returns all violations, not just the first one:
