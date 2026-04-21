@@ -142,20 +142,26 @@ func TestDispatcherPathMigrateSpanIsSibling(t *testing.T) {
 func TestDispatcherWritesPreMigrationSnapshot(t *testing.T) {
 	cfg := setupWorkspace(t, "proj", "planner")
 
-	// First invocation migrates 0→2 (no snapshot — from == 0 is the
+	// First invocation migrates 0→head (no snapshot — from == 0 is the
 	// fresh-init carve-out).
 	if exit, _, errb := runExecute([]string{"list"}, cfg); exit != 0 {
 		t.Fatalf("prime list: exit=%d stderr=%s", exit, errb)
 	}
 
-	// Manually regress meta.schema_version to 1 so the next dispatcher
-	// call migrates 1→2 and takes a pre-migration snapshot.
+	// Manually regress meta.schema_version to head-1 so the next
+	// dispatcher call migrates (head-1)→head and takes a pre-migration
+	// snapshot. Also drop the table that migration `head` creates so
+	// the replay matches what a real v{head-1} workspace would carry.
 	db, err := sql.Open("sqlite", "file:"+cfg.Workspace.DBPath)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
-	if _, err := db.Exec(`UPDATE meta SET value = '1' WHERE key = 'schema_version'`); err != nil {
+	regress := strconv.Itoa(store.SupportedSchemaVersion - 1)
+	if _, err := db.Exec(`UPDATE meta SET value = ? WHERE key = 'schema_version'`, regress); err != nil {
 		t.Fatalf("regress meta: %v", err)
+	}
+	if _, err := db.Exec(`DROP TABLE commits`); err != nil {
+		t.Fatalf("drop commits: %v", err)
 	}
 	_ = db.Close()
 
@@ -175,8 +181,8 @@ func TestDispatcherWritesPreMigrationSnapshot(t *testing.T) {
 		t.Fatalf("%s snapshot count = %d, want 1; matches=%v", snapPattern, len(matches), matches)
 	}
 
-	// The snapshot's schema_version should be 1 — the pre-migration
-	// state.
+	// The snapshot's schema_version should equal the pre-migration
+	// state (head-1).
 	snap, err := sql.Open("sqlite", "file:"+matches[0])
 	if err != nil {
 		t.Fatalf("open snapshot: %v", err)
@@ -186,8 +192,8 @@ func TestDispatcherWritesPreMigrationSnapshot(t *testing.T) {
 	if err := snap.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&v); err != nil {
 		t.Fatalf("read snapshot schema_version: %v", err)
 	}
-	if v != "1" {
-		t.Errorf("snapshot schema_version = %q, want 1 (pre-migration state)", v)
+	if v != regress {
+		t.Errorf("snapshot schema_version = %q, want %q (pre-migration state)", v, regress)
 	}
 
 	// Live DB should be at 2 afterwards.

@@ -37,6 +37,7 @@ type Task struct {
 	CompletedAt        string         `json:"completed_at"`
 	Dependencies       []Dependency   `json:"dependencies"`
 	PRs                []PR           `json:"prs"`
+	Commits            []Commit       `json:"commits"`
 	Notes              []Note         `json:"notes"`
 	Handoff            string         `json:"handoff"`
 	HandoffSession     string         `json:"handoff_session"`
@@ -76,6 +77,7 @@ const (
 	HistoryMoved        HistoryAction = "moved"
 	HistoryNoteAdded    HistoryAction = "note_added"
 	HistoryPRAdded      HistoryAction = "pr_added"
+	HistoryCommitAdded  HistoryAction = "commit_added"
 	HistoryFieldUpdated HistoryAction = "field_updated"
 	HistoryLinked       HistoryAction = "linked"
 	HistoryUnlinked     HistoryAction = "unlinked"
@@ -111,6 +113,17 @@ type Note struct {
 // ignored).
 type PR struct {
 	URL     string `json:"url"`
+	AddedAt string `json:"added_at"`
+}
+
+// Commit is one row of the commits table — an append-only list of
+// BRANCH@HASH references associated with the task. Dedup is case-
+// sensitive on Branch and case-insensitive on Hash (see spec §Commit
+// reference format); since the parser lowercases Hash on write, the
+// stored value is always canonical lowercase hex.
+type Commit struct {
+	Branch  string `json:"branch"`
+	Hash    string `json:"hash"`
 	AddedAt string `json:"added_at"`
 }
 

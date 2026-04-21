@@ -43,11 +43,12 @@ type cancelledConflictBody struct {
 // updateArgs collects every parsed flag for `quest update`. Pointer
 // fields track the set/unset distinction — an unset flag is nil,
 // `--title ""` is a non-nil pointer to "" (rejected later as empty).
-// Meta is append-only; multiple `--meta` on one invocation produce
-// multiple entries in order.
+// Meta and Commits are append-only; multiple `--meta` / `--commit` on
+// one invocation produce multiple entries in order.
 type updateArgs struct {
 	Note               *string
 	PR                 *string
+	Commits            []batch.Commit
 	Handoff            *string
 	Title              *string
 	Description        *string
@@ -69,10 +70,10 @@ func (a updateArgs) hasElevated() bool {
 }
 
 // blockedOnTerminalState lists every flag that is not --note / --pr /
-// --meta — the three append/annotation flags allowed on complete and
-// failed tasks per spec §update *Terminal-state gating*. The returned
-// slice is used in the exit-5 stderr message so the caller sees
-// exactly what is blocked.
+// --commit / --meta — the append/annotation flags allowed on complete
+// and failed tasks per spec §update *Terminal-state gating*. The
+// returned slice is used in the exit-5 stderr message so the caller
+// sees exactly what is blocked.
 func (a updateArgs) blockedOnTerminalState() []string {
 	var blocked []string
 	if a.Title != nil {
@@ -289,6 +290,14 @@ func parseUpdateArgs(cfg config.Config, stdin io.Reader, stderr io.Writer, args 
 
 	fs.Func("note", "append a timestamped progress note", setRaw(&parsed.Note, "--note", true))
 	fs.Func("pr", "append a PR link", setRaw(&parsed.PR, "--pr", false))
+	fs.Func("commit", "append a git commit reference BRANCH@HASH (repeatable)", func(v string) error {
+		c, err := batch.ParseCommit("--commit", v)
+		if err != nil {
+			return fmt.Errorf("update: %w", err)
+		}
+		parsed.Commits = append(parsed.Commits, c)
+		return nil
+	})
 	fs.Func("handoff", "set handoff context", setRaw(&parsed.Handoff, "--handoff", true))
 	fs.Func("title", "update the task title", setRaw(&parsed.Title, "--title", false))
 	fs.Func("description", "update the full description", setRaw(&parsed.Description, "--description", true))
@@ -640,7 +649,43 @@ func applyUpdate(ctx context.Context, tx *store.Tx, id string, cfg config.Config
 		}
 	}
 
+	// --commit idempotent append (repeatable). UNIQUE index on
+	// (task_id, branch, lower(hash)) silently swallows duplicates;
+	// history fires only when a row was actually inserted.
+	for _, c := range a.Commits {
+		if err := appendCommit(ctx, tx, id, cfg, c, now); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+// appendCommit writes one commit record plus its commit_added history
+// row. The INSERT uses OR IGNORE so the UNIQUE (task_id, branch,
+// lower(hash)) index absorbs duplicate BRANCH@HASH values — spec
+// §Commit reference format pins dedup as silent and produces no
+// history entry. Shared across update.go and close.go so dedup
+// semantics cannot drift between the update/complete/fail forms.
+func appendCommit(ctx context.Context, tx *store.Tx, taskID string, cfg config.Config, c batch.Commit, now string) error {
+	res, err := tx.ExecContext(ctx,
+		`INSERT OR IGNORE INTO commits(task_id, branch, hash, added_at) VALUES (?, ?, ?, ?)`,
+		taskID, c.Branch, c.Hash, now)
+	if err != nil {
+		return fmt.Errorf("%w: update commit: %s", errors.ErrGeneral, err.Error())
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil
+	}
+	return store.AppendHistory(ctx, tx, store.History{
+		TaskID:    taskID,
+		Timestamp: now,
+		Role:      cfg.Agent.Role,
+		Session:   cfg.Agent.Session,
+		Action:    store.HistoryCommitAdded,
+		Payload:   map[string]any{"branch": c.Branch, "hash": c.Hash},
+	})
 }
 
 // historyNullable returns nil for "" so the history payload's `from`

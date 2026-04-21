@@ -255,6 +255,9 @@ func writeSections(buf *strings.Builder, resp showResponse, width int) {
 	if len(resp.PRs) > 0 {
 		write("PRs", func() { writePRs(buf, resp.PRs) })
 	}
+	if len(resp.Commits) > 0 {
+		write("Commits", func() { writeCommits(buf, resp.Commits) })
+	}
 	if resp.Handoff != nil {
 		write(handoffHeading(resp), func() { writeProse(buf, *resp.Handoff, "    ", width) })
 	}
@@ -410,6 +413,21 @@ func writePRs(buf *strings.Builder, prs []store.PR) {
 	}
 }
 
+// writeCommits renders each commit as `{branch}@{hash}  ({timestamp})`,
+// parallel to writePRs. Rows are not wrapped; long hashes overflow —
+// spec forbids truncation in show output.
+func writeCommits(buf *strings.Builder, commits []store.Commit) {
+	for _, c := range commits {
+		buf.WriteString("    ")
+		buf.WriteString(c.Branch)
+		buf.WriteByte('@')
+		buf.WriteString(c.Hash)
+		buf.WriteString("  (")
+		buf.WriteString(formatTimestamp(c.AddedAt))
+		buf.WriteString(")\n")
+	}
+}
+
 // writeHistory renders the History block per spec §History layout.
 // The role/session pair and action columns both pad to the widest
 // entry in the section so details align vertically. Detail formatters
@@ -481,6 +499,13 @@ func historyDetail(h historyEntry) string {
 			return u
 		}
 		return ""
+	case "commit_added":
+		branch, _ := h.Payload["branch"].(string)
+		hash, _ := h.Payload["hash"].(string)
+		if branch == "" && hash == "" {
+			return ""
+		}
+		return branch + "@" + hash
 	case "field_updated":
 		return formatFieldUpdatedPayload(h.Payload)
 	case "linked", "unlinked":

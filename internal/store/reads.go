@@ -87,6 +87,7 @@ func (s *sqliteStore) GetTask(ctx context.Context, id string) (Task, error) {
 	t.Tags = []string{}
 	t.Dependencies = []Dependency{}
 	t.PRs = []PR{}
+	t.Commits = []Commit{}
 	t.Notes = []Note{}
 	return t, nil
 }
@@ -115,6 +116,11 @@ func (s *sqliteStore) GetTaskWithDeps(ctx context.Context, id string) (Task, err
 		return Task{}, err
 	}
 	t.PRs = prs
+	commits, err := s.GetCommits(ctx, id)
+	if err != nil {
+		return Task{}, err
+	}
+	t.Commits = commits
 	notes, err := s.GetNotes(ctx, id)
 	if err != nil {
 		return Task{}, err
@@ -346,6 +352,30 @@ func (s *sqliteStore) GetPRs(ctx context.Context, id string) ([]PR, error) {
 			return nil, classifyDriverErr(err)
 		}
 		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, classifyDriverErr(err)
+	}
+	return out, nil
+}
+
+// GetCommits returns the commit list ordered by (added_at, branch,
+// hash) for stable output. Parallel to GetPRs — one row per recorded
+// BRANCH@HASH reference.
+func (s *sqliteStore) GetCommits(ctx context.Context, id string) ([]Commit, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT branch, hash, added_at FROM commits WHERE task_id = ? ORDER BY added_at, branch, hash`, id)
+	if err != nil {
+		return nil, classifyDriverErr(err)
+	}
+	defer rows.Close()
+	out := []Commit{}
+	for rows.Next() {
+		var c Commit
+		if err := rows.Scan(&c.Branch, &c.Hash, &c.AddedAt); err != nil {
+			return nil, classifyDriverErr(err)
+		}
+		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, classifyDriverErr(err)

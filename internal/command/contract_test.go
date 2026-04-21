@@ -71,7 +71,7 @@ func TestShowJSONHasRequiredFields(t *testing.T) {
 		"id", "title", "description", "context", "type", "status",
 		"role", "tier", "severity", "tags", "parent", "acceptance_criteria",
 		"metadata", "owner_session", "started_at", "completed_at",
-		"dependencies", "prs", "notes", "handoff", "handoff_session",
+		"dependencies", "prs", "commits", "notes", "handoff", "handoff_session",
 		"handoff_written_at", "debrief",
 	}
 	testutil.AssertSchema(t, []byte(stdout), required)

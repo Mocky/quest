@@ -164,7 +164,7 @@ func TestInitHappyPath(t *testing.T) {
 	}
 
 	wantTables := []string{
-		"dependencies", "history", "meta", "notes", "prs",
+		"commits", "dependencies", "history", "meta", "notes", "prs",
 		"subtask_counter", "tags", "task_counter", "tasks",
 	}
 	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")

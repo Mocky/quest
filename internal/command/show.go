@@ -47,6 +47,7 @@ type showResponse struct {
 	CompletedAt        *string            `json:"completed_at"`
 	Dependencies       []store.Dependency `json:"dependencies"`
 	PRs                []store.PR         `json:"prs"`
+	Commits            []store.Commit     `json:"commits"`
 	Notes              []store.Note       `json:"notes"`
 	Handoff            *string            `json:"handoff"`
 	HandoffSession     *string            `json:"handoff_session"`
@@ -241,6 +242,7 @@ func buildShowResponse(ctx context.Context, s store.Store, t store.Task) (showRe
 		CompletedAt:        nullString(t.CompletedAt),
 		Dependencies:       t.Dependencies,
 		PRs:                t.PRs,
+		Commits:            t.Commits,
 		Notes:              t.Notes,
 		Handoff:            nullString(t.Handoff),
 		HandoffSession:     nullString(t.HandoffSession),

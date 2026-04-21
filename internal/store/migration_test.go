@@ -793,10 +793,10 @@ func TestMigrateV4PreservesV3Data(t *testing.T) {
 
 	applied, err := store.Migrate(context.Background(), s)
 	if err != nil {
-		t.Fatalf("Migrate to v4: %v", err)
+		t.Fatalf("Migrate forward from v3: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("applied = %d, want 1 (only 004 replays)", applied)
+	if applied != store.SupportedSchemaVersion-3 {
+		t.Fatalf("applied = %d, want %d (replays 004..head)", applied, store.SupportedSchemaVersion-3)
 	}
 
 	db, err = sql.Open("sqlite", "file:"+path)

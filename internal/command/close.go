@@ -9,6 +9,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/mocky/quest/internal/batch"
 	"github.com/mocky/quest/internal/config"
 	"github.com/mocky/quest/internal/errors"
 	"github.com/mocky/quest/internal/input"
@@ -57,10 +58,13 @@ var (
 
 // closeArgs holds the parsed flags. Debrief is required; the pointer
 // lets us distinguish unset (nil, exit 2 usage) from empty-string
-// (also exit 2 but after state checks).
+// (also exit 2 but after state checks). Commits is repeatable — one
+// entry per --commit BRANCH@HASH, parsed at arg-parse time so shape
+// errors surface as exit 2 before any DB I/O.
 type closeArgs struct {
 	Debrief *string
 	PR      *string
+	Commits []batch.Commit
 }
 
 // parseCloseArgs consumes --debrief and --pr plus an optional leading
@@ -85,6 +89,14 @@ func parseCloseArgs(action closeAction, cfg config.Config, stdin io.Reader, stde
 	fs.Func("pr", "append a PR link (idempotent)", func(v string) error {
 		tmp := v
 		parsed.PR = &tmp
+		return nil
+	})
+	fs.Func("commit", "append a git commit reference BRANCH@HASH (repeatable)", func(v string) error {
+		c, err := batch.ParseCommit("--commit", v)
+		if err != nil {
+			return fmt.Errorf("%s: %w", action.name, err)
+		}
+		parsed.Commits = append(parsed.Commits, c)
 		return nil
 	})
 
@@ -307,6 +319,14 @@ func closeTask(ctx context.Context, cfg config.Config, s store.Store, args []str
 			}); herr != nil {
 				return herr
 			}
+		}
+	}
+
+	// --commit: repeatable; shared helper with update.go keeps the
+	// dedup + history semantics uniform across update/complete/fail.
+	for _, c := range parsed.Commits {
+		if err := appendCommit(ctx, tx, id, cfg, c, now); err != nil {
+			return err
 		}
 	}
 

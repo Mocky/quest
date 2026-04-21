@@ -42,6 +42,7 @@ type TaskJSON struct {
 	CompletedAt        *string            `json:"completed_at"`
 	Dependencies       []store.Dependency `json:"dependencies"`
 	PRs                []store.PR         `json:"prs"`
+	Commits            []store.Commit     `json:"commits"`
 	Notes              []store.Note       `json:"notes"`
 	Handoff            *string            `json:"handoff"`
 	HandoffSession     *string            `json:"handoff_session"`
@@ -310,6 +311,10 @@ func buildTaskJSON(t store.Task, history []store.History) TaskJSON {
 	if prs == nil {
 		prs = []store.PR{}
 	}
+	commits := t.Commits
+	if commits == nil {
+		commits = []store.Commit{}
+	}
 	notes := t.Notes
 	if notes == nil {
 		notes = []store.Note{}
@@ -337,6 +342,7 @@ func buildTaskJSON(t store.Task, history []store.History) TaskJSON {
 		CompletedAt:        nullString(t.CompletedAt),
 		Dependencies:       deps,
 		PRs:                prs,
+		Commits:            commits,
 		Notes:              notes,
 		Handoff:            nullString(t.Handoff),
 		HandoffSession:     nullString(t.HandoffSession),

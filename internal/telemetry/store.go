@@ -91,6 +91,10 @@ func (d *InstrumentedStore) GetPRs(ctx context.Context, id string) ([]store.PR, 
 	return d.inner.GetPRs(ctx, id)
 }
 
+func (d *InstrumentedStore) GetCommits(ctx context.Context, id string) ([]store.Commit, error) {
+	return d.inner.GetCommits(ctx, id)
+}
+
 func (d *InstrumentedStore) GetNotes(ctx context.Context, id string) ([]store.Note, error) {
 	return d.inner.GetNotes(ctx, id)
 }

@@ -496,6 +496,7 @@ func TestUpdateCancelledRejectsEverything(t *testing.T) {
 	}{
 		{"note", []string{"--note", "hi"}},
 		{"pr", []string{"--pr", "https://example/pr"}},
+		{"commit", []string{"--commit", "master@abc1234"}},
 		{"handoff", []string{"--handoff", "ctx"}},
 	}
 	for _, tc := range cases {
@@ -524,8 +525,8 @@ func TestUpdateCancelledRejectsEverything(t *testing.T) {
 	}
 }
 
-// TestUpdateTerminalStateAllowsNoteAndPR: --note/--pr/--meta survive
-// on completed/failed tasks; other flags are rejected.
+// TestUpdateTerminalStateAllowsNoteAndPR: --note/--pr/--commit/--meta
+// survive on completed/failed tasks; other flags are rejected.
 func TestUpdateTerminalStateAllowsNoteAndPR(t *testing.T) {
 	s, _ := testStore(t)
 	seedTaskFull(t, s, "proj-a1", "Alpha", "completed", "sess-owner")
@@ -533,6 +534,11 @@ func TestUpdateTerminalStateAllowsNoteAndPR(t *testing.T) {
 	// --note allowed.
 	if err, _, _ := runUpdate(t, s, plannerCfg(), "", []string{"proj-a1", "--note", "post-mortem"}); err != nil {
 		t.Errorf("--note on completed: %v", err)
+	}
+	// --commit allowed.
+	if err, _, _ := runUpdate(t, s, plannerCfg(), "",
+		[]string{"proj-a1", "--commit", "master@abc1234"}); err != nil {
+		t.Errorf("--commit on completed: %v", err)
 	}
 	// --title blocked.
 	err, _, _ := runUpdate(t, s, plannerCfg(), "", []string{"proj-a1", "--title", "new"})

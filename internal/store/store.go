@@ -20,6 +20,7 @@ type Store interface {
 	GetDependents(ctx context.Context, id string) ([]Dependency, error)
 	GetTags(ctx context.Context, id string) ([]string, error)
 	GetPRs(ctx context.Context, id string) ([]PR, error)
+	GetCommits(ctx context.Context, id string) ([]Commit, error)
 	GetNotes(ctx context.Context, id string) ([]Note, error)
 
 	// Lifecycle
