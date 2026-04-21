@@ -13,6 +13,7 @@ import (
 
 	"github.com/mocky/quest/internal/config"
 	"github.com/mocky/quest/internal/errors"
+	"github.com/mocky/quest/internal/output"
 	"github.com/mocky/quest/internal/store"
 	"github.com/mocky/quest/internal/suggest"
 	"github.com/mocky/quest/internal/telemetry"
@@ -356,67 +357,110 @@ func normalizeCell(col string, val any) any {
 	return val
 }
 
-// emitListText writes a fixed-width table. Cell values are rendered
-// per column: string scalars verbatim, null-scalars as empty string,
-// array columns as comma-joined ID lists. The widths below are a
-// placeholder; spec §Text-mode formatting calls for content-aware
-// helper widths and a TTY-allocated title column, which a follow-up
-// impl task wires up here. Text mode is non-contractual per
-// STANDARDS.md §CLI Surface Versioning, so reshaping these widths
-// does not require a deprecation cycle.
+// listTitleMaxWidth caps the title column's rendered width at the
+// task-title byte cap (spec §Field constraints). Anything past 128 is
+// pure padding, so we never allocate more regardless of terminal size.
+const listTitleMaxWidth = 128
+
+// emitListText renders rows as a plain-text table per spec §Text-mode
+// formatting. Helper columns size to their content; the title column
+// is allocated the remainder of the terminal width on a TTY (clamped
+// to 128) or is unbounded on a non-TTY / unknown-width stdout. The
+// final column of every row is emitted without trailing whitespace.
+// Text mode is explicitly non-contractual (STANDARDS.md §CLI Surface
+// Versioning) -- these rules describe rendering intent and may evolve.
 func emitListText(w io.Writer, columns []string, rows []listRow) error {
-	widths := map[string]int{
-		"id":         12,
-		"title":      40,
-		"status":     10,
-		"type":       8,
-		"tier":       6,
-		"role":       12,
-		"tags":       24,
-		"parent":     12,
-		"blocked-by": 24,
-		"children":   24,
-	}
+	return emitListTextWithWidth(w, columns, rows, output.TerminalWidth(w))
+}
+
+// emitListTextWithWidth is the rendering core. termWidth is the
+// effective stdout column count (0 means "no TTY / unknown", which
+// selects the unbounded-title branch). Split out so tests can inject a
+// width without depending on the real stdout's TTY-ness.
+func emitListTextWithWidth(w io.Writer, columns []string, rows []listRow, termWidth int) error {
 	headers := make([]string, len(columns))
 	for i, c := range columns {
 		headers[i] = strings.ToUpper(c)
 	}
-	widthList := make([]int, len(columns))
-	for i, c := range columns {
-		if wv, ok := widths[c]; ok {
-			widthList[i] = wv
-		} else {
-			widthList[i] = 12
+	// Render every cell up front so content widths are measured on the
+	// exact string the row will emit (array columns joined, nulls as
+	// empty). This also lets us skip re-rendering during emission.
+	cells := make([][]string, len(rows))
+	for i, row := range rows {
+		cells[i] = make([]string, len(columns))
+		for j, c := range columns {
+			cells[i][j] = formatTextCell(row.cells[c])
 		}
-		if len(headers[i]) > widthList[i] {
-			widthList[i] = len(headers[i])
+	}
+	widths := make([]int, len(columns))
+	titleIdx := -1
+	for i, c := range columns {
+		if c == "title" {
+			titleIdx = i
+		}
+		widths[i] = len(headers[i])
+		for r := range rows {
+			if n := len(cells[r][i]); n > widths[i] {
+				widths[i] = n
+			}
+		}
+	}
+	// Title allocation: on a TTY with known width, the title column
+	// gets whatever is left after helpers and gutters, clamped to the
+	// 128-byte field cap. If helpers alone overflow the terminal
+	// (budget <= 0), leave title at its content width and let the row
+	// overflow — narrow terminals are an edge case per spec.
+	if titleIdx >= 0 && termWidth > 0 {
+		helperTotal := 0
+		for i, wdt := range widths {
+			if i == titleIdx {
+				continue
+			}
+			helperTotal += wdt
+		}
+		gutters := 2 * (len(columns) - 1)
+		budget := termWidth - helperTotal - gutters
+		if budget > listTitleMaxWidth {
+			budget = listTitleMaxWidth
+		}
+		if budget > 0 {
+			widths[titleIdx] = budget
 		}
 	}
 	var buf bytes.Buffer
-	for i, h := range headers {
-		if i > 0 {
-			buf.WriteString("  ")
-		}
-		buf.WriteString(padRight(h, widthList[i]))
-	}
-	buf.WriteByte('\n')
-	for _, row := range rows {
-		for i, c := range columns {
-			if i > 0 {
-				buf.WriteString("  ")
-			}
-			buf.WriteString(padRight(truncCell(formatTextCell(row.cells[c]), widthList[i]), widthList[i]))
-		}
-		buf.WriteByte('\n')
+	writeListTextRow(&buf, headers, widths)
+	for _, row := range cells {
+		writeListTextRow(&buf, row, widths)
 	}
 	_, err := w.Write(buf.Bytes())
 	return err
 }
 
-// truncCell enforces the fixed column width from spec §Text-mode
+// writeListTextRow emits one row with a two-space gutter between
+// columns. Every column except the last is right-padded to its
+// computed width for alignment; the last column is emitted at its
+// natural width (after any needed truncation) so copy-paste does not
+// pick up invisible trailing whitespace.
+func writeListTextRow(buf *bytes.Buffer, row []string, widths []int) {
+	last := len(row) - 1
+	for i, cell := range row {
+		if i > 0 {
+			buf.WriteString("  ")
+		}
+		cell = truncCell(cell, widths[i])
+		if i == last {
+			buf.WriteString(cell)
+		} else {
+			buf.WriteString(padRight(cell, widths[i]))
+		}
+	}
+	buf.WriteByte('\n')
+}
+
+// truncCell enforces the truncation rule from spec §Text-mode
 // formatting: cells longer than w are cut to w-3 and suffixed with
-// "...". Widths in emitListText are always >= 6, so the w < 3 branch
-// is a defensive tail for future width changes.
+// "...". Widths below 3 have no room for the suffix, so they truncate
+// without it -- a defensive tail for pathologically narrow columns.
 func truncCell(s string, w int) string {
 	if len(s) <= w {
 		return s
