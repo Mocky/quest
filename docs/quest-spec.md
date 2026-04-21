@@ -289,7 +289,7 @@ Each `@file` (or `@-` stdin) argument is capped at 1 MiB (1,048,576 bytes) of re
 
 ### Text-mode formatting
 
-Text mode (`--text`) is a human-friendly rendering, not a contract -- see STANDARDS.md §CLI Surface Versioning. The rules below describe the current rendering intent and may evolve without a deprecation cycle; agents MUST NOT parse text output.
+Text mode (`--text`) is a human-friendly rendering, not a contract -- see STANDARDS.md §CLI Surface Versioning. The rules below describe the current rendering intent and may evolve without a deprecation cycle; agents MUST NOT parse text output. Because text mode is human-facing, it may carry affordances (row counts, summary footers, relative timestamps) that the JSON agent contract deliberately does not -- adding those affordances to JSON would be a breaking contract change for zero agent benefit.
 
 - No ANSI colors. Humans who want colored rendering pipe quest output through a colorizer. A `--color` flag is deferred until a concrete agent workflow needs it and color rules are pinned here.
 - **Helper columns (every column except `title`) use content-aware widths.** Each helper column's width is `max(header_label_width, longest_cell_value_width_in_that_column across the rows being printed)`. The header label length is a floor so headers are never truncated.
@@ -1327,7 +1327,11 @@ proj-a1     open                            Auth module
 proj-a1.1   completed                       JWT validation
 proj-a1.2   accepted                        Session store
 proj-a1.3   open       proj-a1.1,proj-a1.2  Auth middleware
+
+4 tasks
 ```
+
+A **count footer** follows the table: a blank line, then `N tasks` (or `1 task` when the count is exactly one, or `0 tasks` when the result set is empty). The footer is always emitted in text mode and there is no flag to suppress it. It is a human affordance for comparing list lengths across runs; agents read the JSON array length and so the footer is deliberately **not** mirrored into JSON, which would be a breaking change to an existing contract for zero agent benefit. Singular/plural matters because humans read the line aloud and `1 tasks` reads as a bug.
 
 **JSON output** (default): array of row objects, one per matching task.
 

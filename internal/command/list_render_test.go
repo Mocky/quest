@@ -266,6 +266,79 @@ func TestEmitListTextTitleCappedAt128(t *testing.T) {
 	}
 }
 
+// TestEmitListTextCountFooter pins the spec §quest list count footer:
+// a blank line separates the table from `N tasks` (or `1 task` when
+// exactly one, `0 tasks` when empty). The pluralization branch matters
+// because humans read the line aloud.
+func TestEmitListTextCountFooter(t *testing.T) {
+	columns := []string{"id", "status", "title"}
+	tests := []struct {
+		name       string
+		rows       []listRow
+		wantFooter string
+	}{
+		{
+			name:       "zero rows",
+			rows:       nil,
+			wantFooter: "0 tasks",
+		},
+		{
+			name: "one row is singular",
+			rows: []listRow{
+				mkRow(map[string]any{"id": "proj-a1", "status": "open", "title": "Alpha"}),
+			},
+			wantFooter: "1 task",
+		},
+		{
+			name: "many rows are plural",
+			rows: []listRow{
+				mkRow(map[string]any{"id": "proj-a1", "status": "open", "title": "Alpha"}),
+				mkRow(map[string]any{"id": "proj-a2", "status": "open", "title": "Beta"}),
+				mkRow(map[string]any{"id": "proj-a3", "status": "open", "title": "Gamma"}),
+			},
+			wantFooter: "3 tasks",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := emitListTextWithWidth(&buf, columns, tt.rows, 0); err != nil {
+				t.Fatalf("emitListTextWithWidth: %v", err)
+			}
+			got := buf.String()
+			// Every output ends with the footer line terminated by \n.
+			wantSuffix := tt.wantFooter + "\n"
+			if !strings.HasSuffix(got, wantSuffix) {
+				t.Errorf("output suffix = ...%q, want ...%q; full:\n%s",
+					lastLine(got), tt.wantFooter, got)
+			}
+			// The footer is preceded by a blank line -- check the penultimate
+			// newline pair. Split on \n and expect ["...last-row", "", footer, ""]
+			// (trailing empty from the final \n).
+			lines := strings.Split(got, "\n")
+			if len(lines) < 3 {
+				t.Fatalf("too few lines for footer check: %q", got)
+			}
+			footerIdx := len(lines) - 2
+			if lines[footerIdx] != tt.wantFooter {
+				t.Errorf("line[%d] = %q, want %q", footerIdx, lines[footerIdx], tt.wantFooter)
+			}
+			if lines[footerIdx-1] != "" {
+				t.Errorf("line before footer = %q, want blank line", lines[footerIdx-1])
+			}
+		})
+	}
+}
+
+// lastLine returns the last non-empty line of s, for diagnostic output.
+func lastLine(s string) string {
+	trimmed := strings.TrimRight(s, "\n")
+	if i := strings.LastIndex(trimmed, "\n"); i >= 0 {
+		return trimmed[i+1:]
+	}
+	return trimmed
+}
+
 // TestEmitListTextTitleNotInColumns pins that the title-budget branch
 // is a no-op when "title" is not in --columns. Helper columns still
 // size to content; the last column still renders without trailing

@@ -432,8 +432,22 @@ func emitListTextWithWidth(w io.Writer, columns []string, rows []listRow, termWi
 	for _, row := range cells {
 		writeListTextRow(&buf, row, widths)
 	}
+	writeListCountFooter(&buf, len(rows))
 	_, err := w.Write(buf.Bytes())
 	return err
+}
+
+// writeListCountFooter appends the spec §quest list count footer: a
+// blank line followed by `N tasks` (or `1 task` when exactly one).
+// Text-mode only; JSON output is unchanged so the agent contract stays
+// stable and agents keep reading the array length directly.
+func writeListCountFooter(buf *bytes.Buffer, n int) {
+	buf.WriteByte('\n')
+	if n == 1 {
+		buf.WriteString("1 task\n")
+		return
+	}
+	fmt.Fprintf(buf, "%d tasks\n", n)
 }
 
 // writeListTextRow emits one row with a two-space gutter between

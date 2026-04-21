@@ -483,6 +483,69 @@ func TestListTextFormat(t *testing.T) {
 	}
 }
 
+// TestListTextCountFooterSingularPluralEmpty pins that the count
+// footer is emitted in text mode across all three cases (0/1/N) and
+// that the JSON output carries no count field -- the footer is a
+// text-mode-only human affordance.
+func TestListTextCountFooterSingularPluralEmpty(t *testing.T) {
+	s, _ := testStore(t)
+	// Empty store ⇒ text output ends with "0 tasks".
+	textCfg := plannerCfg()
+	textCfg.Output.Text = true
+	err, stdout, _ := runList(t, s, textCfg, nil)
+	if err != nil {
+		t.Fatalf("List empty: %v", err)
+	}
+	if !strings.HasSuffix(stdout, "\n0 tasks\n") {
+		t.Errorf("empty text footer missing; got:\n%s", stdout)
+	}
+
+	// JSON on the same empty store is a bare [] with no count field.
+	err, stdout, _ = runList(t, s, plannerCfg(), nil)
+	if err != nil {
+		t.Fatalf("List JSON empty: %v", err)
+	}
+	if strings.TrimSpace(stdout) != "[]" {
+		t.Errorf("JSON empty = %q, want []", stdout)
+	}
+
+	// One task ⇒ singular footer.
+	seedListTask(t, s, "proj-a1", "Alpha", "", "open", "", "", "")
+	err, stdout, _ = runList(t, s, textCfg, nil)
+	if err != nil {
+		t.Fatalf("List one: %v", err)
+	}
+	if !strings.HasSuffix(stdout, "\n1 task\n") {
+		t.Errorf("singular footer missing; got:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "1 tasks") {
+		t.Errorf("plural footer emitted for single row: %q", stdout)
+	}
+
+	// Three tasks ⇒ plural footer.
+	seedListTask(t, s, "proj-a2", "Beta", "", "open", "", "", "")
+	seedListTask(t, s, "proj-a3", "Gamma", "", "open", "", "", "")
+	err, stdout, _ = runList(t, s, textCfg, nil)
+	if err != nil {
+		t.Fatalf("List many: %v", err)
+	}
+	if !strings.HasSuffix(stdout, "\n3 tasks\n") {
+		t.Errorf("plural footer missing; got:\n%s", stdout)
+	}
+
+	// JSON on the non-empty store is still a bare array, no count key
+	// anywhere in the payload.
+	err, stdout, _ = runList(t, s, plannerCfg(), nil)
+	if err != nil {
+		t.Fatalf("List JSON many: %v", err)
+	}
+	for _, forbidden := range []string{`"count"`, `"tasks":3`, `"total"`} {
+		if strings.Contains(stdout, forbidden) {
+			t.Errorf("JSON leaked count field %q: %s", forbidden, stdout)
+		}
+	}
+}
+
 // TestListTextFormatUnboundedTitleWhenPiped pins the spec §Text-mode
 // formatting no-TTY branch: when stdout is not a terminal (the buffer
 // case in these integration tests), the title column is unbounded and
