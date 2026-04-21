@@ -80,7 +80,22 @@ func Migrate(ctx context.Context, s Store) (int, error) {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, m.sql); err != nil {
-			_ = tx.Rollback()
+			if rbErr := tx.Rollback(); rbErr != nil {
+				// Both the migration SQL and the rollback failed -- the DB
+				// may be in a partially-migrated state, violating the
+				// spec's forward-only-never-partial promise. Point the
+				// operator at the pre-migration snapshot so the prior-
+				// version file is the recovery path (spec §Storage >
+				// Pre-migration snapshot).
+				slog.ErrorContext(ctx, "migration rollback failed",
+					"schema.from", stored,
+					"schema.to", SupportedSchemaVersion,
+					"migration", fmt.Sprintf("%03d_%s", m.version, m.label),
+					"err", rbErr.Error(),
+				)
+				return 0, fmt.Errorf("%w: migration %03d %s failed and rollback also failed -- database may be partially migrated, restore from .quest/backups/pre-v%d-*.db: exec: %s; rollback: %s",
+					errors.ErrGeneral, m.version, m.label, SupportedSchemaVersion, err.Error(), rbErr.Error())
+			}
 			return 0, fmt.Errorf("%w: migration %03d %s: %s", errors.ErrGeneral, m.version, m.label, err.Error())
 		}
 		applied++
