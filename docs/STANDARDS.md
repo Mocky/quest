@@ -282,6 +282,17 @@ A `--color` flag is deliberately not defined. Text-mode output is plain; humans 
 
 `.quest/config.toml` fields do not get flag overrides. They are immutable for the life of the project; the only way to change `id_prefix` or `elevated_roles` is to edit the file directly.
 
+### `--help` Convention
+
+`--help` is a universal terminal flag: every subcommand supports it, and every subcommand treats it identically. The uniform contract lets agents and operators probe any command -- including destructive ones like `quest cancel` or `quest reset` -- without executing its work.
+
+- **Prints usage, exits 0.** Passing `--help` to any subcommand prints that subcommand's usage text and returns exit code 0. No other output is produced -- no JSON envelope on stdout, no history row, no mutation of state.
+- **Usage goes to stderr; stdout emits nothing.** The flag package writes to wherever `fs.SetOutput` points, and every subcommand points it at stderr (the same `fs.SetOutput(stderr)` that places flag-parse errors there). Callers redirecting stdout capture the command's normal output; `--help` stays on the stderr channel where operators look for diagnostics.
+- **`--help` short-circuits the command.** The command's work -- queries, writes, dispatches -- does not execute when `--help` is present. This invariant is what makes `--help` safe to probe on destructive commands; `quest cancel qst-01 --help` never cancels anything, even transiently.
+- **Precedence over all other flags.** `quest list --status cancelled --help` is equivalent to `quest list --help`. Filter values, positional arguments, and environment state are ignored when `--help` is present; the usage text is the sole output.
+
+Implementation: call `fs.Parse` inline, and on `errors.Is(err, flag.ErrHelp)` return `nil` immediately -- the stdlib prints the usage as a side effect of detecting `-h`/`--help` and returns `flag.ErrHelp` so the handler can bail before doing any work. Helpers that call `fs.Parse` on behalf of the caller must propagate the `flag.ErrHelp` sentinel (or an explicit `didHelp` return) rather than swallowing it; see Anti-Pattern #7 below.
+
 ### Help Rendering
 
 `--help` on any subcommand renders usage text using the same flag conventions used throughout the spec, README, and command examples.
@@ -473,6 +484,64 @@ if cfg.Log.Level == "" {
     errs = append(errs, "QUEST_LOG_LEVEL: log level is required")
 }
 ```
+
+#### 7. Flag-parse helpers that swallow `flag.ErrHelp`
+
+Extracting `fs.Parse` into a helper is tempting when multiple commands share parsing shape, but the helper must preserve the `flag.ErrHelp` signal so the caller can short-circuit per the `--help` Convention. Returning a zero-valued struct with a `nil` error when `flag.ErrHelp` is caught looks harmless locally -- the stdlib already printed the usage text, so the helper has "handled" the flag -- but the caller has no way to distinguish "parsing succeeded" from "user asked for help," and the command's work runs anyway.
+
+```go
+// WRONG — helper catches flag.ErrHelp and returns an empty filter, a nil
+// columns list, and a nil error. The caller can't tell the user passed
+// --help, so it queries the store with the empty filter and renders the
+// result. In JSON mode the caller emits `[{},{},...]` after the usage
+// text; text mode hides the bug because nil columns means no headers and
+// no rendered rows. The --help short-circuit invariant is broken either way.
+func parseFlags(args []string) (Filter, []string, error) {
+    fs := flag.NewFlagSet("list", flag.ContinueOnError)
+    // ... flag definitions ...
+    if err := fs.Parse(args); err != nil {
+        if errors.Is(err, flag.ErrHelp) {
+            return Filter{}, nil, nil // signal lost
+        }
+        return Filter{}, nil, err
+    }
+    return filter, columns, nil
+}
+
+func List(...) error {
+    filter, columns, err := parseFlags(args)
+    if err != nil {
+        return err
+    }
+    // --help already printed usage, but the query and emit still run.
+    tasks, _ := store.ListTasks(ctx, filter)
+    return emitJSON(stdout, columns, tasks)
+}
+
+// CORRECT — propagate flag.ErrHelp so the caller short-circuits explicitly,
+// matching the inline pattern every other subcommand already uses.
+func parseFlags(args []string) (Filter, []string, error) {
+    fs := flag.NewFlagSet("list", flag.ContinueOnError)
+    // ... flag definitions ...
+    if err := fs.Parse(args); err != nil {
+        return Filter{}, nil, err // flag.ErrHelp flows through unchanged
+    }
+    return filter, columns, nil
+}
+
+func List(...) error {
+    filter, columns, err := parseFlags(args)
+    if errors.Is(err, flag.ErrHelp) {
+        return nil // --help printed usage; exit 0 without running the query.
+    }
+    if err != nil {
+        return err
+    }
+    // ... query and emit ...
+}
+```
+
+An explicit `didHelp bool` return is an acceptable alternative when mixing the sentinel with the error channel is awkward -- the point is that the caller branches deliberately on "user asked for help" rather than reaching the command body.
 
 ---
 
