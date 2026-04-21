@@ -102,7 +102,7 @@ Worker commands (no role required):
 | ---------- | ------------------------------------------------------ |
 | `show`     | Read a task; `--history` includes the mutation log    |
 | `accept`   | Transition `open → accepted` (race-safe, first wins)   |
-| `update`   | Append notes / PRs / handoff; elevated flags gated     |
+| `update`   | Append notes / PRs / commits / handoff; elevated flags gated |
 | `complete` | Mark as `completed` with `--debrief` (required)        |
 | `fail`     | Mark as `failed` with `--debrief` (required)           |
 

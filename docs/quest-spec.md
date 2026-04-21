@@ -85,8 +85,8 @@ Quest uses a SQLite database at `.quest/quest.db` for runtime storage.
 - **Location:** `.quest/quest.db`, inside the project marker directory
 - **WAL mode:** the database runs in WAL (write-ahead logging) mode for concurrent reads with serialized writes
 - **Busy timeout:** all database connections must set `PRAGMA busy_timeout = 5000` so that concurrent writers wait up to 5 seconds for the write lock before returning an error. Without this, SQLite returns `SQLITE_BUSY` immediately when the lock is held, causing spurious failures in agent swarms. If the wait exceeds five seconds, quest exits with code 7 (transient failure) and a stderr message: `"write lock unavailable after 5s -- transient failure, safe to retry"`. Quest does not retry internally -- the caller decides whether and when to retry, consistent with the principle that intelligence lives in the LLM, not in code
-- **Atomicity:** every status transition -- `quest accept`, `quest complete`, `quest fail`, `quest reset`, `quest cancel` -- runs inside a `BEGIN IMMEDIATE` transaction with an explicit SELECT-then-UPDATE, even for leaves. A single atomic `UPDATE ... WHERE id=? AND status=?` with a `RowsAffected` check cannot distinguish exit 3 (`not_found`) from exit 5 (`conflict`) and therefore violates the error-precedence contract in §Error precedence. Append-only fields (`notes`, `prs`) use INSERT semantics. `handoff` uses upsert (INSERT or REPLACE) semantics
-- **Structural transactions:** every write command uses `BEGIN IMMEDIATE` to acquire the write lock at transaction start, so the existence/role/permission/state checks required by §Error precedence all run inside the same transaction as the mutation. Commands that additionally touch multiple rows for structural reasons -- `quest accept` on a parent (must verify all children are in a terminal state), `quest create --parent` (must verify parent is in `open` status and depth limit), `quest complete` on parent tasks (must verify all children are terminal), `quest move` (must check circular parentage, depth limits, and update multiple rows), and `quest cancel -r` (must recursively update descendants) -- include those checks inside the same transaction. `quest update` uses `BEGIN IMMEDIATE` on every invocation regardless of flags, including `--note` / `--pr` on an already-owned task: the existence check and terminal-state gating are unconditional preconditions, and using a single transaction path keeps `quest.store.tx{tx_kind=update}` observability uniform across worker-only and mixed-flag paths
+- **Atomicity:** every status transition -- `quest accept`, `quest complete`, `quest fail`, `quest reset`, `quest cancel` -- runs inside a `BEGIN IMMEDIATE` transaction with an explicit SELECT-then-UPDATE, even for leaves. A single atomic `UPDATE ... WHERE id=? AND status=?` with a `RowsAffected` check cannot distinguish exit 3 (`not_found`) from exit 5 (`conflict`) and therefore violates the error-precedence contract in §Error precedence. Append-only fields (`notes`, `prs`, `commits`) use INSERT semantics. `handoff` uses upsert (INSERT or REPLACE) semantics
+- **Structural transactions:** every write command uses `BEGIN IMMEDIATE` to acquire the write lock at transaction start, so the existence/role/permission/state checks required by §Error precedence all run inside the same transaction as the mutation. Commands that additionally touch multiple rows for structural reasons -- `quest accept` on a parent (must verify all children are in a terminal state), `quest create --parent` (must verify parent is in `open` status and depth limit), `quest complete` on parent tasks (must verify all children are terminal), `quest move` (must check circular parentage, depth limits, and update multiple rows), and `quest cancel -r` (must recursively update descendants) -- include those checks inside the same transaction. `quest update` uses `BEGIN IMMEDIATE` on every invocation regardless of flags, including `--note` / `--pr` / `--commit` on an already-owned task: the existence check and terminal-state gating are unconditional preconditions, and using a single transaction path keeps `quest.store.tx{tx_kind=update}` observability uniform across worker-only and mixed-flag paths
 - **Schema:** the task entity is normalized across multiple tables -- `tasks` holds the mutable task row, `history` holds append-only mutation entries keyed by task ID and indexed by timestamp, `dependencies` holds typed links between tasks, and `tags` holds the task-tag join. History is a separate table (not a JSON array on the task row) so that `quest show` without `--history` never reads history pages, and future range queries (tail, stream, paginated audit) can be served by an indexed scan rather than a full-row deserialization. Internal schema details beyond this separation are an implementation concern, not API surface
 - **Schema versioning:** the database stores a `schema_version` integer in a `meta` table. On startup, quest reads the version and compares it to the range the binary supports. If the version is higher than supported, quest refuses to operate (exit code 1, stderr: `"database schema version N is newer than this binary supports -- upgrade quest"`) so a stale binary cannot silently corrupt a newer schema. If the version is lower, quest runs the pending forward-only migrations inside a single transaction before proceeding; a failed migration leaves the database at the prior version. Downgrades are not supported -- rolling back a binary upgrade is done by swapping `.quest/quest.db` back with a prior file-level backup (see §Backup & Recovery). `quest export` is not a valid restore source; there is no `quest import`. Every migration is preceded by an automatic pre-migration snapshot (see next bullet) so the prior-version database file is always available on the same host without operator action. The initial release ships at `schema_version = 1`; every subsequent schema change ships a numbered migration and bumps the version. Migration code is part of the binary, not loaded from disk
 - **Pre-migration snapshot:** when the binary detects that `schema_version` is lower than it supports and is about to run migrations, it first writes a transaction-consistent snapshot of `.quest/quest.db` to `.quest/backups/pre-v{N}-{timestamp}.db` via SQLite's online backup API, where `{N}` is the target schema version and `{timestamp}` is `YYYYMMDDTHHMMSSZ` (UTC). The snapshot is taken before the migration transaction opens. If the copy fails, the migration does not run and the binary exits 1 with a stderr message identifying the failed backup path. When `schema_version == 0` (fresh init), the snapshot is skipped because the prior-version file has no recoverable content. The snapshot is retained indefinitely; quest does not auto-prune. This is the only automatic backup quest performs -- ongoing operational backups are the operator's responsibility (see §Backup & Recovery)
@@ -284,7 +284,7 @@ Each `@file` (or `@-` stdin) argument is capped at 1 MiB (1,048,576 bytes) of re
 - Warnings and errors always go to stderr regardless of format
 - Flat JSON structures preferred over deeply nested
 - Consistent types across all commands (durations in seconds, timestamps in ISO 8601)
-- **Timestamps are recorded and emitted at second precision**, UTC, `Z`-terminated -- `time.Now().UTC().Format(time.RFC3339)`. Fields affected: `started_at`, `completed_at`, `handoff_written_at`, every `history.timestamp`, every `notes.timestamp`, and the `added_at` on PRs. Sub-second precision is not used: the single-writer model makes collisions at second precision unlikely in practice, and uniform second precision keeps downstream parsing simple
+- **Timestamps are recorded and emitted at second precision**, UTC, `Z`-terminated -- `time.Now().UTC().Format(time.RFC3339)`. Fields affected: `started_at`, `completed_at`, `handoff_written_at`, every `history.timestamp`, every `notes.timestamp`, and the `added_at` on PRs and commits. Sub-second precision is not used: the single-writer model makes collisions at second precision unlikely in practice, and uniform second precision keeps downstream parsing simple
 - JSON Lines for streaming output (in json mode)
 
 ### Text-mode formatting
@@ -332,20 +332,25 @@ Implementation: every write command routes through `BeginImmediate` and performs
 
 Agents may retry commands after transient failures (exit code 7) or session recovery. The retry behavior of each write command is specified here so agent implementers know which commands are safe to re-execute without side effects.
 
-| Command            | Idempotent | Retry behavior                                                                                                         |
-| ------------------ | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `accept`           | No         | Fails with exit 5 if already accepted. Crash recovery requires explicit `reset` by the lead                            |
-| `update --note`    | No         | Always appends a new note. Caller is responsible for deduplication if needed. Fails with exit 5 on cancelled tasks     |
-| `update --pr`      | Yes        | Duplicate PR URLs are silently ignored. Fails with exit 5 on cancelled tasks                                           |
-| `update --meta`    | Yes        | Overwrites the value for an existing key; sets it for a new key. Fails with exit 5 on cancelled tasks                  |
-| `update --handoff` | Yes        | Overwrites previous value. Last write wins. Fails with exit 5 on cancelled tasks                                       |
-| `complete`         | No         | Fails with exit 5 if already in a terminal state (`completed`, `failed`, or `cancelled`). Terminal states are permanent |
-| `fail`             | No         | Fails with exit 5 if already in a terminal state (`completed`, `failed`, or `cancelled`). Terminal states are permanent |
-| `cancel`           | Yes        | Returns exit 0 on an already-cancelled task with no state change                                                       |
-| `link`             | Yes        | Duplicate links of the same type between the same pair return exit 0 with no state change                              |
-| `unlink`           | Yes        | Removing a non-existent link returns exit 0 with no state change                                                       |
-| `tag`              | Yes        | Adding an already-present tag is a no-op                                                                               |
-| `untag`            | Yes        | Removing an absent tag is a no-op                                                                                      |
+| Command             | Idempotent | Retry behavior                                                                                                                                       |
+| ------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `accept`            | No         | Fails with exit 5 if already accepted. Crash recovery requires explicit `reset` by the lead                                                          |
+| `update --note`     | No         | Always appends a new note. Caller is responsible for deduplication if needed. Fails with exit 5 on cancelled tasks                                   |
+| `update --pr`       | Yes        | Duplicate PR URLs are silently ignored. Fails with exit 5 on cancelled tasks                                                                         |
+| `update --commit`   | Yes        | Duplicate `BRANCH@HASH` pairs are silently ignored (case-insensitive on the hash, case-sensitive on the branch). Fails with exit 5 on cancelled tasks |
+| `update --meta`     | Yes        | Overwrites the value for an existing key; sets it for a new key. Fails with exit 5 on cancelled tasks                                                |
+| `update --handoff`  | Yes        | Overwrites previous value. Last write wins. Fails with exit 5 on cancelled tasks                                                                     |
+| `complete`          | No         | Fails with exit 5 if already in a terminal state (`completed`, `failed`, or `cancelled`). Terminal states are permanent                              |
+| `complete --pr`     | Yes        | Duplicate PR URLs are silently ignored. Fails with exit 5 on cancelled tasks                                                                         |
+| `complete --commit` | Yes        | Duplicate `BRANCH@HASH` pairs are silently ignored (case-insensitive on the hash, case-sensitive on the branch). Fails with exit 5 on cancelled tasks |
+| `fail`              | No         | Fails with exit 5 if already in a terminal state (`completed`, `failed`, or `cancelled`). Terminal states are permanent                              |
+| `fail --pr`         | Yes        | Duplicate PR URLs are silently ignored. Fails with exit 5 on cancelled tasks                                                                         |
+| `fail --commit`     | Yes        | Duplicate `BRANCH@HASH` pairs are silently ignored (case-insensitive on the hash, case-sensitive on the branch). Fails with exit 5 on cancelled tasks |
+| `cancel`            | Yes        | Returns exit 0 on an already-cancelled task with no state change                                                                                     |
+| `link`              | Yes        | Duplicate links of the same type between the same pair return exit 0 with no state change                                                            |
+| `unlink`            | Yes        | Removing a non-existent link returns exit 0 with no state change                                                                                     |
+| `tag`               | Yes        | Adding an already-present tag is a no-op                                                                                                             |
+| `untag`             | Yes        | Removing an absent tag is a no-op                                                                                                                    |
 
 ### Write-command output shapes
 
@@ -416,6 +421,7 @@ Text mode (`--text`) for write commands is a one-liner summarizing the action (e
 | `started_at`         | system | ISO 8601 timestamp recorded when the task transitions to `accepted`. Cleared on `quest reset`                                                                                                                                                                                                                                               |
 | `completed_at`       | system | ISO 8601 timestamp recorded when the task transitions to `completed` or `failed`. Together with `started_at`, enables duration analysis in retrospectives                                                                                                                                                                                    |
 | `prs`                | worker | Links to PRs containing task output (append-only, idempotent)                                                                                                                                                                                                                                                                               |
+| `commits`            | worker | Git commits containing task output, as `BRANCH@HASH` records (append-only, idempotent). Parallel to `prs` for work that lands via direct commit rather than (or in addition to) a PR. `commits` and `prs` coexist on a single task -- a PR that squash-merged as a specific commit on master is usefully described by both records                      |
 | `notes`              | worker | Array of timestamped progress notes                                                                                                                                                                                                                                                                                                         |
 | `handoff`            | worker | Context bridge for session continuity -- what the next session needs to know. Dedicated field (not a note) because it represents the current state checkpoint, not a log entry. Overwrites on each update so `quest show` always surfaces the latest. Survives `quest reset` so the recovering session inherits the prior session's context |
 | `handoff_session`    | system | Session ID of the agent that wrote the current `handoff` value. Set automatically from `AGENT_SESSION` when `--handoff` is used. Enables a recovering worker to see that the handoff was written by a different session. `null` when `handoff` is unset                                                                                     |
@@ -492,13 +498,14 @@ The one carve-out is referential bookkeeping during `quest move`: when a task's 
 
 - `role` is read from `AGENT_ROLE` at the time of the mutation. Recorded as `null` if unset
 - `session` is read from `AGENT_SESSION` at the time of the mutation -- this is the unique session ID assigned by vigil, enabling traceability from quest history to specific session logs. Recorded as `null` if unset, which is expected for non-vigil contexts (e.g., humans or planners using the CLI directly)
-- `action` identifies the operation: `created`, `accepted`, `completed`, `failed`, `cancelled`, `reset`, `moved`, `note_added`, `pr_added`, `field_updated`, `linked`, `unlinked`, `tagged`, `untagged`, `handoff_set`. `pr_added` is appended whenever `--pr` adds a URL not already attached to the task -- via `quest update --pr`, `quest complete --pr`, or `quest fail --pr`. On `complete` / `fail`, the `pr_added` entry is written alongside the lifecycle entry (`completed` / `failed`) in the same transaction. Idempotent no-op duplicates (the URL is already attached) produce no `pr_added` entry, consistent with `tagged`/`untagged`
+- `action` identifies the operation: `created`, `accepted`, `completed`, `failed`, `cancelled`, `reset`, `moved`, `note_added`, `pr_added`, `commit_added`, `field_updated`, `linked`, `unlinked`, `tagged`, `untagged`, `handoff_set`. `pr_added` is appended whenever `--pr` adds a URL not already attached to the task -- via `quest update --pr`, `quest complete --pr`, or `quest fail --pr`. `commit_added` is appended whenever `--commit` adds a `BRANCH@HASH` pair not already attached to the task -- via `quest update --commit`, `quest complete --commit`, or `quest fail --commit`. On `complete` / `fail`, the `pr_added` and `commit_added` entries are written alongside the lifecycle entry (`completed` / `failed`) in the same transaction. Idempotent no-op duplicates (the URL or commit pair is already attached) produce no entry, consistent with `tagged`/`untagged`
 - `reason` is present for `reset` and `cancelled` -- the lead's annotation of why the task was reset or cancelled. Optional (`null` when the caller did not pass `--reason`).
 - `fields` is present only for `field_updated` -- records old and new values for each changed field
 - `content` is present for `handoff_set` -- the full text of the handoff that was written. This ensures handoff history is recoverable from the audit log even though the `handoff` field on the task is overwritten on each update. Without this, repeated crash-reset cycles would erase prior handoff context with no trace, violating the retrospective mandate
 - `target` and `link_type` are present for `linked` and `unlinked` -- the referenced task ID and the relationship type (e.g., `blocked-by`, `caused-by`)
 - `old_id` and `new_id` are present for `moved` -- the task's ID before and after reparenting
 - `url` is present for `pr_added` -- the PR URL that was added
+- `branch` and `hash` are present for `commit_added` -- the two halves of the commit reference, stored as separate fields rather than a combined `BRANCH@HASH` string so retrospective queries can filter on branch or hash without re-parsing
 - For `created`, the payload captures non-default values of the planning fields set at create time: `tier`, `role`, `severity`, `type` (when not the default `task`), `parent`, `tags`, and any initial `dependencies`. Fields left at their defaults are omitted from the payload, not serialized as `null`. This is the retrospective input -- "which tier/role/severity choices produced which outcomes?" -- without requiring a join against the current `tasks` row (which may have been edited after creation)
 
 ### Field constraints
@@ -718,6 +725,7 @@ History is excluded by default because workers care about current state -- descr
     }
   ],
   "prs": [],
+  "commits": [],
   "notes": [],
   "handoff": null,
   "handoff_session": null,
@@ -763,6 +771,9 @@ Notes (2)
 PRs
     https://github.com/foo/bar/pull/42  (2026-04-14 11:30Z)
 
+Commits
+    master@a1b2c3d4  (2026-04-14 11:35Z)
+
 Handoff (sess-c3f, 2026-04-14 10:32Z)
     Refactored token validation into middleware. Integration test for
     /protected passes. Still need refresh-token endpoint -- see
@@ -801,6 +812,7 @@ A row is omitted entirely when its condition is not met -- `show` never emits a 
 | `Dependencies`        | `dependencies` is non-empty                                    | one row per dependency: `{link_type}  {id} [{status}] (bug?) {title}`                                                                       |
 | `Notes (N)`           | `notes` is non-empty (N is the count)                          | one row per note: `{timestamp}  {note body}`, wrapped with hanging indent to the note column                                                |
 | `PRs`                 | `prs` is non-empty                                             | one row per PR: `{url}  ({added_at timestamp})`                                                                                             |
+| `Commits`             | `commits` is non-empty                                         | one row per commit: `{branch}@{hash}  ({added_at timestamp})` -- parallel to the `PRs` section                                              |
 | `Handoff`             | `handoff` is non-null                                          | heading includes a parenthesized `(handoff_session, handoff_written_at)` suffix; body is the handoff content, wrapped                        |
 | `Debrief`             | `debrief` is non-null OR `status == "completed"`               | debrief body wrapped; when `status == "completed"` and `debrief` is null the body is the literal `(missing)`                                |
 | `History (N)`         | `--history` flag is present (N is the entry count)             | one row per entry (see History layout below)                                                                                                |
@@ -809,18 +821,18 @@ Sections whose condition is not met are omitted entirely. No placeholder heading
 
 **Type marker consistency.** Every task reference in the output (header, `parent` row, `Dependencies` rows, and the corresponding rows in `quest graph --text`) renders `type` identically: a ` (bug)` marker between the status bracket and the title when the referenced task is a bug, nothing otherwise. The default is the common case; the marker is a strong visual signal in mixed output.
 
-**Timestamp format.** Minute precision, UTC, `Z`-terminated: `YYYY-MM-DD HH:MMZ`. JSON output retains second precision per the data-type rules; text mode drops seconds because the display-side precision gain does not justify the column width. The `started` and `completed` rows append a parenthesized relative suffix computed against wall clock (`(1d ago)`, `(23h ago)`, `(5m ago)`, `(just now)`). Note, PR, handoff, and history timestamps render absolute only.
+**Timestamp format.** Minute precision, UTC, `Z`-terminated: `YYYY-MM-DD HH:MMZ`. JSON output retains second precision per the data-type rules; text mode drops seconds because the display-side precision gain does not justify the column width. The `started` and `completed` rows append a parenthesized relative suffix computed against wall clock (`(1d ago)`, `(23h ago)`, `(5m ago)`, `(just now)`). Note, PR, commit, handoff, and history timestamps render absolute only.
 
 **Wrap rules.**
 
 - TTY output wraps prose sections (`Description`, `Context`, `Acceptance criteria`, `Notes`, `Handoff`, `Debrief`) to `min(terminal width, 100)` columns. Wider terminals do not extend prose past 100 columns because line length past ~100 hurts readability.
 - Piped output wraps prose sections to 80 columns.
-- The metadata cluster and row-oriented sections (`Dependencies`, `PRs`, `History`) are not wrapped. Long lines overflow the terminal; truncation is not used for `show` -- human readers need complete content and accept overflow in exchange.
+- The metadata cluster and row-oriented sections (`Dependencies`, `PRs`, `Commits`, `History`) are not wrapped. Long lines overflow the terminal; truncation is not used for `show` -- human readers need complete content and accept overflow in exchange.
 
 **History layout.** With `--history`, an additional `History (N)` section is appended at the end:
 
 ```
-History (9)
+History (10)
     2026-04-14 10:00Z  planner/sess-p1a  created         tier=T2 role=coder tags=[go,auth]
     2026-04-14 10:05Z  coder/sess-c3f    accepted
     2026-04-14 10:30Z  coder/sess-c3f    note_added
@@ -829,6 +841,7 @@ History (9)
     2026-04-14 10:45Z  planner/sess-p1a  field_updated   tier: T2 -> T3
     2026-04-14 10:50Z  coder/sess-d7b    accepted
     2026-04-14 11:30Z  coder/sess-d7b    pr_added        https://github.com/foo/bar/pull/42
+    2026-04-14 11:35Z  coder/sess-d7b    commit_added    master@a1b2c3d4
     2026-04-14 11:45Z  coder/sess-d7b    completed
 ```
 
@@ -841,6 +854,7 @@ Per line: `{timestamp}  {role or -}/{session or -}  {action}  [{detail}]`. The a
 | `cancelled`, `reset`                                             | `"{reason}"` when set, omitted when null                                     |
 | `moved`                                                          | `{old_id} -> {new_id}`                                                       |
 | `pr_added`                                                       | the PR URL                                                                   |
+| `commit_added`                                                   | `{branch}@{hash}` -- the branch and hash rejoined for display only           |
 | `field_updated`                                                  | `{field}: {from} -> {to}`, comma-joined across multiple fields               |
 | `linked`, `unlinked`                                             | `{link_type} {target}`                                                       |
 | `tagged`, `untagged`                                             | the tag value                                                                |
@@ -875,11 +889,12 @@ Write progress information to the task. Workers can update execution fields. Ele
 
 **Worker flags:**
 
-| Flag              | Description                                                      |
-| ----------------- | ---------------------------------------------------------------- |
-| `--note "..."`    | Append a timestamped progress note                               |
-| `--pr "URL"`      | Append a PR link to the task (idempotent -- duplicates ignored)  |
-| `--handoff "..."` | Set handoff context for session continuity (overwrites previous) |
+| Flag                   | Description                                                                         |
+| ---------------------- | ----------------------------------------------------------------------------------- |
+| `--note "..."`         | Append a timestamped progress note                                                  |
+| `--pr "URL"`           | Append a PR link to the task (idempotent -- duplicates ignored)                     |
+| `--commit BRANCH@HASH` | Append a git commit reference (repeatable, idempotent -- duplicates ignored)        |
+| `--handoff "..."`      | Set handoff context for session continuity (overwrites previous)                    |
 
 **Elevated flags** (require elevated role):
 
@@ -897,20 +912,30 @@ Write progress information to the task. Workers can update execution fields. Ele
 
 All field changes are recorded in the task's history. Flags listed in Input Conventions support `@file` input.
 
-**Terminal-state gating.** On tasks in `completed` or `failed` status, `quest update` accepts only the append/annotation flags: `--note`, `--pr`, and `--meta`. These are either append-only (`--note`, `--pr`) or free-form annotation (`--meta`) and do not retroactively rewrite execution-time state. Any other flag -- `--title`, `--description`, `--context`, `--type`, `--tier`, `--role`, `--severity`, `--acceptance-criteria`, `--handoff` -- returns exit code 5 (conflict) with a message listing the blocked fields. This applies to both worker and elevated roles. Rationale: fields like `tier`, `role`, `type`, and `severity` drive retrospective analytics ("which tiers produced bugs?", "how often do critical-severity tasks fail at T2?"); retroactive edits would silently falsify the simplest form of those queries. Planning copy (`title`, `description`, etc.) is preserved in the audit history and has no legitimate post-terminal edit case. `--handoff` is a session-continuity field with no meaning on a task that will not be accepted again.
+**Terminal-state gating.** On tasks in `completed` or `failed` status, `quest update` accepts only the append/annotation flags: `--note`, `--pr`, `--commit`, and `--meta`. These are either append-only (`--note`, `--pr`, `--commit`) or free-form annotation (`--meta`) and do not retroactively rewrite execution-time state. Any other flag -- `--title`, `--description`, `--context`, `--type`, `--tier`, `--role`, `--severity`, `--acceptance-criteria`, `--handoff` -- returns exit code 5 (conflict) with a message listing the blocked fields. This applies to both worker and elevated roles. Rationale: fields like `tier`, `role`, `type`, and `severity` drive retrospective analytics ("which tiers produced bugs?", "how often do critical-severity tasks fail at T2?"); retroactive edits would silently falsify the simplest form of those queries. Planning copy (`title`, `description`, etc.) is preserved in the audit history and has no legitimate post-terminal edit case. `--handoff` is a session-continuity field with no meaning on a task that will not be accepted again. `--pr` and `--commit` are specifically expected after the terminal transition: a worker may land a PR or push a follow-up commit after completion or failure, and those references must be recordable.
 
-**Cancelled tasks reject every `quest update` variant.** `cancelled` is stricter than the other terminal states: `quest update` on a cancelled task -- including `--note`, `--pr`, `--meta`, and `--handoff` -- returns exit code 5 (conflict) with the structured body defined under *In-flight worker coordination* in `quest cancel`. This applies to worker and elevated roles alike. Rationale: the structured conflict on every worker operation is the framework signal that tells vigil to terminate the in-flight worker session; allowing any update to slip through would defeat that signal and let a terminated-but-unaware worker keep writing to a task the planner has already retired. Planner annotations (`--meta`) and debrief-style context belong on the *replacement* task if follow-up is needed, not on the cancelled one. `quest complete` and `quest fail` on a cancelled task are rejected for the same reason.
+**Cancelled tasks reject every `quest update` variant.** `cancelled` is stricter than the other terminal states: `quest update` on a cancelled task -- including `--note`, `--pr`, `--commit`, `--meta`, and `--handoff` -- returns exit code 5 (conflict) with the structured body defined under *In-flight worker coordination* in `quest cancel`. This applies to worker and elevated roles alike. Rationale: the structured conflict on every worker operation is the framework signal that tells vigil to terminate the in-flight worker session; allowing any update to slip through would defeat that signal and let a terminated-but-unaware worker keep writing to a task the planner has already retired. Planner annotations (`--meta`) and debrief-style context belong on the *replacement* task if follow-up is needed, not on the cancelled one. `quest complete` and `quest fail` on a cancelled task are rejected for the same reason.
 
-**Empty values are usage errors.** `--role ""`, `--severity ""`, `--handoff ""`, `--title ""`, `--description ""`, `--context ""`, `--acceptance-criteria ""`, and `--note ""` return exit code 2 (`usage_error`) with a message naming the flag. Empty strings are not a clear-field mechanism; v0.1 does not provide one. `--meta KEY=` (empty value) is also rejected. This keeps the common path (passing a real value) unambiguous and avoids a silent-clear footgun for planners building command lines via string templating. If a dedicated clear mechanism is ever needed, it will ship as an explicit `--clear-ROLE` / `--clear-handoff` / `--clear-severity` flag rather than overloading the value flag.
+**Empty values are usage errors.** `--role ""`, `--severity ""`, `--handoff ""`, `--title ""`, `--description ""`, `--context ""`, `--acceptance-criteria ""`, and `--note ""` return exit code 2 (`usage_error`) with a message naming the flag. Empty strings are not a clear-field mechanism; v0.1 does not provide one. `--meta KEY=` (empty value) is also rejected. `--commit` has its own empty-halves rule (see §Commit reference format) -- `--commit master@` (empty hash) and `--commit @abc123` (empty branch) return exit code 2 (`usage_error`) naming the flag. This keeps the common path (passing a real value) unambiguous and avoids a silent-clear footgun for planners building command lines via string templating. If a dedicated clear mechanism is ever needed, it will ship as an explicit `--clear-ROLE` / `--clear-handoff` / `--clear-severity` flag rather than overloading the value flag.
 
 **Severity enum check.** `quest update --severity VALUE` accepts only the four lowercase enum values (`critical`, `high`, `medium`, `low`); any other string, including casing variants like `Critical` or `HIGH`, is rejected with exit code 2 (`usage_error`). Severity change is recorded as a `field_updated` history entry carrying the prior and new values, matching how other planning-field updates render (see §History field).
+
+**Commit reference format.** `--commit` accepts values shaped `BRANCH@HASH` and is **repeatable** on `quest update`, `quest complete`, and `quest fail`. No standalone `quest commit` command exists; repeatability on these three commands covers both the mid-work case (a worker logging commits as they land) and the post-completion case (a late-discovered commit recorded after the terminal transition). The format rules are enforced at arg-parse time, before any DB I/O, and a violation returns exit code 2 (`usage_error`) with a message naming the flag and the offending value.
+
+- **Both halves required.** The value must contain at least one `@` and both sides must be non-empty. `--commit master@` (empty hash) and `--commit @abc123` (empty branch) are rejected with exit 2; so is `--commit abc123` (no separator) and `--commit ""` (empty value). The flag does not treat `BRANCH@` as a clear-field mechanism, consistent with the empty-values policy for `--role`, `--severity`, and related flags.
+- **Split on the last `@`.** The parser splits on the **rightmost** `@`, so branch names containing `@` (`release@2025`, `user@feature/x`) parse correctly: `--commit release@2025@abc1234` records branch `release@2025` and hash `abc1234`.
+- **Hash shape.** Lowercase hex, 4 or more characters. The regex is `^[0-9a-f]{4,}$`. Quest does not verify the commit exists in any repository and carries no git awareness beyond this shape check -- the field is a record of what the agent reported, not a validation of what is reachable. Uppercase or mixed-case hashes (`ABC123`, `AbC123`) are rejected; agents pass the canonical lowercase form git itself emits.
+- **Branch shape.** No validation beyond non-empty. Branches are preserved case-sensitive and rendered verbatim.
+- **Dedup for idempotency.** Two `--commit` values on the same task are duplicates when, after lowercasing the hash, they compare byte-equal to an existing record. The branch is compared case-sensitive; the hash comparison is case-insensitive because the hash is already constrained to lowercase hex on write, so the only way a "duplicate with different casing" can arise is across two binaries with drifting validators -- the dedup rule future-proofs against that. Duplicates are silently ignored and produce no `commit_added` history entry, matching the `--pr` idempotency model.
+- **Terminal-state gating.** Same rules as `--pr`: accepted on `completed` and `failed` tasks (via `quest update --commit` or the terminal-transition commands themselves), rejected on `cancelled` tasks per the cancelled-rejects-every-variant rule above.
+- **Storage.** `commits` is stored durably -- each row carries `branch` and `hash` as separate columns alongside the `added_at` timestamp so retrospective queries can filter on either half without re-parsing. The natural layout is a dedicated `commits` table parallel to however `prs` are stored, with a foreign key back to the task row and an index supporting the dedup lookup on `(task_id, lower(hash), branch)`. The exact schema belongs to the implementation task, not this spec; the note here is that the data is not a JSON blob on the task row, and `commit_added` history rows reference the underlying storage by FK so export can materialize both halves without an ad-hoc parse. Adding `commits` requires a numbered forward-only migration and a `schema_version` bump per STANDARDS.md §Schema Migration Rules; the pre-migration snapshot (§Storage > Pre-migration snapshot) fires as usual.
 
 **Type transitions respect existing links.** `--type task` on a task that has **outgoing** `caused-by` or `discovered-from` links returns exit code 5 (`conflict`) with a message listing the blocking links. These relationship types require the *source* to be `type: bug` (see §Dependency validation); retyping the source would silently falsify the invariant. Incoming links (where the task is the target of another task's `caused-by`/`discovered-from`) do not block retyping -- the invariant applies to the source, and the source's type is unchanged. The planner must `quest unlink` the outgoing links first, then retry the type transition. `--type bug` has no similar restriction -- additional link types become available, not fewer. The check runs inside the same transaction as the UPDATE so races cannot slip a link through.
 
 ---
 
 ```
-quest complete ID --debrief "..." [--pr "URL"]
+quest complete ID --debrief "..." [--pr "URL"] [--commit BRANCH@HASH]
 ```
 
 Mark the task as completed. Debrief is required -- every completed task must leave a record of what was done and what was learned. `ID` is required; a missing ID returns exit code 2 (`usage_error`).
@@ -919,27 +944,29 @@ For leaf tasks, `quest complete` transitions from `accepted` to `completed`. For
 
 On successful completion, `completed_at` is recorded.
 
-| Flag              | Description                                                     |
-| ----------------- | --------------------------------------------------------------- |
-| `--debrief "..."` | Free-form after-action report (required)                        |
-| `--pr "URL"`      | Append a PR link to the task (idempotent -- duplicates ignored) |
+| Flag                   | Description                                                                  |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| `--debrief "..."`      | Free-form after-action report (required)                                     |
+| `--pr "URL"`           | Append a PR link to the task (idempotent -- duplicates ignored)              |
+| `--commit BRANCH@HASH` | Append a git commit reference (repeatable, idempotent -- duplicates ignored) |
 
 ---
 
 ```
-quest fail ID --debrief "..." [--pr "URL"]
+quest fail ID --debrief "..." [--pr "URL"] [--commit BRANCH@HASH]
 ```
 
 Mark the task as failed. Debrief is required -- the after-action report should cover what was attempted, why the task failed, and what was learned. `ID` is required; a missing ID returns exit code 2 (`usage_error`). On failure, `completed_at` is recorded (marking the end of execution, whether successful or not).
 
 The debrief can be as brief as a single sentence for simple failures ("upstream API unreachable, no work attempted"). The requirement is that every failure leaves a record, not that the record is lengthy -- even terse debriefs feed the curator's knowledge extraction pipeline and enable retrospective analysis.
 
-`--pr` is accepted on failure for the same reason it is accepted on completion: a worker may have opened a PR before discovering the task could not be finished, and that PR is retrospective material regardless of terminal state. Append and idempotency semantics match `quest complete --pr` and `quest update --pr` -- duplicate URLs are silently ignored.
+`--pr` and `--commit` are accepted on failure for the same reason they are accepted on completion: a worker may have opened a PR or landed a commit before discovering the task could not be finished, and those references are retrospective material regardless of terminal state. Append and idempotency semantics match the `update` and `complete` forms -- duplicate PR URLs are silently ignored, and duplicate `BRANCH@HASH` pairs are silently ignored (case-insensitive on the hash, case-sensitive on the branch; see §Commit reference format).
 
-| Flag              | Description                                                     |
-| ----------------- | --------------------------------------------------------------- |
-| `--debrief "..."` | Free-form after-action report (required)                        |
-| `--pr "URL"`      | Append a PR link to the task (idempotent -- duplicates ignored) |
+| Flag                   | Description                                                                  |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| `--debrief "..."`      | Free-form after-action report (required)                                     |
+| `--pr "URL"`           | Append a PR link to the task (idempotent -- duplicates ignored)              |
+| `--commit BRANCH@HASH` | Append a git commit reference (repeatable, idempotent -- duplicates ignored) |
 
 ---
 
