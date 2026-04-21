@@ -358,9 +358,12 @@ func normalizeCell(col string, val any) any {
 
 // emitListText writes a fixed-width table. Cell values are rendered
 // per column: string scalars verbatim, null-scalars as empty string,
-// array columns as comma-joined ID lists. Widths are spec-stable
-// defaults tuned to agent-facing output; future TTY-width tuning lives
-// in the same helper.
+// array columns as comma-joined ID lists. The widths below are a
+// placeholder; spec §Text-mode formatting calls for content-aware
+// helper widths and a TTY-allocated title column, which a follow-up
+// impl task wires up here. Text mode is non-contractual per
+// STANDARDS.md §CLI Surface Versioning, so reshaping these widths
+// does not require a deprecation cycle.
 func emitListText(w io.Writer, columns []string, rows []listRow) error {
 	widths := map[string]int{
 		"id":         12,

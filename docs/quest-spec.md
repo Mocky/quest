@@ -288,9 +288,16 @@ Each `@file` (or `@-` stdin) argument is capped at 1 MiB (1,048,576 bytes) of re
 
 ### Text-mode formatting
 
-- Columns use fixed widths with truncation (`...` suffix) when content exceeds the column width
-- Text mode is plain; no ANSI colors. Humans who want colored rendering pipe quest output through a colorizer. A `--color` flag is deferred until a concrete agent workflow needs it and color rules are pinned here
-- When output is a TTY, column widths auto-size to the terminal width. When piped, columns use fixed default widths
+Text mode (`--format text`) is a human-friendly rendering, not a contract -- see STANDARDS.md §CLI Surface Versioning. The rules below describe the current rendering intent and may evolve without a deprecation cycle; agents MUST NOT parse text output.
+
+- No ANSI colors. Humans who want colored rendering pipe quest output through a colorizer. A `--color` flag is deferred until a concrete agent workflow needs it and color rules are pinned here.
+- **Helper columns (every column except `title`) use content-aware widths.** Each helper column's width is `max(header_label_width, longest_cell_value_width_in_that_column across the rows being printed)`. The header label length is a floor so headers are never truncated.
+- **The `title` column width is allocated from the remaining terminal width** after helpers and inter-column gutters are laid out:
+  - **TTY stdout with a known terminal width:** `title_width = term_width - sum(helper_widths) - sum(gutters)`, clamped to an upper bound of 128 (the title field's byte cap per §Field constraints -- rendering beyond that is always padding).
+  - **No TTY, or an unknown terminal width** (piped output, redirected stdout, detached terminal): the title column is unbounded. Titles are rendered at their natural length, up to the 128-byte cap.
+  - **Narrow terminals where helper columns alone exceed the terminal width:** neither helpers nor title are shortened to fit. The row overflows and the terminal soft-wraps. Narrow terminals are an edge case and wrapped output is readable enough that it is not worth truncating helper content to avoid.
+- **Truncation rule.** A cell whose rendered content exceeds its computed column width is cut to `width-3` and suffixed with `...`. Applies to every column, including `title` when the TTY-derived width clamps below the rendered title length.
+- **No trailing whitespace on the final column of any row.** Every column except the last is right-padded to its computed width for alignment; the last column is rendered at its natural width with no trailing pad so copy-paste does not pick up invisible whitespace.
 
 ### Exit codes
 
