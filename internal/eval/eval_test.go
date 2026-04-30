@@ -44,7 +44,7 @@ func resolveModel() string {
 // An agent is given an accepted task to fix one bug in foo.go; the file
 // contains a second, unassigned bug. A correctly-prompted agent fixes the
 // assigned bug, files a new task for the discovered one with
-// `--discovered-from qst-01`, and completes the assigned task.
+// `--discovered-from test-01`, and completes the assigned task.
 //
 // This is the qst-1e regression: an agent dropped the --discovered-from flag
 // after misreading an unrelated error. The verifier catches both the outcome
@@ -52,6 +52,9 @@ func resolveModel() string {
 // command shape).
 func TestDiscoveredFromRegression(t *testing.T) {
 	scenarioDir := filepath.Join(scenarioRoot, "discovered_from")
+
+	var result agentResult
+	defer reportScenario(t, "discovered_from", &result)
 
 	workdir := t.TempDir()
 	if err := setupSeed(scenarioDir, workdir); err != nil {
@@ -67,17 +70,18 @@ func TestDiscoveredFromRegression(t *testing.T) {
 		t.Fatalf("read task: %v", err)
 	}
 
-	result, err := runAgent(t, workdir, string(prompt), string(task))
+	r, err := runAgent(t, workdir, string(prompt), string(task))
 	if err != nil {
 		t.Fatalf("agent run: %v", err)
 	}
+	result = *r
 
-	t.Logf("agent: model=%s turns=%d input_tokens=%d output_tokens=%d cost=$%.4f",
-		resolveModel(), result.NumTurns, result.InputTokens, result.OutputTokens, result.CostUSD)
-	for i, c := range result.BashCalls {
-		t.Logf("bash[%d]: %s", i, c)
+	if os.Getenv("QUEST_EVAL_VERBOSE") != "" {
+		for i, c := range result.BashCalls {
+			t.Logf("bash[%d]: %s", i, c)
+		}
+		t.Logf("final: %s", result.FinalText)
 	}
-	t.Logf("final: %s", result.FinalText)
 
 	for _, err := range verifyOutcome(workdir) {
 		t.Errorf("outcome: %v", err)
@@ -85,6 +89,25 @@ func TestDiscoveredFromRegression(t *testing.T) {
 	for _, err := range verifyTrajectory(result.BashCalls) {
 		t.Errorf("trajectory: %v", err)
 	}
+}
+
+// reportScenario emits a single-row summary of a scenario run. Called from a
+// deferred closure so it sees the final t.Failed() state. With -v the row
+// renders inline; without -v the test's `ok`/`FAIL` is enough on its own.
+func reportScenario(t *testing.T, name string, r *agentResult) {
+	t.Helper()
+	verdict := "PASS"
+	if t.Failed() {
+		verdict = "FAIL"
+	}
+	t.Logf(
+		"\n  %-20s %-8s %-7s %-15s %-9s %s\n  %-20s %-8s %-7d %-15s %-9s %s",
+		"SCENARIO", "MODEL", "TURNS", "TOKENS(in/out)", "COST", "RESULT",
+		name, resolveModel(), r.NumTurns,
+		fmt.Sprintf("%d/%d", r.InputTokens, r.OutputTokens),
+		fmt.Sprintf("$%.4f", r.CostUSD),
+		verdict,
+	)
 }
 
 // agentResult holds what we extracted from a stream-json run.
@@ -217,8 +240,8 @@ func processEvent(event map[string]any, r *agentResult) {
 // verifyOutcome runs `quest export` against workdir and asserts the post-state
 // predicates for the discovered_from scenario:
 //   - exactly two tasks exist,
-//   - qst-01 reached `completed`,
-//   - one task carries a discovered-from edge to qst-01.
+//   - test-01 reached `completed`,
+//   - one task carries a discovered-from edge to test-01.
 func verifyOutcome(workdir string) []error {
 	var errs []error
 	exportDir := filepath.Join(workdir, "quest-export")
@@ -240,20 +263,20 @@ func verifyOutcome(workdir string) []error {
 	var withLink map[string]any
 	for _, t := range tasks {
 		id, _ := t["id"].(string)
-		if id == "qst-01" {
+		if id == "test-01" {
 			qst01 = t
 		}
-		if hasDependency(t, "discovered-from", "qst-01") {
+		if hasDependency(t, "discovered-from", "test-01") {
 			withLink = t
 		}
 	}
 	if qst01 == nil {
-		errs = append(errs, fmt.Errorf("qst-01 missing from export"))
+		errs = append(errs, fmt.Errorf("test-01 missing from export"))
 	} else if status, _ := qst01["status"].(string); status != "completed" {
-		errs = append(errs, fmt.Errorf("qst-01 status: want completed, got %q", status))
+		errs = append(errs, fmt.Errorf("test-01 status: want completed, got %q", status))
 	}
 	if withLink == nil {
-		errs = append(errs, fmt.Errorf("no task carries discovered-from -> qst-01 (qst-1e regression)"))
+		errs = append(errs, fmt.Errorf("no task carries discovered-from -> test-01 (qst-1e regression)"))
 	}
 	return errs
 }
@@ -327,18 +350,18 @@ func verifyTrajectory(calls []string) []error {
 		}
 	}
 
-	// Must-do: at least one `quest create ... --discovered-from qst-01`.
+	// Must-do: at least one `quest create ... --discovered-from test-01`.
 	hasInline := false
 	for _, c := range calls {
 		if strings.Contains(c, "quest create") &&
 			containsFlag(c, "--discovered-from") &&
-			strings.Contains(c, "qst-01") {
+			strings.Contains(c, "test-01") {
 			hasInline = true
 			break
 		}
 	}
 	if !hasInline {
-		errs = append(errs, fmt.Errorf("no `quest create --discovered-from qst-01` invocation observed (qst-1e regression)"))
+		errs = append(errs, fmt.Errorf("no `quest create --discovered-from test-01` invocation observed (qst-1e regression)"))
 	}
 
 	return errs
