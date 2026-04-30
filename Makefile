@@ -1,7 +1,7 @@
 MODULE  := github.com/mocky/quest
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: build install test test-all cover lint ci
+.PHONY: build install test test-all test-eval cover lint ci
 
 build:
 	go build -ldflags "-X $(MODULE)/internal/buildinfo.Version=$(VERSION)" -o quest ./cmd/quest
@@ -14,6 +14,9 @@ test:
 
 test-all:
 	go test -race -tags integration -count=1 ./...
+
+test-eval:
+	go test -tags eval -count=1 -v ./internal/eval/...
 
 cover:
 	go test -coverprofile=coverage.out ./...

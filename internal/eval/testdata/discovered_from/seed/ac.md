@@ -1,0 +1,2 @@
+- [ ] `ParseDate("2026-04-30")` returns the time corresponding to April 30 2026 with no error
+- [ ] `ParseDate` accepts any valid `YYYY-MM-DD` string without error
