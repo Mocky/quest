@@ -131,11 +131,58 @@ func RepoRoot() (string, error) {
 }
 
 // BenchmarkLogPath resolves to the canonical benchmarks.jsonl location
-// regardless of the caller's CWD.
+// regardless of the caller's CWD. This file is committed to git and is the
+// official record; only `eval-promote` writes here.
 func BenchmarkLogPath() (string, error) {
 	root, err := RepoRoot()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(root, "internal", "eval", "benchmarks.jsonl"), nil
+}
+
+// ScratchLogPath resolves to internal/eval/scratch.jsonl. This file is
+// gitignored — it is the harness's append-only working log. `eval-promote`
+// reads it, filters to entries matching the current prompt files on disk,
+// appends those entries to benchmarks.jsonl, then truncates scratch.
+func ScratchLogPath() (string, error) {
+	root, err := RepoRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "internal", "eval", "scratch.jsonl"), nil
+}
+
+// IsBenchmarked reports whether benchmarks.jsonl already contains an entry
+// matching the given (scenario, model, promptPath, sha) tuple. Used by the
+// harness's skip-if-benchmarked path so `eval-changed` skips scenarios whose
+// current prompt SHA has already been officially recorded.
+func IsBenchmarked(scenario, model, promptPath, sha string) (bool, error) {
+	logPath, err := BenchmarkLogPath()
+	if err != nil {
+		return false, err
+	}
+	entries, err := ReadBenchmarks(logPath)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entries {
+		if e.Scenario == scenario && e.Model == model && e.PromptPath == promptPath && e.PromptSHA == sha {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// TruncateScratch empties the scratch log. Called from `eval-promote` after a
+// successful promote.
+func TruncateScratch() error {
+	path, err := ScratchLogPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	}
+	return os.Truncate(path, 0)
 }

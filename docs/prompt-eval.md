@@ -81,11 +81,23 @@ Periodically (e.g., once a quarter), actively try to remove sections / sentences
 
 ### Persistence
 
-Run results are appended to `internal/eval/benchmarks.jsonl` — one flat JSON object per run, committed to git. The schema is grep-friendly so an agent reading the log can group / aggregate without unpacking nested structures. Each entry carries a SHA-256 of the prompt's contents at run time, so changes to the prompt are tracked even when the file path is stable.
+Two log files, both at `internal/eval/`:
 
-Aggregation is per `(scenario, model, prompt_sha)`. A single run is a sample, not a verdict — the comparison tool (`make eval-compare`) computes median cost / median turns / pass rate over all runs at a given SHA, then shows current-SHA aggregates side by side with most-recent-different-SHA aggregates. This is what makes the K-runs framing work end-to-end: per-SHA median absorbs run-to-run noise; across-SHA comparison surfaces the prompt-change effect.
+- **`scratch.jsonl`** (gitignored) — every `make test-eval` / `make eval-changed` run appends here. The harness's working log, local-only.
+- **`benchmarks.jsonl`** (committed) — the official record. Only `make eval-promote` writes here.
 
-`prompt_tokens` is captured per entry as a heuristic (`word_count * 1.3`), which is accurate to ~5% for English markdown. Sufficient for tracking changes; promote to a real tokenizer only if the heuristic and reality drift far enough to mislead.
+Schema is one flat JSON object per run; identical fields in both files. Grep-friendly so an agent reading the log can group / aggregate without unpacking nested structures. Each entry carries a SHA-256 of the prompt's contents at run time, so changes to the prompt are tracked even when the file path is stable. `prompt_tokens` is a heuristic (`word_count * 1.3`), accurate to ~5% for English markdown — sufficient for tracking changes, not billing.
+
+### Workflow
+
+- `make test-eval` — run all eval scenarios (writes to scratch).
+- `make eval-changed` — same, but skip scenarios whose `(scenario, model, prompt_sha)` tuple is already in `benchmarks.jsonl`. This is the "only run prompts that actually changed" path.
+- `make eval-compare` — read both logs, group by `(scenario, model, prompt_sha)`, aggregate per group (median cost / median turns / pass rate over N runs), and print a side-by-side table of the current prompt SHA against the most recent different SHA.
+- `make eval-promote` — move scratch entries whose `prompt_sha` matches the *current* prompt files on disk into `benchmarks.jsonl`, then truncate scratch. Stale entries (intermediate SHAs from the agent's iteration) are dropped.
+
+Aggregation is per `(scenario, model, prompt_sha)`. A single run is a sample, not a verdict — per-SHA median absorbs run-to-run stochasticity; across-SHA comparison surfaces the prompt-change effect. This is what makes the K-runs framing work end-to-end.
+
+There is deliberately no git hook. Prompt changes can be necessary for reasons unrelated to eval (a command rename in the underlying tool, for example) and forcing a benchmark on every commit would block legitimate work. The agent updating prompts is told via prompt how to handle eval explicitly; CI is the long-term enforcement layer if one is needed.
 
 ## Source of scenarios
 

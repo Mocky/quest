@@ -15,18 +15,19 @@ import (
 )
 
 func main() {
-	logPath, err := eval.BenchmarkLogPath()
+	// Read both the canonical (committed) benchmarks and the local (gitignored)
+	// scratch log so the table reflects in-progress runs that haven't yet been
+	// promoted. Scratch entries that match the current prompt SHA are the
+	// "current" cohort agents are evaluating.
+	bench, err := readBoth()
 	if err != nil {
-		die("locate benchmark log: %v", err)
+		die("read benchmark logs: %v", err)
 	}
-	entries, err := eval.ReadBenchmarks(logPath)
-	if err != nil {
-		die("read benchmark log: %v", err)
-	}
-	if len(entries) == 0 {
-		fmt.Println("benchmarks.jsonl is empty — run `make test-eval` first")
+	if len(bench) == 0 {
+		fmt.Println("no benchmark entries yet — run `make test-eval` (or `make eval-changed`) first")
 		return
 	}
+	entries := bench
 
 	type key struct{ scenario, model, promptPath string }
 	groups := map[key][]eval.BenchmarkEntry{}
@@ -61,6 +62,30 @@ func main() {
 		prev := filterSHA(runs, prevSHA)
 		printComparison(k.scenario, k.model, k.promptPath, currentSHA, curr, prevSHA, prev)
 	}
+}
+
+// readBoth concatenates the canonical benchmarks log and the scratch log
+// (in that order). Scratch is the harness's working log; benchmarks is the
+// committed record. A run that's been promoted will appear in benchmarks
+// only (scratch is truncated on promote), so concat without dedup is safe.
+func readBoth() ([]eval.BenchmarkEntry, error) {
+	benchPath, err := eval.BenchmarkLogPath()
+	if err != nil {
+		return nil, err
+	}
+	scratchPath, err := eval.ScratchLogPath()
+	if err != nil {
+		return nil, err
+	}
+	bench, err := eval.ReadBenchmarks(benchPath)
+	if err != nil {
+		return nil, err
+	}
+	scratch, err := eval.ReadBenchmarks(scratchPath)
+	if err != nil {
+		return nil, err
+	}
+	return append(bench, scratch...), nil
 }
 
 // filterSHA returns the subset of entries whose PromptSHA equals sha.

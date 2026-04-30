@@ -25,11 +25,16 @@ import (
 )
 
 const (
+	// promptElevatedPath is the relative path used by the test (CWD is internal/eval/).
 	promptElevatedPath = "../../docs/prompts/elevated.md"
-	scenarioRoot       = "testdata"
-	defaultModel       = "haiku"
-	maxBudgetUSD       = 0.50
-	runTimeout         = 5 * time.Minute
+	// promptElevatedCanonical is the repo-root-relative path stored in benchmark
+	// entries. Both forms refer to the same file; the canonical form is what
+	// tools (compare, promote) and benchmark schemas use.
+	promptElevatedCanonical = "docs/prompts/elevated.md"
+	scenarioRoot            = "testdata"
+	defaultModel            = "haiku"
+	maxBudgetUSD            = 0.50
+	runTimeout              = 5 * time.Minute
 )
 
 // resolveModel returns the model alias, defaulting to defaultModel. Override
@@ -53,10 +58,29 @@ func resolveModel() string {
 // (no link in the export) and the trajectory (the create-without-discovered
 // command shape).
 func TestDiscoveredFromRegression(t *testing.T) {
-	scenarioDir := filepath.Join(scenarioRoot, "discovered_from")
+	const scenario = "discovered_from"
+	scenarioDir := filepath.Join(scenarioRoot, scenario)
+
+	// Skip-if-benchmarked: when QUEST_EVAL_SKIP_IF_BENCHMARKED=1 (set by
+	// `make eval-changed`), self-skip if benchmarks.jsonl already has an entry
+	// for the current (scenario, model, prompt SHA). This is the "only run
+	// changed prompts" path — the SHA changes when the prompt file changes.
+	if os.Getenv("QUEST_EVAL_SKIP_IF_BENCHMARKED") != "" {
+		sha, err := PromptSHA(promptElevatedPath)
+		if err != nil {
+			t.Fatalf("hash prompt: %v", err)
+		}
+		ok, err := IsBenchmarked(scenario, resolveModel(), promptElevatedCanonical, sha)
+		if err != nil {
+			t.Fatalf("check benchmarks: %v", err)
+		}
+		if ok {
+			t.Skipf("already benchmarked at SHA %s — skip-if-benchmarked is set", sha[:7])
+		}
+	}
 
 	var result agentResult
-	defer reportScenario(t, "discovered_from", &result)
+	defer reportScenario(t, scenario, &result)
 
 	workdir := t.TempDir()
 	if err := setupSeed(scenarioDir, workdir); err != nil {
@@ -125,24 +149,25 @@ func reportScenario(t *testing.T, name string, r *agentResult) {
 	}
 }
 
-// appendBenchmarkLine writes one entry to benchmarks.jsonl. Hashes the prompt
-// file to capture its identity at run time so the compare tool can group by
-// content. Uses a heuristic word-count*1.3 token estimate (see benchmark.go).
+// appendBenchmarkLine writes one entry to scratch.jsonl. Scratch is the
+// harness's append-only working log (gitignored); `eval-promote` filters
+// scratch entries whose prompt_sha matches the current file SHA, appends them
+// to the canonical benchmarks.jsonl, then truncates scratch.
 func appendBenchmarkLine(scenario string, r *agentResult, pass bool) error {
 	promptBytes, err := os.ReadFile(promptElevatedPath)
 	if err != nil {
 		return fmt.Errorf("read prompt: %w", err)
 	}
-	logPath, err := BenchmarkLogPath()
+	scratchPath, err := ScratchLogPath()
 	if err != nil {
 		return err
 	}
 	sum := sha256.Sum256(promptBytes)
-	return AppendBenchmark(logPath, BenchmarkEntry{
+	return AppendBenchmark(scratchPath, BenchmarkEntry{
 		Timestamp:    NowUTC(),
 		Scenario:     scenario,
 		Model:        resolveModel(),
-		PromptPath:   "docs/prompts/elevated.md",
+		PromptPath:   promptElevatedCanonical,
 		PromptSHA:    hex.EncodeToString(sum[:]),
 		PromptTokens: EstimatePromptTokens(string(promptBytes)),
 		Turns:        r.NumTurns,

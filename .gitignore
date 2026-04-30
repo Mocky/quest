@@ -2,3 +2,4 @@
 /quest-export/
 /.quest/
 /coverage.out
+/internal/eval/scratch.jsonl
