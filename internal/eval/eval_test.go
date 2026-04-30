@@ -10,6 +10,8 @@ package eval
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,21 +93,22 @@ func TestDiscoveredFromRegression(t *testing.T) {
 	}
 }
 
-// reportScenario emits a single-row summary of a scenario run. Called from a
-// deferred closure so it sees the final t.Failed() state. With -v the row
-// renders inline; without -v the test's `ok`/`FAIL` is enough on its own.
+// reportScenario emits a single-row summary of a scenario run AND appends a
+// line to internal/eval/benchmarks.jsonl. Called from a deferred closure so it
+// sees the final t.Failed() state.
 //
 // Token columns are cumulative across all turns:
 //   - IN, OUT: fresh input / output tokens (billed at the model's input/output rate)
 //   - CACHE-R: tokens read from prompt cache (~10% of input rate)
 //   - CACHE-W: tokens written to prompt cache (~125% of input rate; usually first turn only)
 //
-// The system-prompt artifact dominates CACHE-W on the first turn and CACHE-R on
-// subsequent turns, so it lives in those columns rather than IN.
+// The system-prompt artifact dominates CACHE-W on the first turn and CACHE-R
+// on subsequent turns, so it lives in those columns rather than IN.
 func reportScenario(t *testing.T, name string, r *agentResult) {
 	t.Helper()
+	pass := !t.Failed()
 	verdict := "PASS"
-	if t.Failed() {
+	if !pass {
 		verdict = "FAIL"
 	}
 	t.Logf(
@@ -117,6 +120,40 @@ func reportScenario(t *testing.T, name string, r *agentResult) {
 		fmt.Sprintf("$%.4f", r.CostUSD),
 		verdict,
 	)
+	if err := appendBenchmarkLine(name, r, pass); err != nil {
+		t.Logf("benchmark log: %v", err)
+	}
+}
+
+// appendBenchmarkLine writes one entry to benchmarks.jsonl. Hashes the prompt
+// file to capture its identity at run time so the compare tool can group by
+// content. Uses a heuristic word-count*1.3 token estimate (see benchmark.go).
+func appendBenchmarkLine(scenario string, r *agentResult, pass bool) error {
+	promptBytes, err := os.ReadFile(promptElevatedPath)
+	if err != nil {
+		return fmt.Errorf("read prompt: %w", err)
+	}
+	logPath, err := BenchmarkLogPath()
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(promptBytes)
+	return AppendBenchmark(logPath, BenchmarkEntry{
+		Timestamp:    NowUTC(),
+		Scenario:     scenario,
+		Model:        resolveModel(),
+		PromptPath:   "docs/prompts/elevated.md",
+		PromptSHA:    hex.EncodeToString(sum[:]),
+		PromptTokens: EstimatePromptTokens(string(promptBytes)),
+		Turns:        r.NumTurns,
+		Input:        r.InputTokens,
+		Output:       r.OutputTokens,
+		CacheRead:    r.CacheReadTokens,
+		CacheWrite:   r.CacheCreationTokens,
+		CostUSD:      r.CostUSD,
+		Pass:         pass,
+		GitHead:      GitHead(),
+	})
 }
 
 // agentResult holds what we extracted from a stream-json run.

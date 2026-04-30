@@ -79,6 +79,14 @@ A change that's a clear win on Sonnet and a clear loss on Opus is not a license 
 
 Periodically (e.g., once a quarter), actively try to remove sections / sentences from each prompt and re-run the eval. If pass rate holds, keep the deletion (token win — also often a correctness improvement, since removed text removes attention pulls). If pass rate drops, revert. Without an active force, prompts only ratchet up.
 
+### Persistence
+
+Run results are appended to `internal/eval/benchmarks.jsonl` — one flat JSON object per run, committed to git. The schema is grep-friendly so an agent reading the log can group / aggregate without unpacking nested structures. Each entry carries a SHA-256 of the prompt's contents at run time, so changes to the prompt are tracked even when the file path is stable.
+
+Aggregation is per `(scenario, model, prompt_sha)`. A single run is a sample, not a verdict — the comparison tool (`make eval-compare`) computes median cost / median turns / pass rate over all runs at a given SHA, then shows current-SHA aggregates side by side with most-recent-different-SHA aggregates. This is what makes the K-runs framing work end-to-end: per-SHA median absorbs run-to-run noise; across-SHA comparison surfaces the prompt-change effect.
+
+`prompt_tokens` is captured per entry as a heuristic (`word_count * 1.3`), which is accurate to ~5% for English markdown. Sufficient for tracking changes; promote to a real tokenizer only if the heuristic and reality drift far enough to mislead.
+
 ## Source of scenarios
 
 Real failures from retrospectives, not imagined ones. Each retrospective that surfaces a prompt-related failure mode contributes:
