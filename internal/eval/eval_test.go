@@ -94,6 +94,14 @@ func TestDiscoveredFromRegression(t *testing.T) {
 // reportScenario emits a single-row summary of a scenario run. Called from a
 // deferred closure so it sees the final t.Failed() state. With -v the row
 // renders inline; without -v the test's `ok`/`FAIL` is enough on its own.
+//
+// Token columns are cumulative across all turns:
+//   - IN, OUT: fresh input / output tokens (billed at the model's input/output rate)
+//   - CACHE-R: tokens read from prompt cache (~10% of input rate)
+//   - CACHE-W: tokens written to prompt cache (~125% of input rate; usually first turn only)
+//
+// The system-prompt artifact dominates CACHE-W on the first turn and CACHE-R on
+// subsequent turns, so it lives in those columns rather than IN.
 func reportScenario(t *testing.T, name string, r *agentResult) {
 	t.Helper()
 	verdict := "PASS"
@@ -101,10 +109,11 @@ func reportScenario(t *testing.T, name string, r *agentResult) {
 		verdict = "FAIL"
 	}
 	t.Logf(
-		"\n  %-20s %-8s %-7s %-15s %-9s %s\n  %-20s %-8s %-7d %-15s %-9s %s",
-		"SCENARIO", "MODEL", "TURNS", "TOKENS(in/out)", "COST", "RESULT",
+		"\n  %-20s %-7s %-6s %-7s %-7s %-8s %-8s %-9s %s"+
+			"\n  %-20s %-7s %-6d %-7d %-7d %-8d %-8d %-9s %s",
+		"SCENARIO", "MODEL", "TURNS", "IN", "OUT", "CACHE-R", "CACHE-W", "COST", "RESULT",
 		name, resolveModel(), r.NumTurns,
-		fmt.Sprintf("%d/%d", r.InputTokens, r.OutputTokens),
+		r.InputTokens, r.OutputTokens, r.CacheReadTokens, r.CacheCreationTokens,
 		fmt.Sprintf("$%.4f", r.CostUSD),
 		verdict,
 	)
@@ -112,12 +121,14 @@ func reportScenario(t *testing.T, name string, r *agentResult) {
 
 // agentResult holds what we extracted from a stream-json run.
 type agentResult struct {
-	BashCalls    []string
-	CostUSD      float64
-	InputTokens  int
-	OutputTokens int
-	NumTurns     int
-	FinalText    string
+	BashCalls           []string
+	CostUSD             float64
+	InputTokens         int // cumulative fresh input across all turns
+	OutputTokens        int // cumulative output across all turns
+	CacheReadTokens     int // cumulative cache reads (where the cached system prompt lives)
+	CacheCreationTokens int // cumulative cache writes (cold-cache cost on first turn)
+	NumTurns            int
+	FinalText           string
 }
 
 // setupSeed runs the scenario's seed/setup.sh against workdir.
@@ -226,12 +237,27 @@ func processEvent(event map[string]any, r *agentResult) {
 		if v, ok := event["result"].(string); ok {
 			r.FinalText = v
 		}
-		if usage, ok := event["usage"].(map[string]any); ok {
-			if v, ok := usage["input_tokens"].(float64); ok {
-				r.InputTokens = int(v)
+		// Sum across iterations to get cumulative tokens. The top-level
+		// usage.input_tokens is the LAST iteration only — using it would
+		// hide most of the run's cost.
+		usage, _ := event["usage"].(map[string]any)
+		iters, _ := usage["iterations"].([]any)
+		for _, it := range iters {
+			m, ok := it.(map[string]any)
+			if !ok {
+				continue
 			}
-			if v, ok := usage["output_tokens"].(float64); ok {
-				r.OutputTokens = int(v)
+			if v, ok := m["input_tokens"].(float64); ok {
+				r.InputTokens += int(v)
+			}
+			if v, ok := m["output_tokens"].(float64); ok {
+				r.OutputTokens += int(v)
+			}
+			if v, ok := m["cache_read_input_tokens"].(float64); ok {
+				r.CacheReadTokens += int(v)
+			}
+			if v, ok := m["cache_creation_input_tokens"].(float64); ok {
+				r.CacheCreationTokens += int(v)
 			}
 		}
 	}
