@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mocky/quest/internal/batch"
 	"github.com/mocky/quest/internal/config"
 	"github.com/mocky/quest/internal/errors"
 	"github.com/mocky/quest/internal/output"
@@ -40,9 +41,12 @@ var (
 	}
 )
 
-// List handles `quest list [flags]`. The filter flags compose AND
-// across dimensions and OR within a dimension (except --tag, which
-// is AND within as well). See quest-spec.md §Queries.
+// List handles `quest list [flags]`. Single-valued filters
+// (--status, --parent, --role, --tier, --severity) use OR within a
+// flag and AND across flags. Multi-valued filters (--tag,
+// --blocked-by) use comma=AND within a flag and repeat=OR across,
+// giving DNF expressivity. Different filters always AND together.
+// See quest-spec.md §quest list.
 func List(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	_ = stdin
 
@@ -83,17 +87,21 @@ func List(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	return emitListJSON(stdout, columns, enriched)
 }
 
-// parseListFlags builds the Filter + column projection from args. Each
-// enum flag is a fs.Func so multiple occurrences accumulate and each
-// accepts a comma-separated list that is split at this layer. Unknown
-// values for --status, --tier, --severity, --columns are rejected here
-// so the SQL builder in the store can assume a clean filter.
+// parseListFlags builds the Filter + column projection from args.
+// Single-valued enum flags use a flat fs.Func that accumulates
+// comma-split values across occurrences. Multi-valued flags (--tag,
+// --blocked-by) collect raw values per occurrence and post-process
+// each into one DNF arm with within-arm and cross-arm dedup. Unknown
+// values for --status, --tier, --severity, --columns are rejected
+// here so the SQL builder in the store can assume a clean filter.
 func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, error) {
 	var (
-		filter          store.Filter
-		statusesSet     bool
-		columnsFlagRaw  []string
-		columnsProvided bool
+		filter           store.Filter
+		statusesSet      bool
+		columnsFlagRaw   []string
+		columnsProvided  bool
+		rawTagArms       []string
+		rawBlockedByArms []string
 	)
 	fs := newFlagSet("list", "[flags]",
 		"List tasks with filtering.")
@@ -119,8 +127,14 @@ func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, er
 		addCSV(&filter.Statuses, &statusesSet))
 	fs.Func("parent", "IDS (comma-separated; repeatable)",
 		addCSV(&filter.Parents, nil))
-	fs.Func("tag", "TAGS (comma-separated AND; repeatable AND)",
-		addCSV(&filter.Tags, nil))
+	fs.Func("blocked-by", "IDS (within-flag AND, repeat for OR)", func(v string) error {
+		rawBlockedByArms = append(rawBlockedByArms, v)
+		return nil
+	})
+	fs.Func("tag", "TAGS (within-flag AND, repeat for OR)", func(v string) error {
+		rawTagArms = append(rawTagArms, v)
+		return nil
+	})
 	fs.Func("role", "ROLES (comma-separated; repeatable)",
 		addCSV(&filter.Roles, nil))
 	fs.Func("tier", "TIERS (comma-separated; repeatable)",
@@ -160,6 +174,18 @@ func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, er
 		return store.Filter{}, nil, err
 	}
 
+	tagArms, err := parseTagArms(rawTagArms)
+	if err != nil {
+		return store.Filter{}, nil, err
+	}
+	filter.Tags = tagArms
+
+	blockedByArms, err := parseIDArms(rawBlockedByArms, "blocked-by")
+	if err != nil {
+		return store.Filter{}, nil, err
+	}
+	filter.BlockedBy = blockedByArms
+
 	columns := listDefaultColumns
 	if columnsProvided {
 		if err := rejectUnknown("column", columnsFlagRaw, validListColumns); err != nil {
@@ -174,6 +200,86 @@ func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, er
 	}
 	filter.Columns = columns
 	return filter, columns, nil
+}
+
+// parseTagArms turns the raw `--tag` occurrences into DNF arms. Each
+// occurrence is normalized via batch.NormalizeTagList (which rejects
+// empty values, lowercases, validates the tag character class, and
+// dedups within the arm). Identical arms across occurrences fold to
+// one. Returns ErrUsage-wrapped errors with `list: --tag "X": ...`
+// formatting to match the existing list-handler error pattern.
+func parseTagArms(raw []string) ([][]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([][]string, 0, len(raw))
+	seen := map[string]bool{}
+	for _, r := range raw {
+		arm, err := batch.NormalizeTagList(r)
+		if err != nil {
+			return nil, fmt.Errorf("list: --tag %q: %w", r, err)
+		}
+		key := dnfArmKey(arm)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, arm)
+	}
+	return out, nil
+}
+
+// parseIDArms turns the raw occurrences of an ID-list flag
+// (`--blocked-by`) into DNF arms. Each occurrence must be non-empty
+// after trimming; empty tokens between commas are dropped silently
+// per spec §Multi-valued filter semantics > Edge cases. Within-arm
+// and cross-arm dedup mirrors parseTagArms; ID values pass through
+// to the SQL layer unvalidated, matching `--parent` (a typo just
+// returns zero rows).
+func parseIDArms(raw []string, flagName string) ([][]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([][]string, 0, len(raw))
+	seenArm := map[string]bool{}
+	for _, r := range raw {
+		if strings.TrimSpace(r) == "" {
+			return nil, fmt.Errorf("list: --%s value is empty: %w", flagName, errors.ErrUsage)
+		}
+		var arm []string
+		seenInArm := map[string]bool{}
+		for _, p := range strings.Split(r, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if seenInArm[p] {
+				continue
+			}
+			seenInArm[p] = true
+			arm = append(arm, p)
+		}
+		if len(arm) == 0 {
+			return nil, fmt.Errorf("list: --%s %q contains only empty tokens: %w", flagName, r, errors.ErrUsage)
+		}
+		key := dnfArmKey(arm)
+		if seenArm[key] {
+			continue
+		}
+		seenArm[key] = true
+		out = append(out, arm)
+	}
+	return out, nil
+}
+
+// dnfArmKey builds an order-independent key for cross-arm dedup by
+// sorting a copy of arm and joining with NUL. NUL avoids collision
+// with any valid tag or task-ID character (both classes are ASCII-
+// printable per spec).
+func dnfArmKey(arm []string) string {
+	sorted := append([]string{}, arm...)
+	sort.Strings(sorted)
+	return strings.Join(sorted, "\x00")
 }
 
 // rejectUnknown wraps ErrUsage with the spec-pinned "did you mean"

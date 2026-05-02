@@ -125,18 +125,24 @@ type Commit struct {
 	AddedAt string `json:"added_at"`
 }
 
-// Filter is the value struct consumed by ListTasks. Every slice field
-// is AND-composed at query time — empty slice means "no constraint on
-// this dimension". Ready is a shorthand for "status=open AND every
-// blocked-by dependency is satisfied" per spec §quest list. Columns
-// is a projection hint, not a filter: it controls which auxiliary
-// JOINs the SQL builder emits for the tags / blocked-by / children
-// columns. Fields not requested remain zero-valued on the returned
-// Task.
+// Filter is the value struct consumed by ListTasks. Single-valued
+// enum filters (Statuses / Parents / Roles / Tiers / Severities) are
+// flat slices that compose with OR within and AND across — empty
+// slice means "no constraint on this dimension". Multi-valued filters
+// (Tags / BlockedBy) are DNF: each inner slice is one AND-arm
+// (intersection within); arms OR together (union across). An empty
+// outer slice means "no constraint"; the parser rejects empty arms
+// before they reach this layer. Ready is a shorthand for "status=open
+// AND every blocked-by dependency is satisfied" per spec §quest list.
+// Columns is a projection hint, not a filter: it controls which
+// auxiliary JOINs the SQL builder emits for the tags / blocked-by /
+// children columns. Fields not requested remain zero-valued on the
+// returned Task.
 type Filter struct {
 	Statuses   []string
 	Parents    []string
-	Tags       []string
+	Tags       [][]string
+	BlockedBy  [][]string
 	Roles      []string
 	Tiers      []string
 	Severities []string

@@ -129,10 +129,12 @@ func (s *sqliteStore) GetTaskWithDeps(ctx context.Context, id string) (Task, err
 	return t, nil
 }
 
-// ListTasks returns tasks matching filter in ID-ascending order. Enum
-// filters (Statuses/Parents/Roles/Tiers) compose with OR within
-// each flag and AND across flags. Tags compose with AND (a task tagged
-// `go` AND `auth`) via one correlated subquery per tag. The handler
+// ListTasks returns tasks matching filter in ID-ascending order.
+// Single-valued enum filters (Statuses/Parents/Roles/Tiers/Severities)
+// compose with OR within each flag and AND across flags via simple
+// IN-list conditions. Multi-valued filters (Tags/BlockedBy) are DNF:
+// each inner slice is rendered as an AND of correlated subqueries,
+// and the arms are OR-joined and added to the outer AND. The handler
 // defaults Statuses to the non-cancelled set before calling; an empty
 // slice here means "no status filter" so direct callers (and tests)
 // can opt out. Ready further filters to tasks whose `blocked-by`
@@ -161,10 +163,15 @@ func (s *sqliteStore) ListTasks(ctx context.Context, filter Filter) ([]Task, err
 	addIn("t.role", filter.Roles)
 	addIn("t.tier", filter.Tiers)
 	addIn("t.severity", filter.Severities)
-	for _, tag := range filter.Tags {
-		conds = append(conds,
-			"t.id IN (SELECT task_id FROM tags WHERE tag = ?)")
-		argv = append(argv, tag)
+	if cond, args := buildDNFCond(filter.Tags,
+		"t.id IN (SELECT task_id FROM tags WHERE tag = ?)"); cond != "" {
+		conds = append(conds, cond)
+		argv = append(argv, args...)
+	}
+	if cond, args := buildDNFCond(filter.BlockedBy,
+		"t.id IN (SELECT task_id FROM dependencies WHERE link_type = 'blocked-by' AND target_id = ?)"); cond != "" {
+		conds = append(conds, cond)
+		argv = append(argv, args...)
 	}
 	if filter.Ready {
 		conds = append(conds, "t.status = 'open'")
@@ -206,6 +213,37 @@ func (s *sqliteStore) ListTasks(ctx context.Context, filter Filter) ([]Task, err
 		return nil, classifyDriverErr(err)
 	}
 	return out, nil
+}
+
+// buildDNFCond renders a multi-valued filter (DNF) into a single
+// AND-able condition string. Each arm becomes an AND of `template`
+// instances (one per element, with the element appended to args);
+// arms OR together. Returns ("", nil) when arms is empty so the
+// caller can no-op cleanly. The returned condition is parenthesized
+// when it contains more than one OR-arm, so the outer AND-join in
+// ListTasks composes correctly without extra wrapping.
+func buildDNFCond(arms [][]string, template string) (string, []any) {
+	if len(arms) == 0 {
+		return "", nil
+	}
+	armClauses := make([]string, 0, len(arms))
+	args := make([]any, 0)
+	for _, arm := range arms {
+		clauses := make([]string, 0, len(arm))
+		for _, v := range arm {
+			clauses = append(clauses, template)
+			args = append(args, v)
+		}
+		if len(clauses) == 1 {
+			armClauses = append(armClauses, clauses[0])
+		} else {
+			armClauses = append(armClauses, "("+strings.Join(clauses, " AND ")+")")
+		}
+	}
+	if len(armClauses) == 1 {
+		return armClauses[0], args
+	}
+	return "(" + strings.Join(armClauses, " OR ") + ")", args
 }
 
 // GetHistory returns the full mutation log for a task in insertion

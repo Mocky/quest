@@ -216,8 +216,8 @@ func TestListParentFilter(t *testing.T) {
 	}
 }
 
-// TestListTagAND: multiple --tag values AND-compose (task must have
-// every listed tag).
+// TestListTagAND: comma within a single --tag flag is AND
+// (intersection). A row matches only if it carries every listed tag.
 func TestListTagAND(t *testing.T) {
 	s, _ := testStore(t)
 	seedListTask(t, s, "proj-a1", "Alpha", "", "open", "", "", "")
@@ -236,14 +236,262 @@ func TestListTagAND(t *testing.T) {
 	if len(rows) != 1 || string(rows[0]["id"]) != `"proj-a1"` {
 		t.Errorf("rows = %+v, want just proj-a1", rows)
 	}
+}
 
-	// Repeated flags also AND-compose.
-	err, stdout, _ = runList(t, s, plannerCfg(),
+// TestListTagRepeatOR: repeating --tag flags is OR -- each occurrence
+// is a separate AND-arm; rows match if any arm matches. With single-
+// element arms this is the union of single-tag matches.
+func TestListTagRepeatOR(t *testing.T) {
+	s, _ := testStore(t)
+	seedListTask(t, s, "proj-a1", "Alpha", "", "open", "", "", "")
+	seedListTask(t, s, "proj-a2", "Beta", "", "open", "", "", "")
+	seedListTask(t, s, "proj-a3", "Gamma", "", "open", "", "", "")
+	seedListTask(t, s, "proj-a4", "Delta", "", "open", "", "", "")
+	seedTag(t, s, "proj-a1", "go")
+	seedTag(t, s, "proj-a2", "auth")
+	seedTag(t, s, "proj-a3", "ui")
+	// proj-a4 has no tags
+
+	err, stdout, _ := runList(t, s, plannerCfg(),
 		[]string{"--tag", "go", "--tag", "auth"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	rows = parseListArray(t, stdout)
+	rows := parseListArray(t, stdout)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2; got %+v", len(rows), rows)
+	}
+	seen := map[string]bool{}
+	for _, r := range rows {
+		seen[string(r["id"])] = true
+	}
+	for _, want := range []string{`"proj-a1"`, `"proj-a2"`} {
+		if !seen[want] {
+			t.Errorf("missing id %s; rows = %+v", want, rows)
+		}
+	}
+}
+
+// TestListTagDNF: `--tag a,b --tag c,d` expresses
+// `(a AND b) OR (c AND d)` -- the canonical DNF case the new
+// semantics enable.
+func TestListTagDNF(t *testing.T) {
+	s, _ := testStore(t)
+	seedListTask(t, s, "proj-a1", "Alpha", "", "open", "", "", "")
+	seedListTask(t, s, "proj-a2", "Beta", "", "open", "", "", "")
+	seedListTask(t, s, "proj-a3", "Gamma", "", "open", "", "", "")
+	seedListTask(t, s, "proj-a4", "Delta", "", "open", "", "", "")
+	// proj-a1 matches arm 1 (go AND auth)
+	seedTag(t, s, "proj-a1", "go")
+	seedTag(t, s, "proj-a1", "auth")
+	// proj-a2 has only one of (go, auth) -- does not match arm 1
+	seedTag(t, s, "proj-a2", "go")
+	// proj-a3 matches arm 2 (bug AND frontend)
+	seedTag(t, s, "proj-a3", "bug")
+	seedTag(t, s, "proj-a3", "frontend")
+	// proj-a4 has only one of (bug, frontend) -- does not match arm 2
+	seedTag(t, s, "proj-a4", "bug")
+
+	err, stdout, _ := runList(t, s, plannerCfg(),
+		[]string{"--tag", "go,auth", "--tag", "bug,frontend"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	rows := parseListArray(t, stdout)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2; got %+v", len(rows), rows)
+	}
+	seen := map[string]bool{}
+	for _, r := range rows {
+		seen[string(r["id"])] = true
+	}
+	for _, want := range []string{`"proj-a1"`, `"proj-a3"`} {
+		if !seen[want] {
+			t.Errorf("missing id %s; rows = %+v", want, rows)
+		}
+	}
+}
+
+// TestListTagEmptyRejected: --tag "" is exit 2 (usage error).
+func TestListTagEmptyRejected(t *testing.T) {
+	s, _ := testStore(t)
+	err, _, _ := runList(t, s, plannerCfg(), []string{"--tag", ""})
+	if err == nil {
+		t.Fatal("got nil, want ErrUsage")
+	}
+	if !stderrors.Is(err, errors.ErrUsage) {
+		t.Fatalf("err = %v, want wraps ErrUsage", err)
+	}
+}
+
+// TestListTagInvalidCharRejected: tag character-class violation
+// (punctuation, underscore, etc.) returns exit 2 -- the same
+// validation `quest tag` and `quest create --tag` apply, wired
+// through the list parser.
+func TestListTagInvalidCharRejected(t *testing.T) {
+	s, _ := testStore(t)
+	err, _, _ := runList(t, s, plannerCfg(), []string{"--tag", "_go"})
+	if err == nil {
+		t.Fatal("got nil, want ErrUsage")
+	}
+	if !stderrors.Is(err, errors.ErrUsage) {
+		t.Fatalf("err = %v, want wraps ErrUsage", err)
+	}
+}
+
+// TestListBlockedByAND: comma within a single --blocked-by is AND --
+// a task matches only if it holds blocked-by edges to every listed
+// target.
+func TestListBlockedByAND(t *testing.T) {
+	s, _ := testStore(t)
+	seedListTask(t, s, "proj-a1", "Upstream-1", "", "open", "", "", "")
+	seedListTask(t, s, "proj-a2", "Upstream-2", "", "open", "", "", "")
+	seedListTask(t, s, "proj-b1", "Down-both", "", "open", "", "", "")
+	seedListTask(t, s, "proj-b2", "Down-a1-only", "", "open", "", "", "")
+	seedDep(t, s, "proj-b1", "proj-a1", "blocked-by")
+	seedDep(t, s, "proj-b1", "proj-a2", "blocked-by")
+	seedDep(t, s, "proj-b2", "proj-a1", "blocked-by")
+
+	err, stdout, _ := runList(t, s, plannerCfg(),
+		[]string{"--blocked-by", "proj-a1,proj-a2"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	rows := parseListArray(t, stdout)
+	if len(rows) != 1 || string(rows[0]["id"]) != `"proj-b1"` {
+		t.Errorf("rows = %+v, want just proj-b1", rows)
+	}
+}
+
+// TestListBlockedByRepeatOR: repeating --blocked-by yields OR --
+// matches any task holding a blocked-by edge to any listed target.
+func TestListBlockedByRepeatOR(t *testing.T) {
+	s, _ := testStore(t)
+	seedListTask(t, s, "proj-a1", "Upstream-1", "", "open", "", "", "")
+	seedListTask(t, s, "proj-a2", "Upstream-2", "", "open", "", "", "")
+	seedListTask(t, s, "proj-b1", "Down-a1", "", "open", "", "", "")
+	seedListTask(t, s, "proj-b2", "Down-a2", "", "open", "", "", "")
+	seedListTask(t, s, "proj-b3", "Down-other", "", "open", "", "", "")
+	seedDep(t, s, "proj-b1", "proj-a1", "blocked-by")
+	seedDep(t, s, "proj-b2", "proj-a2", "blocked-by")
+	// proj-b3 has no blocked-by edges -- should not match
+
+	err, stdout, _ := runList(t, s, plannerCfg(),
+		[]string{"--blocked-by", "proj-a1", "--blocked-by", "proj-a2"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	rows := parseListArray(t, stdout)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2; got %+v", len(rows), rows)
+	}
+}
+
+// TestListBlockedByDNF: `--blocked-by A,B --blocked-by C` expresses
+// `(A AND B) OR C`.
+func TestListBlockedByDNF(t *testing.T) {
+	s, _ := testStore(t)
+	seedListTask(t, s, "proj-a1", "Up-1", "", "open", "", "", "")
+	seedListTask(t, s, "proj-a2", "Up-2", "", "open", "", "", "")
+	seedListTask(t, s, "proj-a3", "Up-3", "", "open", "", "", "")
+	seedListTask(t, s, "proj-b1", "Down-both-a1-a2", "", "open", "", "", "")
+	seedListTask(t, s, "proj-b2", "Down-a3", "", "open", "", "", "")
+	seedListTask(t, s, "proj-b3", "Down-a1-only", "", "open", "", "", "")
+	seedDep(t, s, "proj-b1", "proj-a1", "blocked-by")
+	seedDep(t, s, "proj-b1", "proj-a2", "blocked-by")
+	seedDep(t, s, "proj-b2", "proj-a3", "blocked-by")
+	seedDep(t, s, "proj-b3", "proj-a1", "blocked-by") // missing a2 -- arm 1 fails
+
+	err, stdout, _ := runList(t, s, plannerCfg(),
+		[]string{"--blocked-by", "proj-a1,proj-a2", "--blocked-by", "proj-a3"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	rows := parseListArray(t, stdout)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2; got %+v", len(rows), rows)
+	}
+	seen := map[string]bool{}
+	for _, r := range rows {
+		seen[string(r["id"])] = true
+	}
+	for _, want := range []string{`"proj-b1"`, `"proj-b2"`} {
+		if !seen[want] {
+			t.Errorf("missing id %s; rows = %+v", want, rows)
+		}
+	}
+}
+
+// TestListBlockedByEmptyRejected: --blocked-by "" is exit 2.
+func TestListBlockedByEmptyRejected(t *testing.T) {
+	s, _ := testStore(t)
+	err, _, _ := runList(t, s, plannerCfg(), []string{"--blocked-by", ""})
+	if err == nil {
+		t.Fatal("got nil, want ErrUsage")
+	}
+	if !stderrors.Is(err, errors.ErrUsage) {
+		t.Fatalf("err = %v, want wraps ErrUsage", err)
+	}
+}
+
+// TestListBlockedByUnknownTargetZeroRows: an unknown target ID is
+// not a usage error -- it matches zero rows, mirroring how --parent
+// treats unknown values.
+func TestListBlockedByUnknownTargetZeroRows(t *testing.T) {
+	s, _ := testStore(t)
+	seedListTask(t, s, "proj-a1", "Alpha", "", "open", "", "", "")
+	err, stdout, _ := runList(t, s, plannerCfg(),
+		[]string{"--blocked-by", "proj-nonexistent"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if strings.TrimSpace(stdout) != "[]" {
+		t.Errorf("stdout = %q, want []", stdout)
+	}
+}
+
+// TestListBlockedByMixedWithTag: cross-filter composition is AND --
+// `--blocked-by X --tag bug` returns rows matching both filters.
+func TestListBlockedByMixedWithTag(t *testing.T) {
+	s, _ := testStore(t)
+	seedListTask(t, s, "proj-a1", "Upstream", "", "open", "", "", "")
+	seedListTask(t, s, "proj-b1", "Both", "", "open", "", "", "")
+	seedListTask(t, s, "proj-b2", "Tagged-only", "", "open", "", "", "")
+	seedListTask(t, s, "proj-b3", "Blocked-only", "", "open", "", "", "")
+	seedDep(t, s, "proj-b1", "proj-a1", "blocked-by")
+	seedDep(t, s, "proj-b3", "proj-a1", "blocked-by")
+	seedTag(t, s, "proj-b1", "bug")
+	seedTag(t, s, "proj-b2", "bug")
+
+	err, stdout, _ := runList(t, s, plannerCfg(),
+		[]string{"--blocked-by", "proj-a1", "--tag", "bug"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	rows := parseListArray(t, stdout)
+	if len(rows) != 1 || string(rows[0]["id"]) != `"proj-b1"` {
+		t.Errorf("rows = %+v, want just proj-b1", rows)
+	}
+}
+
+// TestListMultiValuedDedupArms: identical arms across repeats fold
+// to one. Order within an arm doesn't matter for dedup, so
+// `--tag a,b --tag b,a` is the same single arm.
+func TestListMultiValuedDedupArms(t *testing.T) {
+	s, _ := testStore(t)
+	seedListTask(t, s, "proj-a1", "Alpha", "", "open", "", "", "")
+	seedListTask(t, s, "proj-a2", "Beta", "", "open", "", "", "")
+	seedTag(t, s, "proj-a1", "go")
+	seedTag(t, s, "proj-a1", "auth")
+	seedTag(t, s, "proj-a2", "go")
+
+	// `--tag a,b --tag b,a` collapses to one arm `(a AND b)`.
+	err, stdout, _ := runList(t, s, plannerCfg(),
+		[]string{"--tag", "go,auth", "--tag", "auth,go"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	rows := parseListArray(t, stdout)
 	if len(rows) != 1 || string(rows[0]["id"]) != `"proj-a1"` {
 		t.Errorf("rows = %+v, want just proj-a1", rows)
 	}
