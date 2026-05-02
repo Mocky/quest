@@ -22,7 +22,10 @@ import (
 func Unlink(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
 	leading, rest := splitLeadingPositional(args)
-	parsed, trailing, err := parseLinkArgs(stderr, "unlink", rest)
+	parsed, trailing, err := parseLinkArgs(stderr, "unlink",
+		"TASK --blocked-by|--caused-by|--discovered-from|--retry-of TARGET",
+		"Remove a typed dependency link between TASK and TARGET.",
+		rest)
 	if stderrors.Is(err, flag.ErrHelp) {
 		return nil
 	}

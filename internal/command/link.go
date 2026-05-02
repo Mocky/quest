@@ -38,8 +38,8 @@ type linkArgs struct {
 	edges []batch.Edge
 }
 
-func parseLinkArgs(stderr io.Writer, name string, args []string) (linkArgs, []string, error) {
-	fs := newFlagSet(name)
+func parseLinkArgs(stderr io.Writer, name, synopsis, description string, args []string) (linkArgs, []string, error) {
+	fs := newFlagSet(name, synopsis, description)
 	fs.SetOutput(stderr)
 
 	var parsed linkArgs
@@ -107,7 +107,10 @@ func validateLinkArgs(name string, parsed linkArgs) (batch.Edge, error) {
 func Link(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
 	leading, rest := splitLeadingPositional(args)
-	parsed, trailing, err := parseLinkArgs(stderr, "link", rest)
+	parsed, trailing, err := parseLinkArgs(stderr, "link",
+		"TASK --blocked-by|--caused-by|--discovered-from|--retry-of TARGET",
+		"Add a typed dependency link to TASK referencing TARGET.",
+		rest)
 	if stderrors.Is(err, flag.ErrHelp) {
 		return nil
 	}

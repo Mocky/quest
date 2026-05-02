@@ -6,31 +6,54 @@ import (
 	"strings"
 )
 
-// newFlagSet returns a flag.FlagSet whose Usage method renders multi-
-// character flag names with a "--" prefix and single-character names
-// with a "-" prefix, matching STANDARDS.md §Help Rendering. Go's stdlib
-// flag package prefixes every name with a single dash regardless of
-// length, so help output for `--status` would print as `-status` and
-// drift from the docs; this wrapper installs a custom Usage function
-// that applies the documented convention uniformly.
+// newFlagSet returns a flag.FlagSet whose Usage method renders the
+// three-part help block defined in STANDARDS.md §Help Rendering: a
+// `Usage: quest <name> <synopsis>` line, a one-line description, and
+// (when flags are registered) a flag list using the long-`--` /
+// short-`-` dash convention. Go's stdlib flag package would emit only
+// `Usage of <name>:` plus a flag list, which leaves flagless commands
+// with empty help and prefixes every long flag with a single dash; the
+// custom Usage installed here closes both gaps.
 //
 // The returned FlagSet uses ContinueOnError — quest handlers intercept
 // flag.ErrHelp and parse failures rather than letting the flag package
 // call os.Exit.
-func newFlagSet(name string) *flag.FlagSet {
+func newFlagSet(name, synopsis, description string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.Usage = func() { printFlagDefaults(fs) }
+	fs.Usage = func() { printUsage(fs, synopsis, description) }
 	return fs
 }
 
-// printFlagDefaults writes the usage block for fs: a "Usage of <name>:"
-// header followed by one entry per registered flag. The layout mirrors
-// flag.FlagSet.PrintDefaults (two-space indent, tab-then-usage for
-// short entries, indented continuation for long entries) so readers
+// printUsage writes the help block for fs: the synopsis line, a blank
+// line, the description, then (only if at least one flag is registered)
+// a blank line followed by the flag list. Each section is required by
+// STANDARDS.md §Help Rendering; the blank-line separators are part of
+// the contract so operators see consistent spacing across subcommands.
+func printUsage(fs *flag.FlagSet, synopsis, description string) {
+	out := fs.Output()
+	if synopsis == "" {
+		fmt.Fprintf(out, "Usage: quest %s\n", fs.Name())
+	} else {
+		fmt.Fprintf(out, "Usage: quest %s %s\n", fs.Name(), synopsis)
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, description)
+
+	hasFlags := false
+	fs.VisitAll(func(*flag.Flag) { hasFlags = true })
+	if !hasFlags {
+		return
+	}
+	fmt.Fprintln(out)
+	printFlagDefaults(fs)
+}
+
+// printFlagDefaults writes the per-flag entries for fs. The layout
+// mirrors flag.FlagSet.PrintDefaults (two-space indent, tab-then-usage
+// for short entries, indented continuation for long entries) so readers
 // see a familiar shape; only the dash prefix differs.
 func printFlagDefaults(fs *flag.FlagSet) {
 	out := fs.Output()
-	fmt.Fprintf(out, "Usage of %s:\n", fs.Name())
 	fs.VisitAll(func(fl *flag.Flag) {
 		var b strings.Builder
 		prefix := "-"

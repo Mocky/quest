@@ -154,7 +154,8 @@ func Show(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	_ = stdin
 
 	positional, flagArgs := splitLeadingPositional(args)
-	fs := newFlagSet("show")
+	fs := newFlagSet("show", "ID [--history]",
+		"Display full task details including description, context, status, dependencies, notes, and handoff.")
 	fs.SetOutput(stderr)
 	historyFlag := fs.Bool("history", false, "include the full mutation history")
 	if err := fs.Parse(flagArgs); err != nil {

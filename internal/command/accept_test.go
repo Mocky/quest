@@ -302,8 +302,11 @@ func TestAcceptHelpShortCircuits(t *testing.T) {
 			if stdout != "" {
 				t.Errorf("stdout = %q, want empty", stdout)
 			}
-			if !strings.Contains(stderr, "Usage of accept") {
+			if !strings.Contains(stderr, "Usage: quest accept ID") {
 				t.Errorf("stderr missing usage text; got %q", stderr)
+			}
+			if !strings.Contains(stderr, "Signal that the agent has received the task") {
+				t.Errorf("stderr missing description; got %q", stderr)
 			}
 			// DB invariant: task must still be open — --help must not
 			// mutate state.

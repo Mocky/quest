@@ -36,7 +36,8 @@ func Init(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	_ = s
 	_ = stdin
 
-	fs := newFlagSet("init")
+	fs := newFlagSet("init", "--prefix PREFIX",
+		"Initialize a quest project in the current directory. Creates .quest/ and .quest/config.toml.")
 	fs.SetOutput(stderr)
 	prefix := fs.String("prefix", "", "task ID prefix for this project (2-8 lowercase chars, must start with a letter)")
 	if err := fs.Parse(args); err != nil {

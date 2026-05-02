@@ -295,17 +295,23 @@ Implementation: call `fs.Parse` inline, and on `errors.Is(err, flag.ErrHelp)` re
 
 ### Help Rendering
 
-`--help` on any subcommand renders usage text using the same flag conventions used throughout the spec, README, and command examples.
+`--help` on any subcommand renders usage text using the same flag conventions used throughout the spec, README, and command examples. Every subcommand's help output has three parts in order: a synopsis line, a one-line description, and (if any flags are registered) the flag list.
 
+- **Synopsis line.** The first line is `Usage: quest <name> <args>`, where `<args>` is the positional/flag pattern named in the command's spec section header (e.g., `quest tag ID TAGS`, `quest cancel ID [--reason "..."] [-r]`, `quest list [flags]`). The synopsis is the single source of truth for "what does this command take" — operators reading help should never have to cross-reference the spec to learn the positional arguments. A flag-only command with no positional or flag arguments (e.g., `quest version`) renders `Usage: quest <name>` with no trailing args.
+- **Description.** A blank line then a one-line description of what the command does. Lifted from (or summarizing) the first paragraph of the command's spec section. Plain text — no backticks, no markdown — because terminals do not render them.
+- **Flag list.** If any flags are registered, a blank line follows the description and then one entry per flag in the same shape `flag.PrintDefaults` produces, with the dash convention below. Commands with no flags omit this block entirely.
 - **Long flags** (multi-character names) render as `--name`.
 - **Short flags** (single-character names, e.g., `-r` on `quest cancel`) render as `-r`. The short/long distinction is POSIX-standard and preserved here.
 
-Go's stdlib `flag.PrintDefaults` prefixes every flag with a single dash regardless of name length. Without a shared rendering helper, help output diverges from documentation — users read `--status` in the spec, type `--status`, then see `-status` in `--help`, and reasonably wonder which form is correct. Every subcommand's `FlagSet` renders help output through one shared helper so the convention is applied uniformly and new commands inherit it without per-command boilerplate.
+Go's stdlib `flag.PrintDefaults` prefixes every flag with a single dash regardless of name length. Without a shared rendering helper, help output diverges from documentation — users read `--status` in the spec, type `--status`, then see `-status` in `--help`, and reasonably wonder which form is correct. Every subcommand's `FlagSet` renders help output through one shared helper so the convention is applied uniformly and new commands inherit it without per-command boilerplate. The same helper is the single source for the synopsis + description block; commands provide their synopsis args and description string when constructing the `FlagSet` so the layout cannot drift across subcommands.
 
 Example shape (`quest list --help`):
 
 ```
-Usage of list:
+Usage: quest list [flags]
+
+List tasks with filtering.
+
   --columns value
         COLS (comma-separated)
   --ready
@@ -314,10 +320,21 @@ Usage of list:
         STATUSES (comma-separated; repeatable)
 ```
 
+A subcommand with no flags renders only the synopsis and description (`quest tag --help`):
+
+```
+Usage: quest tag ID TAGS
+
+Add tags to a task. Tags are comma-separated, case-insensitive, stored lowercase.
+```
+
 A subcommand that exposes a short flag (e.g., `quest cancel -r`) renders the short form with a single dash alongside its long flags:
 
 ```
-Usage of cancel:
+Usage: quest cancel ID [--reason "..."] [-r]
+
+Cancel a task. Transitions status to cancelled. Only available to elevated roles.
+
   -r    recursively cancel all descendants
   --reason value
         why the task was cancelled (supports @file/@-)

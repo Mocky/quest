@@ -37,7 +37,8 @@ type exportAck struct {
 func Export(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
 
-	fs := newFlagSet("export")
+	fs := newFlagSet("export", "[--dir PATH]",
+		"Export the quest database to a human-readable directory structure for inspection, backup, and version control. Only available to elevated roles.")
 	fs.SetOutput(stderr)
 	dirFlag := fs.String("dir", "", "output directory (default: <workspace>/quest-export/ — sibling of .quest/)")
 	if err := fs.Parse(args); err != nil {

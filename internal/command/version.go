@@ -29,7 +29,8 @@ func Version(ctx context.Context, cfg config.Config, s store.Store, args []strin
 	_ = ctx
 	_ = s
 	_ = stdin
-	fs := newFlagSet("version")
+	fs := newFlagSet("version", "",
+		"Print version information.")
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
 		if stderrors.Is(err, flag.ErrHelp) {

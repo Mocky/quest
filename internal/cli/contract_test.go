@@ -356,13 +356,13 @@ func TestHelpRendersDoubleDashLongFlags(t *testing.T) {
 		{
 			name:    "list",
 			args:    []string{"list", "--help"},
-			want:    []string{"--columns", "--status", "--ready", "Usage of list:"},
+			want:    []string{"--columns", "--status", "--ready", "Usage: quest list", "List tasks with filtering."},
 			wantNot: []string{" -columns ", " -status ", " -ready\t", " -ready\n"},
 		},
 		{
 			name:    "show",
 			args:    []string{"show", "proj-01", "--help"},
-			want:    []string{"--history", "Usage of show:"},
+			want:    []string{"--history", "Usage: quest show ID [--history]", "Display full task details"},
 			wantNot: []string{" -history\t", " -history\n"},
 		},
 	}

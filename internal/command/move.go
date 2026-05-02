@@ -41,7 +41,8 @@ type moveArgs struct {
 }
 
 func parseMoveArgs(stderr io.Writer, args []string) (moveArgs, []string, error) {
-	fs := newFlagSet("move")
+	fs := newFlagSet("move", "ID --parent NEW_PARENT",
+		"Reparent a task under a different parent. Only available to elevated roles.")
 	fs.SetOutput(stderr)
 
 	var parsed moveArgs

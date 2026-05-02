@@ -65,7 +65,8 @@ func Accept(ctx context.Context, cfg config.Config, s store.Store, args []string
 	// ID — but the parse step is how `--help` short-circuits per
 	// STANDARDS.md §`--help` Convention. Any flag-shaped residue (e.g.
 	// `--foo`) fails here as a usage error before positional validation.
-	fs := newFlagSet("accept")
+	fs := newFlagSet("accept", "ID",
+		"Signal that the agent has received the task and begun work. Transitions status from open to accepted.")
 	fs.SetOutput(stderr)
 	if err := fs.Parse(flagArgs); err != nil {
 		if stderrors.Is(err, flag.ErrHelp) {

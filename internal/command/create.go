@@ -56,7 +56,8 @@ type createArgs struct {
 // per-invocation Resolver so errors (missing file, >1 MiB, second
 // `@-`) exit 2 before any DB I/O.
 func parseCreateArgs(stdin io.Reader, stderr io.Writer, args []string) (createArgs, []string, error) {
-	fs := newFlagSet("create")
+	fs := newFlagSet("create", `--title "..." [flags]`,
+		"Create a new task.")
 	fs.SetOutput(stderr)
 
 	var parsed createArgs

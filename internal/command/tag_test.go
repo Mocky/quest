@@ -304,8 +304,11 @@ func TestTagHelpShortCircuits(t *testing.T) {
 			if stdout != "" {
 				t.Errorf("stdout = %q, want empty", stdout)
 			}
-			if !strings.Contains(stderr, "Usage of tag") {
+			if !strings.Contains(stderr, "Usage: quest tag ID TAGS") {
 				t.Errorf("stderr missing usage text; got %q", stderr)
+			}
+			if !strings.Contains(stderr, "Add tags to a task.") {
+				t.Errorf("stderr missing description; got %q", stderr)
 			}
 			var n int
 			queryOne(t, dbPath, "SELECT COUNT(*) FROM tags WHERE task_id='proj-a1'").Scan(&n)
@@ -343,8 +346,11 @@ func TestUntagHelpShortCircuits(t *testing.T) {
 			if stdout != "" {
 				t.Errorf("stdout = %q, want empty", stdout)
 			}
-			if !strings.Contains(stderr, "Usage of untag") {
+			if !strings.Contains(stderr, "Usage: quest untag ID TAGS") {
 				t.Errorf("stderr missing usage text; got %q", stderr)
+			}
+			if !strings.Contains(stderr, "Remove tags from a task.") {
+				t.Errorf("stderr missing description; got %q", stderr)
 			}
 			var n int
 			queryOne(t, dbPath, "SELECT COUNT(*) FROM tags WHERE task_id='proj-a1' AND tag='go'").Scan(&n)

@@ -33,6 +33,8 @@ type closeAck struct {
 // fail does not).
 type closeAction struct {
 	name          string
+	synopsis      string
+	description   string
 	txKind        store.TxKind
 	historyAction store.HistoryAction
 	newStatus     string
@@ -42,6 +44,8 @@ type closeAction struct {
 var (
 	closeComplete = closeAction{
 		name:          "complete",
+		synopsis:      `ID --debrief "..." [--pr "URL"] [--commit BRANCH@HASH]`,
+		description:   "Mark the task as completed. Debrief is required.",
 		txKind:        store.TxComplete,
 		historyAction: store.HistoryCompleted,
 		newStatus:     "completed",
@@ -49,6 +53,8 @@ var (
 	}
 	closeFail = closeAction{
 		name:          "fail",
+		synopsis:      `ID --debrief "..." [--pr "URL"] [--commit BRANCH@HASH]`,
+		description:   "Mark the task as failed. Debrief is required.",
 		txKind:        store.TxFail,
 		historyAction: store.HistoryFailed,
 		newStatus:     "failed",
@@ -73,7 +79,7 @@ type closeArgs struct {
 // I/O.
 func parseCloseArgs(action closeAction, cfg config.Config, stdin io.Reader, stderr io.Writer, args []string) (closeArgs, []string, error) {
 	_ = cfg
-	fs := newFlagSet(action.name)
+	fs := newFlagSet(action.name, action.synopsis, action.description)
 	fs.SetOutput(stderr)
 
 	var parsed closeArgs

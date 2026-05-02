@@ -470,8 +470,11 @@ func TestListHelpShortCircuits(t *testing.T) {
 			if stdout != "" {
 				t.Errorf("stdout = %q, want empty", stdout)
 			}
-			if !strings.Contains(stderr, "Usage of list") {
+			if !strings.Contains(stderr, "Usage: quest list") {
 				t.Errorf("stderr missing usage text; got %q", stderr)
+			}
+			if !strings.Contains(stderr, "List tasks with filtering.") {
+				t.Errorf("stderr missing description; got %q", stderr)
 			}
 		})
 	}

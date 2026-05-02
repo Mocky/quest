@@ -35,7 +35,8 @@ type backupAck struct {
 func Backup(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
 
-	fs := newFlagSet("backup")
+	fs := newFlagSet("backup", "--to PATH",
+		"Write a transaction-consistent snapshot of the quest database to PATH. Only available to elevated roles.")
 	fs.SetOutput(stderr)
 	to := fs.String("to", "", "output path for the database snapshot (required)")
 	if err := fs.Parse(args); err != nil {

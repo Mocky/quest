@@ -20,7 +20,8 @@ func Deps(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	_ = stdin
 
 	positional, flagArgs := splitLeadingPositional(args)
-	fs := newFlagSet("deps")
+	fs := newFlagSet("deps", "ID",
+		"List all dependencies for a task, their statuses, and their relationship types.")
 	fs.SetOutput(stderr)
 	if perr := fs.Parse(flagArgs); perr != nil {
 		if stderrors.Is(perr, flag.ErrHelp) {

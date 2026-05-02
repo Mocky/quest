@@ -30,7 +30,8 @@ type resetArgs struct {
 }
 
 func parseResetArgs(stdin io.Reader, stderr io.Writer, args []string) (resetArgs, []string, error) {
-	fs := newFlagSet("reset")
+	fs := newFlagSet("reset", `ID [--reason "..."]`,
+		"Reset a task from accepted back to open for reassignment. Only available to elevated roles.")
 	fs.SetOutput(stderr)
 
 	var parsed resetArgs

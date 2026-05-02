@@ -28,7 +28,10 @@ func TestVersionHelpShortCircuits(t *testing.T) {
 	if out.String() != "" {
 		t.Errorf("stdout = %q, want empty (no version payload)", out.String())
 	}
-	if !strings.Contains(errb.String(), "Usage of version") {
+	if !strings.Contains(errb.String(), "Usage: quest version") {
 		t.Errorf("stderr missing usage text; got %q", errb.String())
+	}
+	if !strings.Contains(errb.String(), "Print version information.") {
+		t.Errorf("stderr missing description; got %q", errb.String())
 	}
 }

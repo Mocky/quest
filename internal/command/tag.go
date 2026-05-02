@@ -50,8 +50,8 @@ func resolveTagPositional(name string, args []string) (string, string, error) {
 // flag.ErrHelp surface regardless of whether `--help` comes before,
 // between, or after the positionals. Returns the collapsed positional
 // slice for resolveTagPositional to validate.
-func parseTagHelpFlags(name string, stderr io.Writer, args []string) ([]string, error) {
-	fs := newFlagSet(name)
+func parseTagHelpFlags(name, synopsis, description string, stderr io.Writer, args []string) ([]string, error) {
+	fs := newFlagSet(name, synopsis, description)
 	fs.SetOutput(stderr)
 
 	remaining := args
@@ -79,7 +79,9 @@ func parseTagHelpFlags(name string, stderr io.Writer, args []string) ([]string, 
 // least one row changed; the ack always emits the full post-state list.
 func Tag(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
-	positional, err := parseTagHelpFlags("tag", stderr, args)
+	positional, err := parseTagHelpFlags("tag", "ID TAGS",
+		"Add tags to a task. Tags are comma-separated, case-insensitive, stored lowercase.",
+		stderr, args)
 	if stderrors.Is(err, flag.ErrHelp) {
 		return nil
 	}

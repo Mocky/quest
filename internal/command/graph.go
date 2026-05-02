@@ -61,7 +61,8 @@ func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string,
 	_ = stdin
 
 	positional, flagArgs := splitLeadingPositional(args)
-	fs := newFlagSet("graph")
+	fs := newFlagSet("graph", "ID",
+		"Display the dependency graph rooted at a task.")
 	fs.SetOutput(stderr)
 	if perr := fs.Parse(flagArgs); perr != nil {
 		if stderrors.Is(perr, flag.ErrHelp) {

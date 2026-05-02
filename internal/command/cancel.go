@@ -43,7 +43,8 @@ type cancelArgs struct {
 }
 
 func parseCancelArgs(stdin io.Reader, stderr io.Writer, args []string) (cancelArgs, []string, error) {
-	fs := newFlagSet("cancel")
+	fs := newFlagSet("cancel", `ID [--reason "..."] [-r]`,
+		"Cancel a task. Transitions status to cancelled. Only available to elevated roles.")
 	fs.SetOutput(stderr)
 
 	var parsed cancelArgs
