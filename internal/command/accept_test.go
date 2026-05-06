@@ -272,56 +272,6 @@ func TestAcceptUnsetAgentSessionPersistsAsNull(t *testing.T) {
 	}
 }
 
-// TestAcceptHelpShortCircuits pins the STANDARDS.md §`--help` Convention
-// for accept. The previous code rejected any non-positional residue
-// before flag parsing, so `accept TASK --help` exited 2 with
-// "unexpected arguments" even on destructive-adjacent commands where
-// --help should be safe to probe. Help must print usage to stderr,
-// leave stdout empty, exit 0, and never touch the DB.
-func TestAcceptHelpShortCircuits(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{"help alone", []string{"--help"}},
-		{"help after ID", []string{"proj-a1", "--help"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s, dbPath := testStore(t)
-			seedTaskWithStatus(t, s, "proj-a1", "Alpha", "", "open")
-
-			cfg := baseCfg()
-			cfg.Agent.Role = "worker"
-			cfg.Agent.Session = "sess-w1"
-
-			err, stdout, stderr := runAccept(t, s, cfg, tc.args)
-			if err != nil {
-				t.Fatalf("Accept: err = %v, want nil", err)
-			}
-			if stdout != "" {
-				t.Errorf("stdout = %q, want empty", stdout)
-			}
-			if !strings.Contains(stderr, "Usage: quest accept ID") {
-				t.Errorf("stderr missing usage text; got %q", stderr)
-			}
-			if !strings.Contains(stderr, "Signal that the agent has received the task") {
-				t.Errorf("stderr missing description; got %q", stderr)
-			}
-			// DB invariant: task must still be open — --help must not
-			// mutate state.
-			var status sql.NullString
-			row := queryOne(t, dbPath, "SELECT status FROM tasks WHERE id='proj-a1'")
-			if scanErr := row.Scan(&status); scanErr != nil {
-				t.Fatalf("query: %v", scanErr)
-			}
-			if status.String != "open" {
-				t.Errorf("status = %q, want open (--help must not mutate)", status.String)
-			}
-		})
-	}
-}
-
 // TestConcurrentAcceptLeavesOnlyOneWinner matches TESTING.md
 // §Concurrency Tests: 10 goroutines race on a single open task; the
 // first writer wins, the rest observe exit-5 conflict. None silently

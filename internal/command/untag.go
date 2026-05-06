@@ -2,8 +2,6 @@ package command
 
 import (
 	"context"
-	stderrors "errors"
-	"flag"
 	"fmt"
 	"io"
 
@@ -17,12 +15,9 @@ import (
 // actually changed. Ack always emits the full post-state list.
 func Untag(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
-	positional, err := parseTagHelpFlags("untag", "ID TAGS",
+	positional, err := parseTagPositionals("untag", "ID TAGS",
 		"Remove tags from a task.",
 		stderr, args)
-	if stderrors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}

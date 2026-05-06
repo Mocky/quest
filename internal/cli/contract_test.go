@@ -338,14 +338,13 @@ func TestIdempotencyGuarantees(t *testing.T) {
 }
 
 // TestHelpRendersDoubleDashLongFlags pins the STANDARDS.md §Help
-// Rendering convention end-to-end: invoking a subcommand with --help
-// writes a usage block whose long-flag names are prefixed with "--"
-// and whose single-character names are prefixed with "-". The test
-// exercises one elevated command (`list`) and one worker command
-// (`show`) so the shared helper is proven wired on both sides of the
-// role gate. `--help` short-circuits flag.Parse with ErrHelp, which
-// handlers catch and return as exit 0; the usage text lands on
-// stderr per the existing fs.SetOutput(stderr) pattern.
+// Rendering convention end-to-end: `quest help <cmd>` writes a usage
+// block whose long-flag names are prefixed with "--" and whose single-
+// character names are prefixed with "-". The test exercises one
+// elevated command (`list`) and one worker command (`show`) so the
+// shared helper is proven wired on both sides of the role gate. Per
+// the 2026-05-06 grove decision the help block lands on stdout (not
+// stderr — that was the old `--help` flag form's channel).
 func TestHelpRendersDoubleDashLongFlags(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -355,13 +354,13 @@ func TestHelpRendersDoubleDashLongFlags(t *testing.T) {
 	}{
 		{
 			name:    "list",
-			args:    []string{"list", "--help"},
+			args:    []string{"help", "list"},
 			want:    []string{"--columns", "--status", "--ready", "Usage: quest list", "List tasks with filtering."},
 			wantNot: []string{" -columns ", " -status ", " -ready\t", " -ready\n"},
 		},
 		{
 			name:    "show",
-			args:    []string{"show", "proj-01", "--help"},
+			args:    []string{"help", "show"},
 			want:    []string{"--history", "Usage: quest show ID [--history]", "Display full task details"},
 			wantNot: []string{" -history\t", " -history\n"},
 		},
@@ -370,18 +369,18 @@ func TestHelpRendersDoubleDashLongFlags(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := setupWorkspace(t, "proj", "planner")
-			exit, _, stderr := runExecute(tt.args, cfg)
+			exit, stdout, stderr := runExecute(tt.args, cfg)
 			if exit != 0 {
 				t.Fatalf("exit = %d; stderr=%s", exit, stderr)
 			}
 			for _, s := range tt.want {
-				if !strings.Contains(stderr, s) {
-					t.Errorf("stderr missing %q; got:\n%s", s, stderr)
+				if !strings.Contains(stdout, s) {
+					t.Errorf("stdout missing %q; got:\n%s", s, stdout)
 				}
 			}
 			for _, s := range tt.wantNot {
-				if strings.Contains(stderr, s) {
-					t.Errorf("stderr unexpectedly contains %q; got:\n%s", s, stderr)
+				if strings.Contains(stdout, s) {
+					t.Errorf("stdout unexpectedly contains %q; got:\n%s", s, stdout)
 				}
 			}
 		})

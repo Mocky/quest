@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	stderrors "errors"
 	"flag"
 	"fmt"
 	"io"
@@ -53,6 +52,17 @@ type graphResponse struct {
 	Edges []graphEdge `json:"edges"`
 }
 
+// graphFlagSet returns the unparsed FlagSet for `quest graph`. No
+// flags — graph takes only the positional ID — but the FlagSet is the
+// canonical source of synopsis + description for help rendering.
+func graphFlagSet() *flag.FlagSet {
+	return newFlagSet("graph", "ID",
+		"Display the dependency graph rooted at a task.")
+}
+
+// GraphHelp is the descriptor-side help builder.
+func GraphHelp() *flag.FlagSet { return graphFlagSet() }
+
 // Graph handles `quest graph ID`. `ID` is required. Traversal descends
 // from ID through children and follows dependency edges outward;
 // targets outside the subtree appear as unexpanded external nodes per
@@ -61,13 +71,9 @@ func Graph(ctx context.Context, cfg config.Config, s store.Store, args []string,
 	_ = stdin
 
 	positional, flagArgs := splitLeadingPositional(args)
-	fs := newFlagSet("graph", "ID",
-		"Display the dependency graph rooted at a task.")
+	fs := graphFlagSet()
 	fs.SetOutput(stderr)
 	if perr := fs.Parse(flagArgs); perr != nil {
-		if stderrors.Is(perr, flag.ErrHelp) {
-			return nil
-		}
 		return fmt.Errorf("graph: %s: %w", perr.Error(), errors.ErrUsage)
 	}
 	positional = append(positional, fs.Args()...)

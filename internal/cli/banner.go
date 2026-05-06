@@ -45,3 +45,46 @@ func unknownCommandMessage(bad string, cfg config.Config) string {
 	sb.WriteString(strings.Join(valid, ", "))
 	return sb.String()
 }
+
+// detectHelpFlag scans args left-to-right for `--help` or `-h`. If
+// found, returns the literal token plus a candidate command name (the
+// first non-flag arg if present). Used by Execute to short-circuit
+// flag-form help with a "did you mean" redirect at the top of the
+// dispatch, before role gate / workspace discovery / store open. The
+// canonical form is `quest help <cmd>`; this scan is the only place
+// the obsolete forms are accepted, and only to redirect.
+func detectHelpFlag(args []string) (token, candidate string, ok bool) {
+	for _, a := range args {
+		if a == "--help" || a == "-h" {
+			token = a
+			break
+		}
+	}
+	if token == "" {
+		return "", "", false
+	}
+	for _, a := range args {
+		if a == "--help" || a == "-h" {
+			continue
+		}
+		if len(a) > 0 && a[0] == '-' {
+			continue
+		}
+		candidate = a
+		break
+	}
+	return token, candidate, true
+}
+
+// helpFlagRejectionMessage builds the two-line redirect body for an
+// obsolete flag-form help invocation. Shape matches the typo-suggestion
+// pattern documented in lore (`unknown flag` / `Did you mean:`) — one
+// grep target across grove tools. When candidate is empty the
+// suggestion is `quest help`; when present it is `quest help <cmd>`.
+func helpFlagRejectionMessage(token, candidate string) string {
+	suggestion := "quest help"
+	if candidate != "" {
+		suggestion = "quest help " + candidate
+	}
+	return "unknown flag: " + token + "\nDid you mean: " + suggestion
+}

@@ -2,7 +2,6 @@ package command
 
 import (
 	"context"
-	stderrors "errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,19 +13,26 @@ import (
 	"github.com/mocky/quest/internal/telemetry"
 )
 
+// depsFlagSet returns the unparsed FlagSet for `quest deps`. No flags
+// of its own — `deps` takes only the positional ID — but the FlagSet
+// is the canonical source of synopsis + description for help rendering.
+func depsFlagSet() *flag.FlagSet {
+	return newFlagSet("deps", "ID",
+		"List all dependencies for a task, their statuses, and their relationship types.")
+}
+
+// DepsHelp is the descriptor-side help builder.
+func DepsHelp() *flag.FlagSet { return depsFlagSet() }
+
 // Deps lists a task's outgoing dependency edges with the target's title
 // and status denormalized. `ID` is required.
 func Deps(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	_ = stdin
 
 	positional, flagArgs := splitLeadingPositional(args)
-	fs := newFlagSet("deps", "ID",
-		"List all dependencies for a task, their statuses, and their relationship types.")
+	fs := depsFlagSet()
 	fs.SetOutput(stderr)
 	if perr := fs.Parse(flagArgs); perr != nil {
-		if stderrors.Is(perr, flag.ErrHelp) {
-			return nil
-		}
 		return fmt.Errorf("deps: %s: %w", perr.Error(), errors.ErrUsage)
 	}
 	positional = append(positional, fs.Args()...)

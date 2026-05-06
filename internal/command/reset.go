@@ -29,12 +29,14 @@ type resetArgs struct {
 	Reason *string
 }
 
-func parseResetArgs(stdin io.Reader, stderr io.Writer, args []string) (resetArgs, []string, error) {
+// resetFlagSet returns the unparsed FlagSet plus the bound resetArgs
+// target. Shared by parseResetArgs (handler path) and the help
+// dispatcher (which passes nil stdin; closures are never invoked).
+func resetFlagSet(stdin io.Reader) (*flag.FlagSet, *resetArgs) {
 	fs := newFlagSet("reset", `ID [--reason "..."]`,
 		"Reset a task from accepted back to open for reassignment. Only available to elevated roles.")
-	fs.SetOutput(stderr)
 
-	var parsed resetArgs
+	parsed := &resetArgs{}
 	r := input.NewResolver(stdin)
 	fs.Func("reason", "why the task is being reset (supports @file/@-)", func(v string) error {
 		resolved, err := r.Resolve("--reason", v)
@@ -45,17 +47,23 @@ func parseResetArgs(stdin io.Reader, stderr io.Writer, args []string) (resetArgs
 		parsed.Reason = &tmp
 		return nil
 	})
+	return fs, parsed
+}
+
+// ResetHelp is the descriptor-side help builder.
+func ResetHelp() *flag.FlagSet { fs, _ := resetFlagSet(nil); return fs }
+
+func parseResetArgs(stdin io.Reader, stderr io.Writer, args []string) (resetArgs, []string, error) {
+	fs, parsed := resetFlagSet(stdin)
+	fs.SetOutput(stderr)
 
 	if err := fs.Parse(args); err != nil {
-		if stderrors.Is(err, flag.ErrHelp) {
-			return resetArgs{}, nil, err
-		}
 		if stderrors.Is(err, errors.ErrUsage) {
 			return resetArgs{}, nil, err
 		}
 		return resetArgs{}, nil, fmt.Errorf("reset: %s: %w", err.Error(), errors.ErrUsage)
 	}
-	return parsed, fs.Args(), nil
+	return *parsed, fs.Args(), nil
 }
 
 // Reset moves an accepted task back to open, clearing owner_session and
@@ -65,9 +73,6 @@ func parseResetArgs(stdin io.Reader, stderr io.Writer, args []string) (resetArgs
 func Reset(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	positional, flagArgs := splitLeadingPositional(args)
 	parsed, trailing, err := parseResetArgs(stdin, stderr, flagArgs)
-	if stderrors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}

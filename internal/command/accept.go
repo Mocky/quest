@@ -50,6 +50,18 @@ var terminalStatuses = map[string]bool{
 	"cancelled": true,
 }
 
+// acceptFlagSet returns the unparsed FlagSet shared by the Accept
+// handler and the help dispatcher. accept takes only a positional ID;
+// the FlagSet has no flags but is still the source of synopsis +
+// description for help rendering.
+func acceptFlagSet() *flag.FlagSet {
+	return newFlagSet("accept", "ID",
+		"Signal that the agent has received the task and begun work. Transitions status from open to accepted.")
+}
+
+// AcceptHelp is the descriptor-side help builder.
+func AcceptHelp() *flag.FlagSet { return acceptFlagSet() }
+
 // Accept transitions a task from open to accepted. Leaves and parents
 // follow the same BEGIN IMMEDIATE path (spec §quest accept) so the
 // existence-vs-status distinction (exit 3 vs exit 5) is visible to the
@@ -62,16 +74,11 @@ func Accept(ctx context.Context, cfg config.Config, s store.Store, args []string
 	_ = stdin
 	positional, flagArgs := splitLeadingPositional(args)
 	// FlagSet has no flags of its own — accept takes only the positional
-	// ID — but the parse step is how `--help` short-circuits per
-	// STANDARDS.md §`--help` Convention. Any flag-shaped residue (e.g.
-	// `--foo`) fails here as a usage error before positional validation.
-	fs := newFlagSet("accept", "ID",
-		"Signal that the agent has received the task and begun work. Transitions status from open to accepted.")
+	// ID — but the parse step rejects flag-shaped residue (e.g. `--foo`)
+	// as a usage error before positional validation.
+	fs := acceptFlagSet()
 	fs.SetOutput(stderr)
 	if err := fs.Parse(flagArgs); err != nil {
-		if stderrors.Is(err, flag.ErrHelp) {
-			return nil
-		}
 		return fmt.Errorf("accept: %s: %w", err.Error(), errors.ErrUsage)
 	}
 	positional = append(positional, fs.Args()...)

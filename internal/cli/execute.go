@@ -30,18 +30,30 @@ func Execute(ctx context.Context, cfg config.Config, args []string, stdin io.Rea
 	start := time.Now()
 	parentCtx := ctx
 
-	// Step 1 — identify the command. No args or bare --help prints the
-	// role-filtered banner and exits 0; unknown tokens are exit 2
-	// usage errors. Per-command --help is handled later by each
-	// handler's own FlagSet and does NOT short-circuit the workspace
-	// and role checks (plan §Deliberate deviations: --help is gated
-	// by the same preconditions as running the command itself).
-	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
+	// Step 0 — reject flag-form help anywhere in args with a "did you
+	// mean: quest help <cmd>" redirect per the 2026-05-06 grove
+	// decision. Runs ahead of every other dispatch step so a flag-form
+	// invocation never reaches role gate, workspace discovery, or
+	// store open. The canonical form is `quest help <cmd>`.
+	if token, candidate, ok := detectHelpFlag(args); ok {
+		err := fmt.Errorf("%w: %s", errors.ErrUsage, helpFlagRejectionMessage(token, candidate))
+		return telemetry.RecordDispatchError(ctx, err, stderr)
+	}
+
+	// Step 1 — identify the command. No args prints the role-filtered
+	// banner and exits 0; `help [<cmd>]` is dispatched specially via
+	// executeHelp ahead of role gate, workspace discovery, and store
+	// open per the 2026-05-06 grove decision; unknown tokens are exit
+	// 2 usage errors.
+	if len(args) == 0 {
 		printBanner(cfg, stdout)
 		return 0
 	}
 
 	name := args[0]
+	if name == "help" {
+		return executeHelp(ctx, args[1:], cfg, stdout, stderr)
+	}
 	desc, known := lookupDescriptor(name)
 	if !known {
 		err := fmt.Errorf("%w: %s", errors.ErrUsage, unknownCommandMessage(name, cfg))

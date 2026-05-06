@@ -64,6 +64,7 @@ These are the load-bearing decisions from the spec. Read the spec section in par
 - **Schema versioning is forward-only.** Migrations ship with the binary and run inside a single transaction. A newer-than-supported schema version causes the binary to refuse to run, never to silently corrupt data. Downgrades are restore-from-backup (the pre-migration snapshot, or a prior `quest backup`), not schema rollback. Export is an archive, not a restore source.
 - **Structured errors with stable codes.** Exit codes and error codes are part of the API contract. Agents switch on them.
 - **Typed relationships carry retrospective signal.** `caused-by` and `discovered-from` are not cosmetic — they are the inputs the retrospective queries run against. Don't collapse them into a generic "related" link.
+- **`quest help <cmd>` is the only help form** (grove decision 2026-05-06). Flag-form help (`--help`, `-h` in any position) is rejected at `cli.Execute` Step 0 with a two-line "did you mean: quest help <cmd>" redirect that mimics the typo-suggestion shape. Coverage is a contract: every row in `internal/cli/dispatch.go` `descriptors` MUST expose a non-nil `HelpFlagSet` (the `help` row itself is the documented exception). Tests derive the roster from `descriptors`, never from a hand-maintained list. See `docs/STANDARDS.md` §Help Convention.
 
 ## What not to do
 

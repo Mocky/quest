@@ -47,13 +47,21 @@ func TestExecuteNoArgsPrintsBanner(t *testing.T) {
 	}
 }
 
-func TestExecuteHelpFlagPrintsBanner(t *testing.T) {
-	exit, stdout, _ := runExecute([]string{"--help"}, baseCfg())
-	if exit != 0 {
-		t.Fatalf("exit = %d, want 0", exit)
+// TestExecuteHelpFlagRejected pins the post-2026-05-06 contract: bare
+// `--help` is the obsolete form, rejected with the two-line "did you
+// mean: quest help" redirect. The TestHelpFlagRejected table covers
+// every position variant; this one is kept here as the load-bearing
+// dispatch-step probe so any change to step 0 breaks one core test.
+func TestExecuteHelpFlagRejected(t *testing.T) {
+	exit, _, stderr := runExecute([]string{"--help"}, baseCfg())
+	if exit != 2 {
+		t.Fatalf("exit = %d, want 2", exit)
 	}
-	if !strings.Contains(stdout, "Usage: quest") {
-		t.Errorf("stdout missing banner: %q", stdout)
+	if !strings.Contains(stderr, "unknown flag: --help") {
+		t.Errorf("stderr missing 'unknown flag: --help': %q", stderr)
+	}
+	if !strings.Contains(stderr, "Did you mean: quest help") {
+		t.Errorf("stderr missing redirect: %q", stderr)
 	}
 }
 

@@ -282,20 +282,30 @@ A `--color` flag is deliberately not defined. Text-mode output is plain; humans 
 
 `.quest/config.toml` fields do not get flag overrides. They are immutable for the life of the project; the only way to change `id_prefix` or `elevated_roles` is to edit the file directly.
 
-### `--help` Convention
+### Help Convention
 
-`--help` is a universal terminal flag: every subcommand supports it, and every subcommand treats it identically. The uniform contract lets agents and operators probe any command -- including destructive ones like `quest cancel` or `quest reset` -- without executing its work.
+Help is invoked via `quest help <cmd>` — the only documented form. The flag forms `--help` and `-h` (in any position: `quest --help`, `quest -h cmd`, `quest cmd --help`, `quest cmd -h`) are rejected at the top of dispatch with a two-line "did you mean" redirect that mimics the typo-suggestion shape:
 
-- **Prints usage, exits 0.** Passing `--help` to any subcommand prints that subcommand's usage text and returns exit code 0. No other output is produced -- no JSON envelope on stdout, no history row, no mutation of state.
-- **Usage goes to stderr; stdout emits nothing.** The flag package writes to wherever `fs.SetOutput` points, and every subcommand points it at stderr (the same `fs.SetOutput(stderr)` that places flag-parse errors there). Callers redirecting stdout capture the command's normal output; `--help` stays on the stderr channel where operators look for diagnostics.
-- **`--help` short-circuits the command.** The command's work -- queries, writes, dispatches -- does not execute when `--help` is present. This invariant is what makes `--help` safe to probe on destructive commands; `quest cancel qst-01 --help` never cancels anything, even transiently.
-- **Precedence over all other flags.** `quest list --status cancelled --help` is equivalent to `quest list --help`. Filter values, positional arguments, and environment state are ignored when `--help` is present; the usage text is the sole output.
+```
+unknown flag: --help
+Did you mean: quest help <cmd>
+```
 
-Implementation: call `fs.Parse` inline, and on `errors.Is(err, flag.ErrHelp)` return `nil` immediately -- the stdlib prints the usage as a side effect of detecting `-h`/`--help` and returns `flag.ErrHelp` so the handler can bail before doing any work. Helpers that call `fs.Parse` on behalf of the caller must propagate the `flag.ErrHelp` sentinel (or an explicit `didHelp` return) rather than swallowing it; see Anti-Pattern #7 below.
+The decision and rationale live in `~/dev/grove/decisions.md` §"CLI help is invoked as `<tool> help <cmd>`" (2026-05-06). The short version: every alias documented in agent prompts is recurring token cost across every invocation that loads the prompt; a single canonical surface keeps that cost minimal and removes the dispatch-ordering hazards five surfaces invited.
+
+- **Prints usage, exits 0.** `quest help <cmd>` prints `<cmd>`'s usage block and returns exit 0. No other output is produced — no JSON envelope, no history row, no mutation of state.
+- **Output channel is stdout.** Help is the user's primary output, not a diagnostic. The dispatcher renders the FlagSet's `Usage()` against stdout. (Pre-2026-05-06 the flag-form rendered on stderr; the channel changed when help became dispatcher-owned.)
+- **Help short-circuits before role gate, workspace discovery, and store open.** Probing `quest help cancel` on a destructive command is safe regardless of role or working directory. The dispatcher handles help in Step 0 of `Execute`; nothing the role gate or workspace check does runs on a help invocation.
+- **`quest help` (no target)** prints the role-filtered banner — same shape as bare `quest`. The banner lists every command the caller can invoke at their resolved role.
+- **`quest help <bogus>`** exits 2 with `no help available for '<bogus>'`, plus a `did you mean '<close>'?` hint when the typo machinery has a match.
+- **Coverage is a contract.** Every row in `internal/cli/dispatch.go` `descriptors` (except `help` itself) MUST expose a non-nil `HelpFlagSet`. `TestEveryDescriptorHasHelpFlagSet` derives the roster from the descriptor slice and asserts each entry's `Usage()` emits non-empty text.
+- **Sub-subcommand help (`quest help <cmd> <subcmd>`)** is reserved — quest has no sub-subcommands today, and the form is rejected as a usage error so the contract is well-defined.
+
+Implementation: `command.<Cmd>Help() *flag.FlagSet` per command returns the unparsed FlagSet. The dispatcher resolves `quest help <cmd>` to the descriptor row, calls `fs.SetOutput(stdout)`, and emits `fs.Usage()`. Handlers no longer catch `flag.ErrHelp` because `--help`/`-h` never reach them — the dispatcher's pre-scan rejects the obsolete forms.
 
 ### Help Rendering
 
-`--help` on any subcommand renders usage text using the same flag conventions used throughout the spec, README, and command examples. Every subcommand's help output has three parts in order: a synopsis line, a one-line description, and (if any flags are registered) the flag list.
+`quest help <cmd>` renders usage text using the same flag conventions used throughout the spec, README, and command examples. Every subcommand's help output has three parts in order: a synopsis line, a one-line description, and (if any flags are registered) the flag list.
 
 - **Synopsis line.** The first line is `Usage: quest <name> <args>`, where `<args>` is the positional/flag pattern named in the command's spec section header (e.g., `quest tag ID TAGS`, `quest cancel ID [--reason "..."] [-r]`, `quest list [flags]`). The synopsis is the single source of truth for "what does this command take" — operators reading help should never have to cross-reference the spec to learn the positional arguments. A flag-only command with no positional or flag arguments (e.g., `quest version`) renders `Usage: quest <name>` with no trailing args.
 - **Description.** A blank line then a one-line description of what the command does. Lifted from (or summarizing) the first paragraph of the command's spec section. Plain text — no backticks, no markdown — because terminals do not render them.
@@ -305,7 +315,7 @@ Implementation: call `fs.Parse` inline, and on `errors.Is(err, flag.ErrHelp)` re
 
 Go's stdlib `flag.PrintDefaults` prefixes every flag with a single dash regardless of name length. Without a shared rendering helper, help output diverges from documentation — users read `--status` in the spec, type `--status`, then see `-status` in `--help`, and reasonably wonder which form is correct. Every subcommand's `FlagSet` renders help output through one shared helper so the convention is applied uniformly and new commands inherit it without per-command boilerplate. The same helper is the single source for the synopsis + description block; commands provide their synopsis args and description string when constructing the `FlagSet` so the layout cannot drift across subcommands.
 
-Example shape (`quest list --help`):
+Example shape (`quest help list`):
 
 ```
 Usage: quest list [flags]
@@ -320,7 +330,7 @@ List tasks with filtering.
         STATUSES (comma-separated; repeatable)
 ```
 
-A subcommand with no flags renders only the synopsis and description (`quest tag --help`):
+A subcommand with no flags renders only the synopsis and description (`quest help tag`):
 
 ```
 Usage: quest tag ID TAGS
@@ -502,63 +512,9 @@ if cfg.Log.Level == "" {
 }
 ```
 
-#### 7. Flag-parse helpers that swallow `flag.ErrHelp`
+#### 7. Catching `flag.ErrHelp` in handler paths
 
-Extracting `fs.Parse` into a helper is tempting when multiple commands share parsing shape, but the helper must preserve the `flag.ErrHelp` signal so the caller can short-circuit per the `--help` Convention. Returning a zero-valued struct with a `nil` error when `flag.ErrHelp` is caught looks harmless locally -- the stdlib already printed the usage text, so the helper has "handled" the flag -- but the caller has no way to distinguish "parsing succeeded" from "user asked for help," and the command's work runs anyway.
-
-```go
-// WRONG — helper catches flag.ErrHelp and returns an empty filter, a nil
-// columns list, and a nil error. The caller can't tell the user passed
-// --help, so it queries the store with the empty filter and renders the
-// result. In JSON mode the caller emits `[{},{},...]` after the usage
-// text; text mode hides the bug because nil columns means no headers and
-// no rendered rows. The --help short-circuit invariant is broken either way.
-func parseFlags(args []string) (Filter, []string, error) {
-    fs := flag.NewFlagSet("list", flag.ContinueOnError)
-    // ... flag definitions ...
-    if err := fs.Parse(args); err != nil {
-        if errors.Is(err, flag.ErrHelp) {
-            return Filter{}, nil, nil // signal lost
-        }
-        return Filter{}, nil, err
-    }
-    return filter, columns, nil
-}
-
-func List(...) error {
-    filter, columns, err := parseFlags(args)
-    if err != nil {
-        return err
-    }
-    // --help already printed usage, but the query and emit still run.
-    tasks, _ := store.ListTasks(ctx, filter)
-    return emitJSON(stdout, columns, tasks)
-}
-
-// CORRECT — propagate flag.ErrHelp so the caller short-circuits explicitly,
-// matching the inline pattern every other subcommand already uses.
-func parseFlags(args []string) (Filter, []string, error) {
-    fs := flag.NewFlagSet("list", flag.ContinueOnError)
-    // ... flag definitions ...
-    if err := fs.Parse(args); err != nil {
-        return Filter{}, nil, err // flag.ErrHelp flows through unchanged
-    }
-    return filter, columns, nil
-}
-
-func List(...) error {
-    filter, columns, err := parseFlags(args)
-    if errors.Is(err, flag.ErrHelp) {
-        return nil // --help printed usage; exit 0 without running the query.
-    }
-    if err != nil {
-        return err
-    }
-    // ... query and emit ...
-}
-```
-
-An explicit `didHelp bool` return is an acceptable alternative when mixing the sentinel with the error channel is awkward -- the point is that the caller branches deliberately on "user asked for help" rather than reaching the command body.
+After the 2026-05-06 grove decision (§Help Convention) `flag.ErrHelp` is unreachable from handler code: the dispatcher rejects `--help` and `-h` in `cli.Execute` Step 0, before any handler runs. A handler that still catches `flag.ErrHelp` is dead code at best, and at worst signals confusion about how help is dispatched today. If a test reproduces a `flag.ErrHelp` arrival in a handler, the test is calling the handler directly with `--help` in args; that path is no longer a supported invocation shape. Use `runExecute([]string{"help", "<cmd>"}, cfg)` from the dispatcher tests instead — coverage of the help block lives at `internal/cli/help_coverage_test.go` and `internal/cli/help_rejection_test.go`.
 
 ---
 

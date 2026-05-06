@@ -40,28 +40,35 @@ type moveArgs struct {
 	Parent *string
 }
 
-func parseMoveArgs(stderr io.Writer, args []string) (moveArgs, []string, error) {
+// moveFlagSet returns the unparsed FlagSet plus the bound moveArgs
+// target. Shared by parseMoveArgs and the help dispatcher.
+func moveFlagSet() (*flag.FlagSet, *moveArgs) {
 	fs := newFlagSet("move", "ID --parent NEW_PARENT",
 		"Reparent a task under a different parent. Only available to elevated roles.")
-	fs.SetOutput(stderr)
 
-	var parsed moveArgs
+	parsed := &moveArgs{}
 	fs.Func("parent", "new parent task ID (required)", func(v string) error {
 		tmp := v
 		parsed.Parent = &tmp
 		return nil
 	})
+	return fs, parsed
+}
+
+// MoveHelp is the descriptor-side help builder.
+func MoveHelp() *flag.FlagSet { fs, _ := moveFlagSet(); return fs }
+
+func parseMoveArgs(stderr io.Writer, args []string) (moveArgs, []string, error) {
+	fs, parsed := moveFlagSet()
+	fs.SetOutput(stderr)
 
 	if err := fs.Parse(args); err != nil {
-		if stderrors.Is(err, flag.ErrHelp) {
-			return moveArgs{}, nil, err
-		}
 		if stderrors.Is(err, errors.ErrUsage) {
 			return moveArgs{}, nil, err
 		}
 		return moveArgs{}, nil, fmt.Errorf("move: %s: %w", err.Error(), errors.ErrUsage)
 	}
-	return parsed, fs.Args(), nil
+	return *parsed, fs.Args(), nil
 }
 
 // Move reparents a task under NEW_PARENT, renaming the moved task and
@@ -74,9 +81,6 @@ func Move(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	_ = stdin
 	positional, flagArgs := splitLeadingPositional(args)
 	parsed, trailing, err := parseMoveArgs(stderr, flagArgs)
-	if stderrors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}

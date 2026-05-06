@@ -132,7 +132,7 @@ System commands (no role required):
 | `init`    | Create `.quest/` in the CWD   |
 | `version` | Print `{"version":"…"}`       |
 
-Per-command flags are discoverable via `quest <command> --help`.
+Per-command flags are discoverable via `quest help <command>`.
 
 The full behavioral contract — input conventions, JSON output shapes, error precedence, idempotency rules, and schema — lives in [`docs/quest-spec.md`](docs/quest-spec.md).
 

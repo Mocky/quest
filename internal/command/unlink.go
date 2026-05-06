@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	stderrors "errors"
-	"flag"
 	"fmt"
 	"io"
 	"time"
@@ -26,9 +25,6 @@ func Unlink(ctx context.Context, cfg config.Config, s store.Store, args []string
 		"TASK --blocked-by|--caused-by|--discovered-from|--retry-of TARGET",
 		"Remove a typed dependency link between TASK and TARGET.",
 		rest)
-	if stderrors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}

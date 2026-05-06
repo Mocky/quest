@@ -50,17 +50,15 @@ type createArgs struct {
 	RetryOf            *string
 }
 
-// parseCreateArgs consumes every flag listed in spec §Task Creation
-// plus validates shape-time preconditions (empty free-form values,
-// repeated single-value dep flags). @file resolution runs through the
-// per-invocation Resolver so errors (missing file, >1 MiB, second
-// `@-`) exit 2 before any DB I/O.
-func parseCreateArgs(stdin io.Reader, stderr io.Writer, args []string) (createArgs, []string, error) {
+// createFlagSet returns the unparsed FlagSet plus the bound createArgs
+// target. Shared by parseCreateArgs (handler path) and the help
+// dispatcher (passes nil stdin; closures are never invoked because
+// Parse is never called).
+func createFlagSet(stdin io.Reader) (*flag.FlagSet, *createArgs) {
 	fs := newFlagSet("create", `--title "..." [flags]`,
 		"Create a new task.")
-	fs.SetOutput(stderr)
 
-	var parsed createArgs
+	parsed := &createArgs{}
 	r := input.NewResolver(stdin)
 
 	setText := func(dst **string, flagName string, resolve bool) func(string) error {
@@ -116,17 +114,28 @@ func parseCreateArgs(stdin io.Reader, stderr io.Writer, args []string) (createAr
 	fs.Func("caused-by", "add a caused-by link (single value)", setSingleID(&parsed.CausedBy, "--caused-by"))
 	fs.Func("discovered-from", "add a discovered-from link (single value)", setSingleID(&parsed.DiscoveredFrom, "--discovered-from"))
 	fs.Func("retry-of", "add a retry-of link (single value)", setSingleID(&parsed.RetryOf, "--retry-of"))
+	return fs, parsed
+}
+
+// CreateHelp is the descriptor-side help builder.
+func CreateHelp() *flag.FlagSet { fs, _ := createFlagSet(nil); return fs }
+
+// parseCreateArgs consumes every flag listed in spec §Task Creation
+// plus validates shape-time preconditions (empty free-form values,
+// repeated single-value dep flags). @file resolution runs through the
+// per-invocation Resolver so errors (missing file, >1 MiB, second
+// `@-`) exit 2 before any DB I/O.
+func parseCreateArgs(stdin io.Reader, stderr io.Writer, args []string) (createArgs, []string, error) {
+	fs, parsed := createFlagSet(stdin)
+	fs.SetOutput(stderr)
 
 	if err := fs.Parse(args); err != nil {
-		if stderrors.Is(err, flag.ErrHelp) {
-			return createArgs{}, nil, err
-		}
 		if stderrors.Is(err, errors.ErrUsage) {
 			return createArgs{}, nil, err
 		}
 		return createArgs{}, nil, fmt.Errorf("create: %s: %w", err.Error(), errors.ErrUsage)
 	}
-	return parsed, fs.Args(), nil
+	return *parsed, fs.Args(), nil
 }
 
 // validateCreateArgs catches the empty-value and shape errors that
@@ -278,9 +287,6 @@ func formatDepError(e batch.SemanticDepError) string {
 // parent status/depth (5) → dep-rule (5) → commit → ack.
 func Create(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	parsed, trailing, err := parseCreateArgs(stdin, stderr, args)
-	if stderrors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}

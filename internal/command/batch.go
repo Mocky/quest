@@ -3,7 +3,6 @@ package command
 import (
 	"bytes"
 	"context"
-	stderrors "errors"
 	"flag"
 	"fmt"
 	"io"
@@ -26,6 +25,19 @@ type batchArgs struct {
 	PartialOK bool
 }
 
+// batchFlagSet returns the unparsed FlagSet plus the bound
+// `--partial-ok` pointer. Shared by the Batch handler and the help
+// dispatcher.
+func batchFlagSet() (*flag.FlagSet, *bool) {
+	fs := newFlagSet("batch", "FILE [--partial-ok]",
+		"Create multiple tasks from a JSONL file describing a task graph.")
+	partialOK := fs.Bool("partial-ok", false, "create tasks that passed validation even when other lines failed")
+	return fs, partialOK
+}
+
+// BatchHelp is the descriptor-side help builder.
+func BatchHelp() *flag.FlagSet { fs, _ := batchFlagSet(); return fs }
+
 // parseBatchArgs handles the CLI shape: exactly one positional
 // FILE, plus optional --partial-ok. The flag package needs the
 // positional to come AFTER flags, so we accept both orders by
@@ -33,14 +45,9 @@ type batchArgs struct {
 func parseBatchArgs(stderr io.Writer, args []string) (batchArgs, error) {
 	// Pull off a leading non-flag arg if present (the FILE).
 	positional, rest := splitLeadingPositional(args)
-	fs := newFlagSet("batch", "FILE [--partial-ok]",
-		"Create multiple tasks from a JSONL file describing a task graph.")
+	fs, partialOK := batchFlagSet()
 	fs.SetOutput(stderr)
-	partialOK := fs.Bool("partial-ok", false, "create tasks that passed validation even when other lines failed")
 	if err := fs.Parse(rest); err != nil {
-		if stderrors.Is(err, flag.ErrHelp) {
-			return batchArgs{}, err
-		}
 		return batchArgs{}, fmt.Errorf("batch: %s: %w", err.Error(), errors.ErrUsage)
 	}
 	positional = append(positional, fs.Args()...)
@@ -75,9 +82,6 @@ func parseBatchArgs(stderr io.Writer, args []string) (batchArgs, error) {
 func Batch(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
 	parsed, err := parseBatchArgs(stderr, args)
-	if stderrors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}

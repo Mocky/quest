@@ -42,12 +42,15 @@ type cancelArgs struct {
 	Recursive bool
 }
 
-func parseCancelArgs(stdin io.Reader, stderr io.Writer, args []string) (cancelArgs, []string, error) {
+// cancelFlagSet returns the unparsed FlagSet plus the bound cancelArgs
+// target. Shared by parseCancelArgs (handler path) and the help
+// dispatcher (passes nil stdin; closures are never invoked because
+// Parse is never called).
+func cancelFlagSet(stdin io.Reader) (*flag.FlagSet, *cancelArgs) {
 	fs := newFlagSet("cancel", `ID [--reason "..."] [-r]`,
 		"Cancel a task. Transitions status to cancelled. Only available to elevated roles.")
-	fs.SetOutput(stderr)
 
-	var parsed cancelArgs
+	parsed := &cancelArgs{}
 	r := input.NewResolver(stdin)
 	fs.Func("reason", "why the task was cancelled (supports @file/@-)", func(v string) error {
 		resolved, err := r.Resolve("--reason", v)
@@ -59,17 +62,23 @@ func parseCancelArgs(stdin io.Reader, stderr io.Writer, args []string) (cancelAr
 		return nil
 	})
 	fs.BoolVar(&parsed.Recursive, "r", false, "recursively cancel all descendants")
+	return fs, parsed
+}
+
+// CancelHelp is the descriptor-side help builder.
+func CancelHelp() *flag.FlagSet { fs, _ := cancelFlagSet(nil); return fs }
+
+func parseCancelArgs(stdin io.Reader, stderr io.Writer, args []string) (cancelArgs, []string, error) {
+	fs, parsed := cancelFlagSet(stdin)
+	fs.SetOutput(stderr)
 
 	if err := fs.Parse(args); err != nil {
-		if stderrors.Is(err, flag.ErrHelp) {
-			return cancelArgs{}, nil, err
-		}
 		if stderrors.Is(err, errors.ErrUsage) {
 			return cancelArgs{}, nil, err
 		}
 		return cancelArgs{}, nil, fmt.Errorf("cancel: %s: %w", err.Error(), errors.ErrUsage)
 	}
-	return parsed, fs.Args(), nil
+	return *parsed, fs.Args(), nil
 }
 
 // Cancel transitions a task (and optionally its descendants) to
@@ -80,9 +89,6 @@ func parseCancelArgs(stdin io.Reader, stderr io.Writer, args []string) (cancelAr
 func Cancel(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	positional, flagArgs := splitLeadingPositional(args)
 	parsed, trailing, err := parseCancelArgs(stdin, stderr, flagArgs)
-	if stderrors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}

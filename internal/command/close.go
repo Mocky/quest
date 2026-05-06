@@ -73,16 +73,14 @@ type closeArgs struct {
 	Commits []batch.Commit
 }
 
-// parseCloseArgs consumes --debrief and --pr plus an optional leading
-// positional ID. @file resolution runs here — missing file /
-// oversized file / second @- all exit 2 at parse time before any DB
-// I/O.
-func parseCloseArgs(action closeAction, cfg config.Config, stdin io.Reader, stderr io.Writer, args []string) (closeArgs, []string, error) {
-	_ = cfg
+// closeFlagSet returns the unparsed FlagSet plus the bound closeArgs
+// target. Shared by parseCloseArgs (handler path for both complete and
+// fail) and the help dispatcher (which passes nil stdin; closures are
+// never invoked because Parse is never called).
+func closeFlagSet(action closeAction, stdin io.Reader) (*flag.FlagSet, *closeArgs) {
 	fs := newFlagSet(action.name, action.synopsis, action.description)
-	fs.SetOutput(stderr)
 
-	var parsed closeArgs
+	parsed := &closeArgs{}
 	r := input.NewResolver(stdin)
 	fs.Func("debrief", "after-action report (required, supports @file/@-)", func(v string) error {
 		resolved, err := r.Resolve("--debrief", v)
@@ -105,17 +103,29 @@ func parseCloseArgs(action closeAction, cfg config.Config, stdin io.Reader, stde
 		parsed.Commits = append(parsed.Commits, c)
 		return nil
 	})
+	return fs, parsed
+}
+
+// CompleteHelp / FailHelp are the descriptor-side help builders.
+func CompleteHelp() *flag.FlagSet { fs, _ := closeFlagSet(closeComplete, nil); return fs }
+func FailHelp() *flag.FlagSet     { fs, _ := closeFlagSet(closeFail, nil); return fs }
+
+// parseCloseArgs consumes --debrief and --pr plus an optional leading
+// positional ID. @file resolution runs here — missing file /
+// oversized file / second @- all exit 2 at parse time before any DB
+// I/O.
+func parseCloseArgs(action closeAction, cfg config.Config, stdin io.Reader, stderr io.Writer, args []string) (closeArgs, []string, error) {
+	_ = cfg
+	fs, parsed := closeFlagSet(action, stdin)
+	fs.SetOutput(stderr)
 
 	if err := fs.Parse(args); err != nil {
-		if stderrors.Is(err, flag.ErrHelp) {
-			return closeArgs{}, nil, err
-		}
 		if stderrors.Is(err, errors.ErrUsage) {
 			return closeArgs{}, nil, err
 		}
 		return closeArgs{}, nil, fmt.Errorf("%s: %s: %w", action.name, err.Error(), errors.ErrUsage)
 	}
-	return parsed, fs.Args(), nil
+	return *parsed, fs.Args(), nil
 }
 
 // closeTask is the shared body for `quest complete` and `quest fail`.
@@ -130,9 +140,6 @@ func parseCloseArgs(action closeAction, cfg config.Config, stdin io.Reader, stde
 func closeTask(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer, action closeAction) error {
 	positional, flagArgs := splitLeadingPositional(args)
 	parsed, trailing, err := parseCloseArgs(action, cfg, stdin, stderr, flagArgs)
-	if stderrors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}

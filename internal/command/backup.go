@@ -3,7 +3,6 @@ package command
 import (
 	"context"
 	"encoding/json"
-	stderrors "errors"
 	"flag"
 	"fmt"
 	"io"
@@ -26,6 +25,19 @@ type backupAck struct {
 	Bytes         int64  `json:"bytes"`
 }
 
+// backupFlagSet returns the unparsed FlagSet plus the bound `--to`
+// pointer. Shared by the Backup handler (which uses *to) and the help
+// dispatcher (which discards the pointer and renders Usage()).
+func backupFlagSet() (*flag.FlagSet, *string) {
+	fs := newFlagSet("backup", "--to PATH",
+		"Write a transaction-consistent snapshot of the quest database to PATH. Only available to elevated roles.")
+	to := fs.String("to", "", "output path for the database snapshot (required)")
+	return fs, to
+}
+
+// BackupHelp is the descriptor-side help builder.
+func BackupHelp() *flag.FlagSet { fs, _ := backupFlagSet(); return fs }
+
 // Backup handles `quest backup --to PATH`. Elevated-only (gated by the
 // dispatcher). Writes a transaction-consistent DB snapshot to PATH and
 // a sidecar copy of .quest/config.toml to PATH.config.toml. See spec
@@ -35,14 +47,9 @@ type backupAck struct {
 func Backup(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
 
-	fs := newFlagSet("backup", "--to PATH",
-		"Write a transaction-consistent snapshot of the quest database to PATH. Only available to elevated roles.")
+	fs, to := backupFlagSet()
 	fs.SetOutput(stderr)
-	to := fs.String("to", "", "output path for the database snapshot (required)")
 	if err := fs.Parse(args); err != nil {
-		if stderrors.Is(err, flag.ErrHelp) {
-			return nil
-		}
 		return fmt.Errorf("backup: %s: %w", err.Error(), errors.ErrUsage)
 	}
 	if fs.NArg() > 0 {

@@ -120,9 +120,6 @@ func (a updateArgs) blockedOnTerminalState() []string {
 func Update(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	positional, flagArgs := splitLeadingPositional(args)
 	parsed, trailing, err := parseUpdateArgs(cfg, stdin, stderr, flagArgs)
-	if stderrors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}
@@ -240,18 +237,14 @@ func Update(ctx context.Context, cfg config.Config, s store.Store, args []string
 	return output.Emit(stdout, cfg.Output.Text, updateAck{ID: id})
 }
 
-// parseUpdateArgs consumes args into an updateArgs struct plus the
-// leftover positional slice (which carries at most the task ID).
-// Free-form flags listed in spec §Input Conventions are passed through
-// the per-invocation *input.Resolver; shape errors at arg-parse time
-// map to exit 2 before any DB I/O per the plan preamble.
-func parseUpdateArgs(cfg config.Config, stdin io.Reader, stderr io.Writer, args []string) (updateArgs, []string, error) {
-	_ = cfg
+// updateFlagSet returns the unparsed FlagSet plus the bound updateArgs
+// target. Shared by parseUpdateArgs (handler path) and the help
+// dispatcher (passes nil stdin; closures are never invoked).
+func updateFlagSet(stdin io.Reader) (*flag.FlagSet, *updateArgs) {
 	fs := newFlagSet("update", "ID [flags]",
 		"Write progress information to the task. Workers can update execution fields; elevated roles can update any field.")
-	fs.SetOutput(stderr)
 
-	var parsed updateArgs
+	parsed := &updateArgs{}
 	r := input.NewResolver(stdin)
 
 	setRaw := func(dst **string, flagName string, resolve bool) func(string) error {
@@ -291,11 +284,23 @@ func parseUpdateArgs(cfg config.Config, stdin io.Reader, stderr io.Writer, args 
 		parsed.Meta = append(parsed.Meta, v)
 		return nil
 	})
+	return fs, parsed
+}
+
+// UpdateHelp is the descriptor-side help builder.
+func UpdateHelp() *flag.FlagSet { fs, _ := updateFlagSet(nil); return fs }
+
+// parseUpdateArgs consumes args into an updateArgs struct plus the
+// leftover positional slice (which carries at most the task ID).
+// Free-form flags listed in spec §Input Conventions are passed through
+// the per-invocation *input.Resolver; shape errors at arg-parse time
+// map to exit 2 before any DB I/O per the plan preamble.
+func parseUpdateArgs(cfg config.Config, stdin io.Reader, stderr io.Writer, args []string) (updateArgs, []string, error) {
+	_ = cfg
+	fs, parsed := updateFlagSet(stdin)
+	fs.SetOutput(stderr)
 
 	if err := fs.Parse(args); err != nil {
-		if stderrors.Is(err, flag.ErrHelp) {
-			return updateArgs{}, nil, err
-		}
 		// Surface the resolver's ErrUsage cleanly; flag package wraps
 		// the fn error into its usage output but preserves the chain.
 		if stderrors.Is(err, errors.ErrUsage) {
@@ -303,7 +308,7 @@ func parseUpdateArgs(cfg config.Config, stdin io.Reader, stderr io.Writer, args 
 		}
 		return updateArgs{}, nil, fmt.Errorf("update: %s: %w", err.Error(), errors.ErrUsage)
 	}
-	return parsed, fs.Args(), nil
+	return *parsed, fs.Args(), nil
 }
 
 // updateState is the slice of the task row Update needs for the

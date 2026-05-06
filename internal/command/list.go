@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	stderrors "errors"
 	"flag"
 	"fmt"
 	"io"
@@ -51,9 +50,6 @@ func List(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	_ = stdin
 
 	filter, columns, err := parseListFlags(stderr, args)
-	if stderrors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}
@@ -87,25 +83,26 @@ func List(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	return emitListJSON(stdout, columns, enriched)
 }
 
-// parseListFlags builds the Filter + column projection from args.
-// Single-valued enum flags use a flat fs.Func that accumulates
-// comma-split values across occurrences. Multi-valued flags (--tag,
-// --blocked-by) collect raw values per occurrence and post-process
-// each into one DNF arm with within-arm and cross-arm dedup. Unknown
-// values for --status, --tier, --severity, --columns are rejected
-// here so the SQL builder in the store can assume a clean filter.
-func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, error) {
-	var (
-		filter           store.Filter
-		statusesSet      bool
-		columnsFlagRaw   []string
-		columnsProvided  bool
-		rawTagArms       []string
-		rawBlockedByArms []string
-	)
+// listParseState holds the bound targets the list FlagSet writes into.
+// Lifted into a struct so the help dispatcher can construct a FlagSet
+// without leaking the parse-only locals into the help path.
+type listParseState struct {
+	filter           store.Filter
+	statusesSet      bool
+	columnsFlagRaw   []string
+	columnsProvided  bool
+	rawTagArms       []string
+	rawBlockedByArms []string
+}
+
+// listFlagSet returns the unparsed FlagSet plus the bound state.
+// Shared by parseListFlags (handler path, which uses the state after
+// Parse) and the help dispatcher (which discards the state).
+func listFlagSet() (*flag.FlagSet, *listParseState) {
 	fs := newFlagSet("list", "[flags]",
 		"List tasks with filtering.")
-	fs.SetOutput(stderr)
+
+	state := &listParseState{}
 
 	addCSV := func(into *[]string, markSet *bool) func(string) error {
 		return func(v string) error {
@@ -124,46 +121,60 @@ func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, er
 	}
 
 	fs.Func("status", "STATUSES (comma-separated; repeatable)",
-		addCSV(&filter.Statuses, &statusesSet))
+		addCSV(&state.filter.Statuses, &state.statusesSet))
 	fs.Func("parent", "IDS (comma-separated; repeatable)",
-		addCSV(&filter.Parents, nil))
+		addCSV(&state.filter.Parents, nil))
 	fs.Func("blocked-by", "IDS (within-flag AND, repeat for OR)", func(v string) error {
-		rawBlockedByArms = append(rawBlockedByArms, v)
+		state.rawBlockedByArms = append(state.rawBlockedByArms, v)
 		return nil
 	})
 	fs.Func("tag", "TAGS (within-flag AND, repeat for OR)", func(v string) error {
-		rawTagArms = append(rawTagArms, v)
+		state.rawTagArms = append(state.rawTagArms, v)
 		return nil
 	})
 	fs.Func("role", "ROLES (comma-separated; repeatable)",
-		addCSV(&filter.Roles, nil))
+		addCSV(&state.filter.Roles, nil))
 	fs.Func("tier", "TIERS (comma-separated; repeatable)",
-		addCSV(&filter.Tiers, nil))
+		addCSV(&state.filter.Tiers, nil))
 	fs.Func("severity", "SEVERITIES (comma-separated; repeatable)",
-		addCSV(&filter.Severities, nil))
+		addCSV(&state.filter.Severities, nil))
 	fs.Func("columns", "COLS (comma-separated)", func(v string) error {
-		columnsProvided = true
+		state.columnsProvided = true
 		for _, part := range strings.Split(v, ",") {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue
 			}
-			columnsFlagRaw = append(columnsFlagRaw, part)
+			state.columnsFlagRaw = append(state.columnsFlagRaw, part)
 		}
 		return nil
 	})
-	fs.BoolVar(&filter.Ready, "ready", false, "only tasks whose next transition has no unmet preconditions")
+	fs.BoolVar(&state.filter.Ready, "ready", false, "only tasks whose next transition has no unmet preconditions")
+	return fs, state
+}
+
+// ListHelp is the descriptor-side help builder.
+func ListHelp() *flag.FlagSet { fs, _ := listFlagSet(); return fs }
+
+// parseListFlags builds the Filter + column projection from args.
+// Single-valued enum flags use a flat fs.Func that accumulates
+// comma-split values across occurrences. Multi-valued flags (--tag,
+// --blocked-by) collect raw values per occurrence and post-process
+// each into one DNF arm with within-arm and cross-arm dedup. Unknown
+// values for --status, --tier, --severity, --columns are rejected
+// here so the SQL builder in the store can assume a clean filter.
+func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, error) {
+	fs, state := listFlagSet()
+	fs.SetOutput(stderr)
 
 	if err := fs.Parse(args); err != nil {
-		if stderrors.Is(err, flag.ErrHelp) {
-			return store.Filter{}, nil, err
-		}
 		return store.Filter{}, nil, fmt.Errorf("list: %s: %w", err.Error(), errors.ErrUsage)
 	}
 	if fs.NArg() > 0 {
 		return store.Filter{}, nil, fmt.Errorf("list: unexpected positional arguments: %w", errors.ErrUsage)
 	}
 
+	filter := state.filter
 	if err := rejectUnknown("status", filter.Statuses, validListStatuses); err != nil {
 		return store.Filter{}, nil, err
 	}
@@ -174,28 +185,28 @@ func parseListFlags(stderr io.Writer, args []string) (store.Filter, []string, er
 		return store.Filter{}, nil, err
 	}
 
-	tagArms, err := parseTagArms(rawTagArms)
+	tagArms, err := parseTagArms(state.rawTagArms)
 	if err != nil {
 		return store.Filter{}, nil, err
 	}
 	filter.Tags = tagArms
 
-	blockedByArms, err := parseIDArms(rawBlockedByArms, "blocked-by")
+	blockedByArms, err := parseIDArms(state.rawBlockedByArms, "blocked-by")
 	if err != nil {
 		return store.Filter{}, nil, err
 	}
 	filter.BlockedBy = blockedByArms
 
 	columns := listDefaultColumns
-	if columnsProvided {
-		if err := rejectUnknown("column", columnsFlagRaw, validListColumns); err != nil {
+	if state.columnsProvided {
+		if err := rejectUnknown("column", state.columnsFlagRaw, validListColumns); err != nil {
 			return store.Filter{}, nil, err
 		}
-		columns = columnsFlagRaw
+		columns = state.columnsFlagRaw
 	}
 
 	// Default status filter (quest-spec.md §Queries > quest list > --status).
-	if !statusesSet {
+	if !state.statusesSet {
 		filter.Statuses = append([]string{}, listDefaultStatuses...)
 	}
 	filter.Columns = columns

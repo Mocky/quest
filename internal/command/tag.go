@@ -42,25 +42,38 @@ func resolveTagPositional(name string, args []string) (string, string, error) {
 	return args[0], args[1], nil
 }
 
-// parseTagHelpFlags runs `tag` / `untag` args through a FlagSet that
-// has no flags of its own so `--help` anywhere in the argv short-
-// circuits per STANDARDS.md §`--help` Convention. Both commands take
-// two leading positionals (TASK, TAGS) — fs.Parse stops at the first
-// non-flag token, so we strip leading positionals in a loop to let
-// flag.ErrHelp surface regardless of whether `--help` comes before,
-// between, or after the positionals. Returns the collapsed positional
+// tagFlagSet returns the unparsed FlagSet for `tag` and `untag`. Both
+// commands have no flags of their own — TAGS is positional, comma-
+// separated — but the FlagSet is still the canonical source of synopsis
+// + description for help rendering.
+func tagFlagSet(name, synopsis, description string) *flag.FlagSet {
+	return newFlagSet(name, synopsis, description)
+}
+
+// TagHelp / UntagHelp are the descriptor-side help builders.
+func TagHelp() *flag.FlagSet {
+	return tagFlagSet("tag", "ID TAGS",
+		"Add tags to a task. Tags are comma-separated, case-insensitive, stored lowercase.")
+}
+
+func UntagHelp() *flag.FlagSet {
+	return tagFlagSet("untag", "ID TAGS",
+		"Remove tags from a task.")
+}
+
+// parseTagPositionals runs `tag` / `untag` args through a FlagSet that
+// has no flags of its own. Both commands take two leading positionals
+// (TASK, TAGS) — fs.Parse stops at the first non-flag token, so we
+// strip leading positionals in a loop. Returns the collapsed positional
 // slice for resolveTagPositional to validate.
-func parseTagHelpFlags(name, synopsis, description string, stderr io.Writer, args []string) ([]string, error) {
-	fs := newFlagSet(name, synopsis, description)
+func parseTagPositionals(name, synopsis, description string, stderr io.Writer, args []string) ([]string, error) {
+	fs := tagFlagSet(name, synopsis, description)
 	fs.SetOutput(stderr)
 
 	remaining := args
 	var positional []string
 	for {
 		if err := fs.Parse(remaining); err != nil {
-			if stderrors.Is(err, flag.ErrHelp) {
-				return nil, err
-			}
 			return nil, fmt.Errorf("%s: %s: %w", name, err.Error(), errors.ErrUsage)
 		}
 		leftover := fs.Args()
@@ -79,12 +92,9 @@ func parseTagHelpFlags(name, synopsis, description string, stderr io.Writer, arg
 // least one row changed; the ack always emits the full post-state list.
 func Tag(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
-	positional, err := parseTagHelpFlags("tag", "ID TAGS",
+	positional, err := parseTagPositionals("tag", "ID TAGS",
 		"Add tags to a task. Tags are comma-separated, case-insensitive, stored lowercase.",
 		stderr, args)
-	if stderrors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}

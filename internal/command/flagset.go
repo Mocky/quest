@@ -15,9 +15,12 @@ import (
 // with empty help and prefixes every long flag with a single dash; the
 // custom Usage installed here closes both gaps.
 //
-// The returned FlagSet uses ContinueOnError — quest handlers intercept
-// flag.ErrHelp and parse failures rather than letting the flag package
-// call os.Exit.
+// The returned FlagSet uses ContinueOnError — quest handlers translate
+// parse failures into ErrUsage rather than letting the flag package
+// call os.Exit. Help dispatch is centralized at the dispatcher
+// (`quest help <cmd>` per the 2026-05-06 grove decision); handlers no
+// longer see `--help` or `-h` because Execute rejects flag-form help
+// before the descriptor's handler runs.
 func newFlagSet(name, synopsis, description string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.Usage = func() { printUsage(fs, synopsis, description) }

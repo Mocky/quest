@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	stderrors "errors"
 	"flag"
 	"fmt"
 	"io"
@@ -147,6 +146,18 @@ func writeJSONKV(buf *bytes.Buffer, key string, value any, leadingComma bool) er
 	return nil
 }
 
+// showFlagSet returns the unparsed FlagSet plus the bound `--history`
+// pointer. Shared by the Show handler and the help dispatcher.
+func showFlagSet() (*flag.FlagSet, *bool) {
+	fs := newFlagSet("show", "ID [--history]",
+		"Display full task details including description, context, status, dependencies, notes, and handoff.")
+	historyFlag := fs.Bool("history", false, "include the full mutation history")
+	return fs, historyFlag
+}
+
+// ShowHelp is the descriptor-side help builder.
+func ShowHelp() *flag.FlagSet { fs, _ := showFlagSet(); return fs }
+
 // Show reads a task and prints its full spec shape. The task ID is a
 // required positional argument; omitting it returns ErrUsage so the
 // caller gets exit 2 rather than a silent empty result.
@@ -154,14 +165,9 @@ func Show(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 	_ = stdin
 
 	positional, flagArgs := splitLeadingPositional(args)
-	fs := newFlagSet("show", "ID [--history]",
-		"Display full task details including description, context, status, dependencies, notes, and handoff.")
+	fs, historyFlag := showFlagSet()
 	fs.SetOutput(stderr)
-	historyFlag := fs.Bool("history", false, "include the full mutation history")
 	if err := fs.Parse(flagArgs); err != nil {
-		if stderrors.Is(err, flag.ErrHelp) {
-			return nil
-		}
 		return fmt.Errorf("show: %s: %w", err.Error(), errors.ErrUsage)
 	}
 	// Support ID before or after flags: trailing positionals (after

@@ -38,11 +38,13 @@ type linkArgs struct {
 	edges []batch.Edge
 }
 
-func parseLinkArgs(stderr io.Writer, name, synopsis, description string, args []string) (linkArgs, []string, error) {
+// linkFlagSet returns the unparsed FlagSet plus the bound linkArgs
+// target. Shared by parseLinkArgs (handler path for both link and
+// unlink) and the help dispatcher.
+func linkFlagSet(name, synopsis, description string) (*flag.FlagSet, *linkArgs) {
 	fs := newFlagSet(name, synopsis, description)
-	fs.SetOutput(stderr)
 
-	var parsed linkArgs
+	parsed := &linkArgs{}
 	add := func(linkType string) func(string) error {
 		return func(v string) error {
 			parsed.edges = append(parsed.edges, batch.Edge{Target: v, LinkType: linkType})
@@ -53,24 +55,39 @@ func parseLinkArgs(stderr io.Writer, name, synopsis, description string, args []
 	fs.Func("caused-by", "TARGET", add(batch.LinkCausedBy))
 	fs.Func("discovered-from", "TARGET", add(batch.LinkDiscoveredFrom))
 	fs.Func("retry-of", "TARGET", add(batch.LinkRetryOf))
+	return fs, parsed
+}
+
+// LinkHelp / UnlinkHelp are the descriptor-side help builders.
+func LinkHelp() *flag.FlagSet {
+	fs, _ := linkFlagSet("link",
+		"TASK --blocked-by|--caused-by|--discovered-from|--retry-of TARGET",
+		"Add a typed dependency link to TASK referencing TARGET.")
+	return fs
+}
+
+func UnlinkHelp() *flag.FlagSet {
+	fs, _ := linkFlagSet("unlink",
+		"TASK --blocked-by|--caused-by|--discovered-from|--retry-of TARGET",
+		"Remove a typed dependency link between TASK and TARGET.")
+	return fs
+}
+
+func parseLinkArgs(stderr io.Writer, name, synopsis, description string, args []string) (linkArgs, []string, error) {
+	fs, parsed := linkFlagSet(name, synopsis, description)
+	fs.SetOutput(stderr)
 
 	if err := fs.Parse(args); err != nil {
-		if stderrors.Is(err, flag.ErrHelp) {
-			return linkArgs{}, nil, err
-		}
 		if stderrors.Is(err, errors.ErrUsage) {
 			return linkArgs{}, nil, err
 		}
 		return linkArgs{}, nil, fmt.Errorf("%s: %s: %w", name, err.Error(), errors.ErrUsage)
 	}
-	return parsed, fs.Args(), nil
+	return *parsed, fs.Args(), nil
 }
 
 // resolveLinkPositional validates the leading positional for `link` and
-// `unlink` after flag parsing. It is invoked post-parse so --help on a
-// flag-only invocation (e.g. `quest link --help`) short-circuits via
-// flag.ErrHelp before this validation runs, per STANDARDS.md §--help
-// Convention.
+// `unlink` after flag parsing.
 func resolveLinkPositional(name string, leading []string) (string, error) {
 	if len(leading) == 0 {
 		return "", fmt.Errorf("%s: task ID required: %w", name, errors.ErrUsage)
@@ -111,9 +128,6 @@ func Link(ctx context.Context, cfg config.Config, s store.Store, args []string, 
 		"TASK --blocked-by|--caused-by|--discovered-from|--retry-of TARGET",
 		"Add a typed dependency link to TASK referencing TARGET.",
 		rest)
-	if stderrors.Is(err, flag.ErrHelp) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}

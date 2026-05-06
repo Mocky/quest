@@ -3,7 +3,6 @@ package command
 import (
 	"context"
 	"encoding/json"
-	stderrors "errors"
 	"flag"
 	"fmt"
 	"io"
@@ -29,6 +28,18 @@ type exportAck struct {
 	HistoryEntries int    `json:"history_entries"`
 }
 
+// exportFlagSet returns the unparsed FlagSet plus the bound `--dir`
+// pointer. Shared by Export and the help dispatcher.
+func exportFlagSet() (*flag.FlagSet, *string) {
+	fs := newFlagSet("export", "[--dir PATH]",
+		"Export the quest database to a human-readable directory structure for inspection, backup, and version control. Only available to elevated roles.")
+	dirFlag := fs.String("dir", "", "output directory (default: <workspace>/quest-export/ — sibling of .quest/)")
+	return fs, dirFlag
+}
+
+// ExportHelp is the descriptor-side help builder.
+func ExportHelp() *flag.FlagSet { fs, _ := exportFlagSet(); return fs }
+
 // Export handles `quest export [--dir PATH]`. Default output is
 // `<workspace>/quest-export/` — a sibling of `.quest/` per spec
 // §`quest export`, so running from a subdirectory still places the
@@ -37,14 +48,9 @@ type exportAck struct {
 func Export(ctx context.Context, cfg config.Config, s store.Store, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
 
-	fs := newFlagSet("export", "[--dir PATH]",
-		"Export the quest database to a human-readable directory structure for inspection, backup, and version control. Only available to elevated roles.")
+	fs, dirFlag := exportFlagSet()
 	fs.SetOutput(stderr)
-	dirFlag := fs.String("dir", "", "output directory (default: <workspace>/quest-export/ — sibling of .quest/)")
 	if err := fs.Parse(args); err != nil {
-		if stderrors.Is(err, flag.ErrHelp) {
-			return nil
-		}
 		return fmt.Errorf("export: %s: %w", err.Error(), errors.ErrUsage)
 	}
 	if fs.NArg() > 0 {
